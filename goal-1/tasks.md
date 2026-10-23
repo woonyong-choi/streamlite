@@ -266,12 +266,18 @@ The required queue after Tasks 7–9 retains separate cache (#261), workspace (#
 
 ## Checkpoint after Task 9
 
-- Status: incomplete
-- Work performed: not started.
-- Verification evidence: required — full recovered scope, architectural judgment, documentation/issue consistency and any remaining execution tasks.
-- Remaining risk: marking the whole goal complete while recovered requirements remain open.
-- Next step: checkpoint only; final review waits for all required original work.
-- Commit status: no checkpoint commit attempted.
+- Status: complete (scope/order/evidence review with a tracking clarification; no engine or measurement validation)
+- Session guard/work: previous turn is progress, verified by c9db86a8, its Task 9 marker and exact three-file diff. Resolved goal-current, reread input/plan/tasks fully and the live goal reference; initial checkout clean on the existing branch. Review Tasks 7–9 against recovered requirements, current source/design/report and remote issue graph, then update only tasks.md. No duplicate initialization, source change, issue/board mutation, Continuity append, new worktree, background session or Vault write.
+- Requirement/decision review: the present WAL/bounded-pool/MVCC/early-locking recommendation, its writeback/merge reasons, added recovery/checkpoint/GC burden, common improvements and falsifiers agree across the current design, D52 and actual #257/#238/#266 bodies. Existing COW runtime preservation is distinct from the old combined-path exclusion and the new direction. All ten recovered execution items remain mapped to Tasks 10–39; cache/workspace four conditions, conditional SQL/lifecycle, Q1–Q5, #158 full-scale repeats, E4–E6 and E7 are retained. No proposal, issue decomposition or document check discharges implementation/collection. G1–G6 details and numerical collection criteria still require their planned phase work.
+- Finding CP9-1, tracking clarified: the design's G2 distinguishes persistent request-ID/result lookup from explicit business-key corroboration, while current include/storage/transaction.h:214–220 only offers the same-open result ring and explicitly excludes restart lookup capability. Generic outcome markers/restart tests in the execution queue could miss the selected G2 path's API/retention behavior. Strengthened Task 22's choice/oracle, Task 23's selected outcome recovery, Task 29's equal comparator contract, Task 30's response-loss/ID/expiry cases and Task 33's public result/unsupported boundary. This clarifies existing work, not selection of persistent lookup or a new automatic retry promise; no runtime or public design is edited in this checkpoint.
+- Phase-entry review: the native graph has no cycle; #266 before #263 means measured comparison before product integration, not product completion before candidate implementation. Whole-issue #257/#239 blockers still need the Task 10 phase-readiness reconciliation before #261/#269 starts. Task 10 already requires that exact action, so no new recovery/administrative task or indefinite external wait is inserted. Later candidate/stream tasks must similarly resolve only their applicable contracts before code changes and retain separate public integration/closure evidence.
+- Verification evidence: check_doc.py passes both public documents; git diff --check 6bb8b2e8 HEAD passes. Protected source/build/test/benchmark/README/historical-experiment diff against main is empty. Source reread confirms the exclusive writer lock, full-payload compat list and result-ring restart limitation. Read-only validation checks all public local links/anchors and source-line targets, exact task/issue coverage, collector-before-collection order and separate checkpoints every third task. All thirty execution tasks and the later final review remain incomplete. Full added checkpoint/clarification diff reviewed; no claim that old product tests prove the proposed backend.
+- Remote/ownership evidence: fresh connector reads match all fourteen previously reviewed issue bodies; #257 remains OPEN with one checked/two unchecked conditions, #158 one checked/one unchecked, #238 three unchecked and #239 four unchecked. GraphQL readback confirms nine children, all twenty unchanged blocking edges and #257 board in progress, with other target board states unchanged. Local main/origin-main and live remote main remain 6bb8b2e8; four other worktree heads retain their preserved values. No original raw/YCSB/failure sample is changed or recollected; ignored data are not exhaustively rehashed.
+- Build/test/UI/security/rollback review: no executable, dependency, build or UI change exists, so product builds/type checks/sanitizer/concurrency/fault/benchmark runs and UI rendering are inapplicable to this tracking-only checkpoint and are not claimed. Security/consistency review retains no unverified replay, no missing-ID-as-NOT_APPLIED inference, UNKNOWN write/GC fencing, owner/byte/pin/retention limits, existing files and mixed-version rejection. Public added rationale contains no private recovery paths/session identifiers; approved goal tracking still needs review before any later publication. Rollback is a corrective tracking commit, never reset or data conversion.
+- Remaining risk: detailed contracts, real candidate/stream/cache/workspace code, equal-guarantee fault and total-cost measurements, original pending/scale results and product integration are still unproved. The old inaccessible Vault note remains unread, and no Vault reflection, live migration, release or user-understanding completion is inferred. Required failures must create repairs, not narrower success criteria. Goal remains active.
+- Next step: stop after this checkpoint tracking commit. Next continuation performs Task 10 only, including common execution/resource contracts and actual phase readiness; Task 11 implements bounded template reuse afterward. Do not execute Task 10, final review, push/PR/merge/deploy or Vault work in this checkpoint boundary.
+- Commit record: subject `docs(docs): 실행 과업 검토와 결과 조회 조건 갱신`; body marker `Goal-mode boundary: goal-1 checkpoint after task 9: complete`. Only goal-1/tasks.md belongs to this checkpoint commit under the configured user's identity; verify git log -1 and clean status.
+- AAR: listing UNKNOWN and restart tests is insufficient unless the chosen request/result-resolution path and its absence/expiry behavior are explicit in both candidates and product APIs. Keep the G2 choice unresolved until its contract task; strengthen its evidence without assuming that durable commit markers provide durable lookup. The restored queue remains execution debt, not a new completion claim.
 
 ## Execution closure rules after Task 9
 
@@ -440,7 +446,7 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Status: incomplete
 - Scope: Resolve G1/G2/G4/G6 record/version/page layout, commit visibility, logical abort versus structural changes, LSN/full-page/checksum, checkpoint/GC and owner fencing for isolated candidate files. Fix result-query/admission bounds, the same logical payload/consumer-state layout for E4 and failure oracles. Issues: #238, #257, #263, #266.
 - Work performed: not started.
-- Verification evidence: required — Complete state/ownership/error/restart matrix and format invariants; explicit SNAPSHOT preservation, no uncommitted writeback without proof, local test format separate from existing DB.
+- Verification evidence: required — Complete state/ownership/error/restart matrix and format invariants; explicit SNAPSHOT preservation, no uncommitted writeback without proof, local test format separate from existing DB. Select and justify G2's persistent request-ID/result lookup or explicit business-key corroboration, including absent/expired/changed-content IDs, process generations, response-body retention and unsupported automatic-retry boundaries; use the same contract for both candidates.
 - Remaining risk: Redo alone cannot undo an uncommitted in-place overwrite; recovery/shared-state gaps block implementation.
 - Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
 - Commit status: no task commit attempted.
@@ -448,9 +454,9 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 ## Task 23 — Implement WAL records and durable commit recovery
 
 - Status: incomplete
-- Scope: Implement the candidate's log framing/checksum/order, transaction commit/outcome markers, append/barrier and restart scan without SQL/callback replay. Issues: #263, #266.
+- Scope: Implement the candidate's log framing/checksum/order, transaction commit/outcome markers, append/barrier and restart scan without SQL/callback replay. Implement the selected G2 outcome-resolution storage path from Task 22, preserving its explicit unsupported/corroboration boundary if persistent lookup is not selected. Issues: #263, #266.
 - Work performed: not started.
-- Verification evidence: required — Truncate/short/torn/reordered I/O, checksum, crash before/after barrier and UNKNOWN outcome tests on isolated files; acknowledged commit preservation.
+- Verification evidence: required — Truncate/short/torn/reordered I/O, checksum, crash before/after barrier and UNKNOWN outcome tests on isolated files; acknowledged commit preservation. Test the selected G2 restart/ID/content/retention behavior without treating missing or expired records as NOT_APPLIED or reexecuting callbacks.
 - Remaining risk: A successful append is not a durable commit; keep old backend and files intact.
 - Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
 - Commit status: no task commit attempted.
@@ -528,7 +534,7 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Status: incomplete
 - Scope: Build the isolated comparator with the same cache/workspace/payload/group policy, early coordination, latest shared-leaf/root merge and protected snapshot/fallback reclamation. Issues: #266.
 - Work performed: not started.
-- Verification evidence: required — Independent/same-leaf/hot-row changes, allocation/rollback/UNKNOWN/owner death, pin/reuse/restart correctness and bounded-resource checks.
+- Verification evidence: required — Independent/same-leaf/hot-row changes, allocation/rollback/UNKNOWN/owner death, pin/reuse/restart correctness and bounded-resource checks. Apply Task 22's same G2 outcome-resolution and retention contract, including its implementation/space cost and unsupported boundaries.
 - Remaining risk: Comparing unoptimized current COW with improved WAL would bias attribution.
 - Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
 - Commit status: no task commit attempted.
@@ -538,7 +544,7 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Status: incomplete
 - Scope: Run the 15 design scenarios and E0/E5/E6 safety cases on both real candidate paths, including grouped outcomes, ranges, long readers, cancellation, result loss and restart. Issues: #238, #263, #266.
 - Work performed: not started.
-- Verification evidence: required — Deterministic positive/negative controls and actual I/O/process failure traces, independent final-state oracle, no lost/duplicate/partial acknowledged updates, relevant sanitizers/differential tests.
+- Verification evidence: required — Deterministic positive/negative controls and actual I/O/process failure traces, independent final-state oracle, no lost/duplicate/partial acknowledged updates, relevant sanitizers/differential tests. For both candidates, test response loss/restart, duplicate or changed-content IDs, absent/expired records and the selected G2 lookup/corroboration semantics rather than assuming automatic replay safety.
 - Remaining risk: Any mandatory gate failure needs repair before formal performance collection; no physical power-loss claim beyond actual apparatus.
 - Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
 - Commit status: no task commit attempted.
@@ -577,7 +583,7 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Status: incomplete
 - Scope: Integrate the selected candidate into a reviewable product path after Task 32. Preserve existing files/package/ABI and defaults unless a separately justified compatibility decision authorizes change; no live cutover. Issues: #263.
 - Work performed: not started.
-- Verification evidence: required — Full supported SQL/ACK/transaction/C/Python regression, current-file compatibility/rejection/export-import/backup-restore tests on copies, independent writer and failure evidence.
+- Verification evidence: required — Full supported SQL/ACK/transaction/C/Python regression, current-file compatibility/rejection/export-import/backup-restore tests on copies, independent writer and failure evidence. Verify the selected G2 resolution path through product/native/Python entry points, result-body lifetime and restart/expiry/unsupported behavior; same-open ring success is not restart lookup evidence.
 - Remaining risk: A comparison prototype or code-only rollback does not establish product compatibility or data restoration.
 - Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
 - Commit status: no task commit attempted.
