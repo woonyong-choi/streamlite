@@ -251,13 +251,18 @@ The required queue after Tasks 7–9 retains separate cache (#261), workspace (#
 
 ## Task 9 — Reconcile actual unfinished work and issue gates
 
-- Status: incomplete
+- Status: complete (issue/rationale reconciliation and restored execution queue only; all new execution tasks remain incomplete)
 - Scope: retain or correct #257/#260–269 and any recovered original authorized unfinished tasks using the full conversation audit and present design. Do not replace required implementation with issue creation or close unresolved conditions.
-- Work performed: not started.
-- Verification evidence: required — original requirement coverage, actual issue/implementation state and valid dependency/order/approval boundaries.
-- Remaining risk: expanding approval to migration/deployment or silently dropping original work.
-- Next step: execute after the design correction; add separately verifiable original unfinished implementation/validation tasks when the recovery proves they are in scope.
-- Commit status: no task commit attempted.
+- Session guard/checklist: previous turn is progress, verified by 099f0d5a and its Task 8 marker. Resolved goal-current and reread all three goal files plus live goal reference, applicable workspace/career/issue/document guidance; initial checkout clean in the existing branch. Inspect actual code/issues/graph, reconcile current recommendation without changing completion criteria, restore executable tasks, verify scope/links/readbacks, append existing Continuity and commit Task 9 only. No duplicate goal, new worktree, background agent or Vault write.
+- Work performed: updated only #238/#239/#257/#260/#263/#266 bodies to preserve the recovered early-coordination and old combined-path rejection, current WAL recommendation/falsifiers, G6 recovery obligations, common-cost follow-ups and prototype-before-comparison versus product-after-comparison distinction. No title, assignee, checklist, state/closure, native child/dependency edge or progress comment mutation. Corrected #257 board from hold through waiting to in progress under this existing session binding and cleared its obsolete hold reason; contracts remain work to execute, not an external decision to wait for indefinitely. #257 still has one checked/two unchecked items, #238 three unchecked and #239 four unchecked; actual implementation/integration evidence is not inferred.
+- Restored queue: added Tasks 10–39 and ten separate checkpoints after 12/15/18/21/24/27/30/33/36/39. All ten recovered execution items map to concrete contracts, implementation, meaningful correctness/failure tests, preregistered collectors, actual collection and integration. Task 10 fixes common execution/resource contracts before cache implementation; Tasks 22–30 implement and verify the WAL/buffer/MVCC/locking/process candidates and matched COW comparator; 31–33 collect E4–E6 and integrate the validated candidate. 34–39 implement streams and collect E7 before integrated validation. #158 scale collection is retained in 20/21, Q1–Q5 in 18/19. A required failure inserts repair instead of shrinking success, and final review stays after all execution and repairs. Updated the existing design's follow-up section and plan only; no extra document/context file.
+- Actual-source evidence: database_work_begin still holds the exclusive writer lock; publish_inner still calls heap_batch_finish before staging; catalog_clone still encode/decodes. Python Database still creates/traverses queue management, and compat queue() still collects every payload. Existing primary-key collector/tests and #158's four comments confirm implemented lookup but missing three full 100k runs; comment 6233945394 explicitly preserves timeouts and reopens the measurement. Current src/include/python/tests/bench/Makefile/.github/experiments match main, so proposals cannot be classified as implemented. The full conversation recovery itself is not repeated.
+- Remote verification: connector readbacks exactly match all six intended body replacements with unchanged checklist lines and OPEN states. Public-links checks pass each replacement before publishing. Actual GraphQL (connector lacks native graph/Projects support) verifies project 21, nine #260 children, the exact twenty preserved blocking edges and an acyclic graph, #257 in progress with hold reason cleared, all other target board states preserved. project_status.py check --number passes all fourteen target issues (#158/#238/#239/#257/#260–269) with zero mismatches. No design issue or implementation/measurement is closed; no new issue or progress-log comment is created.
+- Local verification: check_doc.py passes docs/design/streamlite.md, git diff --check passes, and read-only validation checks all 25 design local links/anchors, exact 1–39 task order, all thirty new incomplete records, ten-item issue coverage, preregistration before collection, E4–E6 attribution and every-third-task checkpoints through 39 before final review. Public added prose has no private paths/session/goal references. Protected-path comparison against 099f0d5a preserves D52/input/goal-current/source/build/tests/bench/README/historical experiments; main/origin-main remain 6bb8b2e8 and the four other worktree heads are unchanged. Only existing design, plan and tasks enter this commit. No executable changed; product builds/fault/concurrency/benchmark runs are not performed or claimed for this metadata/queue task.
+- Remaining risk: thirty execution tasks plus checkpoints/possible repairs remain. Detailed G contracts, reversible budgets, candidate implementation, matched results, actual integrated behavior and public design integration are unproved. Native whole-issue blockers must be reconciled with completed phase contracts before each implementation starts; neither remote issue closure nor unrequested publication substitutes for the authorized local evidence. Existing DB/defaults/package/ABI, original raw/YCSB/failure evidence and Vault remain preserved; ignored raw samples were not exhaustively rehashed. No deployment or live conversion is authorized by this queue.
+- Next step: stop after this Task 9 commit. Next continuation is the checkpoint after Task 9 only; then Task 10 resolves common execution/resource contracts and Task 11 implements bounded template reuse. Keep the full goal active; do not perform the checkpoint, Task 10, final review, push/PR/merge/deploy or Vault reflection in this task boundary.
+- Commit record: subject `docs(docs): StreamLite 구현·실측 실행 과업 복구`; body marker `Goal-mode boundary: goal-1 task 9: Reconcile actual unfinished work and issue gates`. The containing task-boundary commit records the three approved local files under the configured user's identity; remote body/status readbacks above record the metadata outcome. Verify git log -1 and clean status.
+- AAR: an acyclic issue graph alone does not distinguish a comparison prototype from later product integration. Preserve phase-specific entry/evidence rules and all original execution debt, rather than making design publication or a completed product a circular prerequisite for experiments. The first queue validator excluded titles, so it falsely missed Task 14's preregistration label; corrected the parser to include the whole task record and reran successfully. No criterion or failure sample was weakened to pass.
 
 ## Checkpoint after Task 9
 
@@ -266,6 +271,402 @@ The required queue after Tasks 7–9 retains separate cache (#261), workspace (#
 - Verification evidence: required — full recovered scope, architectural judgment, documentation/issue consistency and any remaining execution tasks.
 - Remaining risk: marking the whole goal complete while recovered requirements remain open.
 - Next step: checkpoint only; final review waits for all required original work.
+- Commit status: no checkpoint commit attempted.
+
+## Execution closure rules after Task 9
+
+This queue restores authorized work; it does not assert implementation, approved customer SLOs or measured benefit. Each task below is incomplete and must record its actual work, evidence, residual risk, next action and task-boundary commit at execution. Resolve its applicable contracts before changing behavior. Use reversible test defaults with reasons and falsifiers; do not wait indefinitely for an unnamed approval. A required failed test/measurement or unmet user outcome inserts a repair before dependent work, without replacing the original criterion or erasing failed samples. Candidate rejection can finish that experiment, not an unmet product requirement. Keep diagnostics and noninstrumented outcomes separate, and preregister collection before formal samples. Reuse existing approved docs and execution areas; no new context copies, consumer writes, production migration or publication is inferred.
+
+GitHub's #266 → #263 edge is the comparison-result → product-integration gate. Tasks 22–30 implement and verify comparison candidates for #266 before that result, while Task 33 integrates the chosen product path. Relevant phase contracts and this prototype/product distinction must be reflected in actual issue readiness before code execution; an entire unpublished design issue is not an indefinite stop for authorized reversible local work. Do not claim remote issue closure while its PR/evidence conditions remain unmet.
+
+## Task 10 — Fix the common execution and resource contract
+
+- Status: incomplete
+- Scope: Specify template/binding ownership, schema invalidation, cache/workspace budgets, statement error/rollback behavior, optional lifecycle and conditional-result boundaries in the existing design. Select reversible engineering defaults with reasons; keep public API/default changes distinct. Issues: #239, #257.
+- Work performed: not started.
+- Verification evidence: required — Contract-to-source/scenario review, explicit invariants and test oracle, existing DB/ABI preservation, actual #261/#269 phase readiness and native blockers reconciled with completed common contracts without falsely closing the remaining design/integration conditions.
+- Remaining risk: An unresolved common contract must not be disguised as an approved runtime default.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 11 — Implement bounded SQL template reuse
+
+- Status: incomplete
+- Scope: Separate immutable prepared templates from execution bindings and implement bounded reuse, schema invalidation, eviction and failure-safe ownership. Preserve supported SQL/results/errors. Issues: #261.
+- Work performed: not started.
+- Verification evidence: required — Meaningful binding/schema/rollback/OOM/lifetime regression and relevant C/Python/SQLite differential checks; cache hit/miss diagnostics, no performance claim before Task 15.
+- Remaining risk: Reusing bound AST values can leak one execution into another.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 12 — Implement optional queue lifecycle
+
+- Status: incomplete
+- Scope: Remove queue-specific creation/cleanup work from SQL-only Python use while preserving explicitly opened queue/stream handle registration and close/error ownership. Issues: #269.
+- Work performed: not started.
+- Verification evidence: required — SQL-only and queue-use allocation/call-path observations plus lifecycle/transaction/busy-close/error/reopen regression; no broad zero-cost claim.
+- Remaining risk: Lazy registration must not leak live handles or change close failure semantics.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 12
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 10–12; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 13 — Implement transaction-private accumulated changes
+
+- Status: incomplete
+- Scope: Accumulate changes across statements before physical completion; retain read-your-writes, statement errors, rollback, DELETE/reuse, fallback and final commit behavior within bounded ownership. Issues: #262.
+- Work performed: not started.
+- Verification evidence: required — Result/reopen/differential and OOM/cancel/rollback tests, data/index/catalog consistency, requested/peak private allocation and write-path observations.
+- Remaining risk: Deferring completion can alter error timing or expose stale indexes and unbounded state.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 14 — Build and preregister common-cost comparisons
+
+- Status: incomplete
+- Scope: Implement the E0–E3/common lifecycle collector and freeze inputs, order, correctness, resource accounting, sample/stop/adoption rules before collection. Include cache/workspace four conditions, hit/miss/nonrepeating SQL, same UPDATE diagnostics and optional/conditional paths. Issues: #239, #261, #262, #268, #269.
+- Work performed: not started.
+- Verification evidence: required — Collector positive/negative controls, deterministic regeneration, pinned baseline/tool/config/input hashes and plan ancestor; OFF outcomes separate from ON attribution.
+- Remaining risk: A collector that counts SQL only or misses cleanup cannot answer the workload question.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 15 — Collect and judge cache and workspace effects
+
+- Status: incomplete
+- Scope: Run the preregistered E1/E2 paired blocks on isolated data, retaining failed/negative samples and complete finalization cost. Select the next single common-cost hypothesis from actual UPDATE evidence. Issues: #239, #261, #262.
+- Work performed: not started.
+- Verification evidence: required — Raw hashes and repeatable aggregates, matched results/reopen, paired four-condition analysis, throughput/tails/CPU/memory/write/cleanup and uncertainty.
+- Remaining risk: A local speedup without end-to-end evidence does not justify adoption; required unmet behavior needs repair.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 15
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 13–15; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 16 — Implement conditional queue updates
+
+- Status: incomplete
+- Scope: Use supported general SQL or add the smallest justified general SQL facility to reduce normal claim/ACK execution boundaries. Preserve minimum eligible ID, expiry, fence, duplicate/stale ACK, result ownership and failure readback. Issues: #268.
+- Work performed: not started.
+- Verification evidence: required — Normal/conflict/timeout/cancel/OOM/stale/duplicate/FAILED/reopen differential regression; actual candidate scan/binding/copy/I/O diagnosis.
+- Remaining risk: Fewer statements can still change candidate selection or increase scans; no implicit SKIP LOCKED or callback replay.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 17 — Measure conditional SQL and optional lifecycle
+
+- Status: incomplete
+- Scope: Collect the Task 14 preregistered E3/lifecycle conditions after matching its contract to Task 16; pin current binaries before collection without changing criteria from outcomes. Issues: #268, #269, #239.
+- Work performed: not started.
+- Verification evidence: required — Equal outputs/guards, SQL-only and feature-used creation/execution/close costs, OFF end-to-end paired results and ON diagnostic limits, negative-result disposition.
+- Remaining risk: SQL count and absent queue table do not establish end-to-end benefit or zero unused cost.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 18 — Build and preregister pending-query measurements
+
+- Status: incomplete
+- Scope: Implement Q1–Q5 collector with fixed persist-queue version/serializer, equal requested result/state/order, metadata/payload pages, sequential consumption, full accumulation and failure/lifetime axes. Issues: #265.
+- Work performed: not started.
+- Verification evidence: required — Positive and corrupt-result controls; pinned page/backlog/payload/environment; fresh-worker baseline/peak/retained/released memory and native/Python/RSS/read/copy accounting.
+- Remaining risk: Unsupported pending filters or assumed snapshot semantics can invalidate equivalence.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 18
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 16–18; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 19 — Measure pending queries and the real caller boundary
+
+- Status: incomplete
+- Scope: Collect Q1–Q5 and audit the real consumer read-only. Compare bounded result consumption with full materialization, including caller accumulation, mixed-state and page-transition failures. Issues: #265.
+- Work performed: not started.
+- Verification evidence: required — Same decoded results and serializer, original workaround/unsupported scenarios, all raw/failed samples, memory/read/copy/deserialization results and reproducible report.
+- Remaining risk: Do not claim the original problem solved if the caller still retains all payloads; add a repository-side repair if required, never edit the consumer without authorization.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 20 — Prepare the missing primary-key scale validation
+
+- Status: incomplete
+- Scope: Audit existing #158/#137 raw inputs and collector compatibility; reuse valid evidence and prepare the same-input 1k/10k/100k three-repeat scale/scan/latency collector without replacing old failures. Issues: #158.
+- Work performed: not started.
+- Verification evidence: required — Exact fixture and input/binary/environment/stop-rule registration, current PK path/scan counter checks, positive/negative controls; no unrelated campaign rerun.
+- Remaining risk: Changing fixture loading or stop limits silently would no longer complete the original criterion.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 21 — Execute the retained primary-key scale validation
+
+- Status: incomplete
+- Scope: Collect the missing same-condition 1k/10k/100k three repeats, scan counts and p50/p95/p99 against the compatible SQLite input; preserve partial loads/timeouts separately. Issues: #158.
+- Work performed: not started.
+- Verification evidence: required — Full requested row counts, per-repeat correctness/reopen/scan and percentile evidence, raw hashes/aggregation; distinguish original historical and new baseline results.
+- Remaining risk: If the required scale still fails, diagnose and queue a justified repair; timeout documentation alone is not goal completion.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 21
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 19–21; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 22 — Specify WAL and version recovery contracts
+
+- Status: incomplete
+- Scope: Resolve G1/G2/G4/G6 record/version/page layout, commit visibility, logical abort versus structural changes, LSN/full-page/checksum, checkpoint/GC and owner fencing for isolated candidate files. Fix result-query/admission bounds, the same logical payload/consumer-state layout for E4 and failure oracles. Issues: #238, #257, #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Complete state/ownership/error/restart matrix and format invariants; explicit SNAPSHOT preservation, no uncommitted writeback without proof, local test format separate from existing DB.
+- Remaining risk: Redo alone cannot undo an uncommitted in-place overwrite; recovery/shared-state gaps block implementation.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 23 — Implement WAL records and durable commit recovery
+
+- Status: incomplete
+- Scope: Implement the candidate's log framing/checksum/order, transaction commit/outcome markers, append/barrier and restart scan without SQL/callback replay. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Truncate/short/torn/reordered I/O, checksum, crash before/after barrier and UNKNOWN outcome tests on isolated files; acknowledged commit preservation.
+- Remaining risk: A successful append is not a durable commit; keep old backend and files intact.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 24 — Implement bounded buffering and checkpoint ordering
+
+- Status: incomplete
+- Scope: Implement frame ownership/eviction, page LSN WAL-before-data, full-page torn recovery, bounded writeback and checkpoint/log reuse under the Task 22 version contract. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Budget/OOM/disk-full/sync-failure/dirty-eviction/checkpoint-restart tests, pinned-frame pressure and exact WAL/data order observations.
+- Remaining risk: Eviction or checkpoint must not publish unsafe versions or reclaim required redo.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 24
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 22–24; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 25 — Implement MVCC visibility and abort recovery
+
+- Status: incomplete
+- Scope: Implement row/transaction version visibility, fixed snapshots, logical abort, index/structural recovery and old-version GC, integrated with candidate WAL/buffering. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Read-own/committed/uncommitted/aborted/restarted versions, index split/allocation abort, long-reader pin/GC/OOM and semantic differential tests.
+- Remaining risk: Logical abort, structural split and reader-visible versions need distinct recovery rules.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 26 — Implement early key and range coordination
+
+- Status: incomplete
+- Scope: Implement serializable early key/range/table/schema coordination, short physical latches, bounded waits/deadlock handling and transaction-end release in the candidates. Issues: #238, #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Hot-row versus independent keys, unique/range/predicate/schema conflicts, deadlock/cancel/timeout/fairness and stale SNAPSHOT/result-preservation tests.
+- Remaining risk: Conservative table locks can serialize independent work; no silent retry of observable results.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 27 — Integrate same-process independent writer candidates
+
+- Status: incomplete
+- Scope: Connect SQL/ACK transaction execution and the E4 shared-payload/small-state fixture to WAL/MVCC/buffer/lock candidate modules, using explicit isolated candidate mode. Preserve current backend defaults. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Open A while independent B executes/commits, same-leaf different rows, same-row/range/append/cursor conflict and correctness/failure checks with actual overlap traces.
+- Remaining risk: Multiple request entry points are not independent writers; no stale whole-page overwrite.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 27
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 25–27; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 28 — Implement and verify cross-process ownership
+
+- Status: incomplete
+- Scope: Implement shared frame/transaction/allocation control, recovery ownership and owner-death fencing for same-host direct-file writers; preserve existing supported multiprocess single-writer behavior. Issues: #238, #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Actual separate processes, stale owner/ABA, simultaneous allocation/rollback, death during publish/checkpoint, recovery exclusion and durable result tests.
+- Remaining risk: Process-local mutexes or caches cannot establish cross-process coherence.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 29 — Implement the matched buffered-COW comparator
+
+- Status: incomplete
+- Scope: Build the isolated comparator with the same cache/workspace/payload/group policy, early coordination, latest shared-leaf/root merge and protected snapshot/fallback reclamation. Issues: #266.
+- Work performed: not started.
+- Verification evidence: required — Independent/same-leaf/hot-row changes, allocation/rollback/UNKNOWN/owner death, pin/reuse/restart correctness and bounded-resource checks.
+- Remaining risk: Comparing unoptimized current COW with improved WAL would bias attribution.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 30 — Execute both candidates' correctness and fault gates
+
+- Status: incomplete
+- Scope: Run the 15 design scenarios and E0/E5/E6 safety cases on both real candidate paths, including grouped outcomes, ranges, long readers, cancellation, result loss and restart. Issues: #238, #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Deterministic positive/negative controls and actual I/O/process failure traces, independent final-state oracle, no lost/duplicate/partial acknowledged updates, relevant sanitizers/differential tests.
+- Remaining risk: Any mandatory gate failure needs repair before formal performance collection; no physical power-loss claim beyond actual apparatus.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 30
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 28–30; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 31 — Build and preregister backend total-cost collection
+
+- Status: incomplete
+- Scope: Implement/freeze E4–E6 matched layout/workload, arrival/group policy, independent writers/readers, budgets, fairness/tails and maintenance-inclusive collection using Task 30-safe binaries. Isolate payload/state-layout effects from publication effects. Issues: #266.
+- Work performed: not started.
+- Verification evidence: required — Collector controls, identical guarantees/common improvements/payload layout, plan ancestor, pinned sources/config/inputs and predeclared stop/adoption/statistical rules.
+- Remaining risk: Incomplete cleanup, full-page images, GC, restore or shared-memory accounting would bias the comparison.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 32 — Collect backend costs and choose the integration candidate
+
+- Status: incomplete
+- Scope: Collect paired E4–E6 layout, steady lifecycle and reader/writer pressure including COW merge/rewrite/reclamation and WAL redo/writeback/checkpoint/GC/restart. Judge the current WAL recommendation against its falsifiers. Issues: #266.
+- Work performed: not started.
+- Verification evidence: required — Raw hashes/regeneration, completed/debt boundaries, throughput/tails/fairness/CPU/whole-app memory/write/space/recovery and adverse conditions; source-backed retention/withdrawal rationale.
+- Remaining risk: Both unsuitable or incomparable is not product success; repair the causal problem without weakening required writers/safety.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 33 — Integrate the validated backend with existing SQL and ACK
+
+- Status: incomplete
+- Scope: Integrate the selected candidate into a reviewable product path after Task 32. Preserve existing files/package/ABI and defaults unless a separately justified compatibility decision authorizes change; no live cutover. Issues: #263.
+- Work performed: not started.
+- Verification evidence: required — Full supported SQL/ACK/transaction/C/Python regression, current-file compatibility/rejection/export-import/backup-restore tests on copies, independent writer and failure evidence.
+- Remaining risk: A comparison prototype or code-only rollback does not establish product compatibility or data restoration.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 33
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 31–33; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 34 — Fix the consumer-stream contract
+
+- Status: incomplete
+- Scope: Specify subject/order/replay, consumer/group cursor, holes, lease/fence/duplicate ACK, retry/DLQ/redrive, bounded retention/backpressure and SQL coupling in the existing design using G2–G4/G6. Issues: #257, #264.
+- Work performed: not started.
+- Verification evidence: required — Concrete input/result/state/ownership/failure and pressure matrix, single logical payload rules, reversible test defaults with reasons and falsifiers.
+- Remaining risk: No implicit consumer expiry, acknowledged data deletion or external exactly-once guarantee.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 35 — Implement stream append and independent replay
+
+- Status: incomplete
+- Scope: Implement the shared logical payload log, group registration/cursors, append/filter/replay and SQL/event transaction coupling on the selected validated backend. Issues: #264.
+- Work performed: not started.
+- Verification evidence: required — Independent group delivery and within-group distribution, sequence holes/order/cursor/restart, atomic SQL+event/no-event rollback and SQL/ACK-only regressions.
+- Remaining risk: Sharing an event payload must not let one group's progress remove another group's required replay.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 36 — Implement consumer lifecycle and bounded retention
+
+- Status: incomplete
+- Scope: Implement claim/lease/fence/ACK holes, retry/failure isolation/DLQ/redrive and retention/pressure with ownership-safe cleanup and restart. Issues: #264.
+- Work performed: not started.
+- Verification evidence: required — Stale/duplicate/out-of-order ACK, lease reacquisition, dead consumer, slow/long reader, quotas/disk/OOM and interrupted cleanup/reopen tests; same-transaction completion and UNKNOWN.
+- Remaining risk: Retention pressure must use the chosen refusal/wait policy; no unapproved silent loss.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 36
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 34–36; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 37 — Build and preregister product-alternative comparisons
+
+- Status: incomplete
+- Scope: Prepare actual version-pinned SQLite state-machine and local NATS R=1 file alternatives, capabilities and E7 collector for messaging versus external-SQL coupling. Issues: #267.
+- Work performed: not started.
+- Verification evidence: required — Matched filter/fanout/lease/fence/retry/replay/retention/outcome controls, sync modes separated, process/client/relay cost included, safe local synthetic fixtures and adoption criteria.
+- Remaining risk: External SQL plus broker is not a single DB transaction; missing capabilities stay explicit.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 38 — Collect whole-app alternative and integration costs
+
+- Status: incomplete
+- Scope: Collect E7 results plus installation/config/integration observations, finalization/retention/recovery and actual whole-app resources against fixed capabilities. Issues: #267.
+- Work performed: not started.
+- Verification evidence: required — Reproducible raw/results, failure and mismatch samples, CPU/RSS/tails/storage/cleanup/restore, observed effort rather than code-line time estimates, each product hypothesis judged.
+- Remaining risk: No market demand, universal speed, development-time or physical durability claim from a narrow synthetic comparison.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 39 — Verify the integrated product and reconcile final evidence
+
+- Status: incomplete
+- Scope: Run integrated SQL/ACK/stream/native/Python, memory/lifecycle, concurrency/recovery and existing-file compatibility regression on the selected product; reconcile existing design/report/issues with actual evidence. Issues: #257, #260, #238, #239, #261, #262, #263, #264, #265, #266, #267, #268, #269, #158.
+- Work performed: not started.
+- Verification evidence: required — Requirement-by-requirement source/tests/measurement mapping, all mandatory repairs closed, original data and private/public boundaries preserved; no closure from document checks or task count alone.
+- Remaining risk: Missing required behavior/measurement inserts repair tasks before final review; no implicit release or live migration.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 39
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 37–39; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
 - Commit status: no checkpoint commit attempted.
 
 ## Final review after scope repair

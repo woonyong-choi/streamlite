@@ -340,13 +340,20 @@ WAL을 새 엔진의 기본 방향으로 권고하더라도 제품 채택은 이
 |---|---|---|
 | 준비 결과 cache | [#261](https://github.com/woonyong-choi/totedb/issues/261) | #239의 cache 선택과 G1–G3, binding/schema·hit/miss·예산·비계측 업무 결과 |
 | transaction 변경 누적 | [#262](https://github.com/woonyong-choi/totedb/issues/262) | #239의 공통 비용 선택과 G1–G3, cache/workspace 교차·오류/rollback·삭제/회수·peak memory |
-| 실제 독립 writer | [#263](https://github.com/woonyong-choi/totedb/issues/263) | #238·#257의 계약과 #266의 저장 방식 비교, 프로세스별 실행 중첩·shared leaf·격리·UNKNOWN·회수·기존 DB/이관 복구 |
+| 실제 독립 writer | [#263](https://github.com/woonyong-choi/totedb/issues/263) | #238·#257의 계약과 #266 뒤 제품 통합, 비교용 원형의 프로세스별 실행 중첩·shared leaf·격리·UNKNOWN·회수 검증은 비교 전에 수행 |
 | 소비자별 stream | [#264](https://github.com/woonyong-choi/totedb/issues/264) | #257의 전달·보존·실패 계약, fanout·lease/fence·replay·redrive·같은 DB 거래·형식 변경 시 이관/복원 |
 | pending 조회 메모리 | [#265](https://github.com/woonyong-choi/totedb/issues/265) | G5와 Q1–Q5, 같은 소비 결과·실제 serializer·소유권·caller 축적·backlog별 전체 메모리와 읽기량 |
 | buffered COW와 WAL/MVCC 총비용 | [#266](https://github.com/woonyong-choi/totedb/issues/266) | #238·#257 계약과 #261·#262 공통 개선, 비교용 prototype의 안전성·정리/회수·checkpoint/GC·실패 포함 판정 |
 | SQLite·로컬 JetStream 제품 대안 | [#267](https://github.com/woonyong-choi/totedb/issues/267) | #263·#264의 필요한 구현/복구와 G5, 전달 의미·전체 앱 비용·외부 SQL 경계·같은 보장의 채택 조건 |
 | 조건부 claim·ACK | [#268](https://github.com/woonyong-choi/totedb/issues/268) | #239·#257의 SQL/결과 선택, 최소 후보·expiry·stale/중복 ACK·실패 readback·실제 scan/쓰기/복사 비용 |
 | 미사용 큐 초기화·종료 비용 | [#269](https://github.com/woonyong-choi/totedb/issues/269) | #239·#257의 선택형 수명 계약, SQL 단독 전용 관리 비용과 명시적 기능 사용의 등록/해제 보존 |
+| 기존 기본키 조회의 규모 검증 | [#158](https://github.com/woonyong-choi/totedb/issues/158) | 기존 구현·실패 표본을 보존하고 1천·1만·10만 행의 스캔 수와 p50/p95/p99를 같은 조건으로 3회 측정, 시간 제한의 부분 적재를 요청 규모 완료로 세지 않는 조건 |
+
+공통 실행 계약을 먼저 구체화한 뒤 cache·workspace·선택형 수명·조건부 SQL을 각각 구현하고 검증한다. 수집기와 사전 계획을 고정한 뒤 대응 실측으로 각 비용을 판정한다. pending 조회와 기존 기본키 규모 검증은 별도 입력·결과로 남긴다. 앞선 보고서나 이슈 연결만으로 이 실측을 완료하지 않는다.
+
+저장 방식 비교에는 먼저 G6의 record·version·복구 계약과 안전한 비교용 구현이 필요하다. WAL·buffer pool·MVCC·조기 잠금·다중 프로세스 제어를 단계별로 구현하고, buffered COW에도 같은 충돌 정책과 공통 개선을 적용한다. 두 후보의 정확성·실패 검증 뒤 총비용을 수집하며, 그 결과로 제품에 통합할 후보를 판정한다. #263의 제품 통합을 원형 구현의 선행으로 요구하지 않는다. stream은 전달·보존 계약, 기능 구현과 중단/압력 시험을 거친 뒤 제품 대안과 비교한다.
+
+각 단계는 필요한 계약, 코드와 실제 검증 근거로 닫는다. 가역적인 시험용 선택은 이유와 반증 조건을 적어 진행하며 전체 설계의 공개 통합을 기다리는 무기한 보류로 바꾸지 않는다. correctness나 필수 요구가 미충족이면 다음 안전 단계 전에 해당 결함의 수리 과업을 넣는다. 부적합한 후보의 제외는 근거로 남기되, 제품의 필수 요구까지 완료한 것으로 처리하지 않는다.
 
 [다중 쓰기 안전성 #238](https://github.com/woonyong-choi/totedb/issues/238)과 [공통 비용 개선 #239](https://github.com/woonyong-choi/totedb/issues/239)는 기존 결정 범위를 재사용한다. COW/WAL 비교용 prototype과 선택한 backend의 제품 구현은 구분한다. [표시명 변경 #258](https://github.com/woonyong-choi/totedb/issues/258)의 범위는 기존 패키지·import·ABI·파일 유지다. 후속 구현도 이를 보존하고, 형식 변경이 필요하면 별도 계약과 이관·mixed-version 거절·복원 검사를 거친다. 이 연결로 rename·기존 파일 cutover·운영 배포 권한을 넓히지 않는다.
 
