@@ -199,6 +199,7 @@ COW 교체는 아직 결정하지 않았다. 기존 문장 WAL 제거와 H2/H3 �
 | 부하 | 작업과 입력 | 분리해 확인할 내용 |
 |---|---|---|
 | SQL 반복·배치 | 같은 key 집합의 UPDATE, 개별 commit과 32개 묶음, SQL만 사용 | cache·workspace 효과, 큐 미사용 호출·할당·I/O, binding과 schema 변경 |
+| pending 목록 조회 | backlog와 payload를 늘리고 반환 page·필드를 고정, metadata·본문 반환과 소비 방식 분리 | 전체 payload 목록과 bounded 조회의 실제 메모리·복사·역직렬화, 호출자의 결과 축적과 해제 |
 | ACK 수명주기 | PUT→CLAIM→ACK→DELETE, backlog 목표 1,024개 | 성공한 완료 ID·payload·fence, terminal 보존·purge 비용과 페이지 재사용 |
 | 독립·충돌 쓰기 | 다른 table, 같은 leaf의 다른 행, 같은 행, unique/range, 인접 append·공유 cursor | leaf는 실제 페이지 배치로 확인, 무작위 key를 독립 물리 페이지로 가정하지 않는 조건 |
 | stream·실패 처리 | payload 원본과 그룹별 소비, 역순 ACK·재획득·실패 격리·redrive·replay | 이벤트 완료와 그룹별 delivery 완료를 따로 계산, ACK holes와 느린 소비자 pin |
@@ -211,6 +212,34 @@ COW 교체는 아직 결정하지 않았다. 기존 문장 WAL 제거와 H2/H3 �
 최종 성능은 [Makefile](../../Makefile)의 `BENCHMARK=0`에 해당하는 비계측 빌드로 비교한다. 요청 단계·lock·syscall 진단은 별도 계측 빌드와 별도 표본으로 수집하고, 계측 ON/OFF 비용을 확인한다. 진단 CPU·wall 시간이나 `pwrite` 성공 bytes를 비계측 업무 성능·물리 장치 쓰기량으로 대신하지 않는다. 기존 [DB 수집기](../../bench/local_db_compare.py)는 현재 성공 경로와 재개방 비교의 근거이며 E5–E7의 수집기가 구현됐다는 근거가 아니다.
 
 steady 구간의 cleanup·checkpoint·GC는 실제 실행한 CPU·I/O·지연에 포함한다. 신규 입력을 멈춘 뒤 남은 작업·정리 debt를 같은 종료 조건까지 처리한 시간도 별도로 기록한다. 활성 구간 처리량과 `완료량 / (활성 시간 + 추가 drain·필수 정리 시간)`을 함께 내고 겹친 정리 시간을 두 번 더하지 않는다. 물리 파일 축소와 재사용 가능 공간은 다르므로 각 backend에 파일 길이 0을 요구하지 않는다. 정리가 제한 시간 안에 끝나지 않으면 잔여 bytes·pin·debt와 timeout을 남기고 정리 비용을 0으로 계산하지 않는다.
+
+### pending 목록의 메모리와 호출 경계
+
+작업 목록의 ID·상태만 확인하는데 모든 본문까지 복원하면, 필요한 화면 결과는 작아도 backlog와 payload에 따라 메모리 비용이 커질 수 있다. 이는 [개발 선택 D51](../development-report.md#d51-제한된-sql-cache-목표와-아직-충족하지-못한-요구)의 아직 검증하지 못한 원래 문제다. 쓰기 처리량이나 일정 backlog의 삭제 반복과 별도로, 조회할 결과를 고정한 메모리 비교가 필요하다.
+
+현재 [호환 계층](../../python/totedb/persistqueue_compat.py)의 `queue()`는 `iter_items(..., with_payload=True)` 전체를 list로 모으고 `_row`에서 각 payload를 역직렬화한다. 내부 페이지 크기가 100이어도 반환 list 전체를 유지한다. [Python Queue](../../python/totedb/queue.py)의 `list_items(after_id, limit, with_payload=False)`는 한 page를 반환하고 `iter_items`는 page를 차례로 제공한다. `list(iter_items(...))`나 호출자의 별도 저장 목록은 다시 전체 결과를 유지할 수 있다. 이 소스 대조는 실제 소비 프로젝트의 교체나 메모리 절감 실측이 아니다.
+
+[native 목록 코드](../../src/queue/ack_queue.c)의 `ackq_list`는 metadata 후보를 제한하고 `fill_item`에서 `with_payload`일 때 반환할 본문을 얻는다. [C ABI](../../src/capi/totedb.c)의 `tote_queue_list`는 payload 포인터 소유권을 넘기고 Python `_to_info`는 필요한 경우 `ctypes.string_at`으로 Python bytes를 만든다. Python `list_items`는 `finally`에서 C payload를 해제하지만 반환한 Python 객체는 호출자가 계속 소유한다. page 전환의 겹친 수명, metadata·결과·cache·schema 메모리까지 관측해야 하며 payload의 논리 저장 1개를 메모리 복사 0개로 해석하지 않는다.
+
+먼저 고정된 사용자 과제를 정한다. 한 page의 metadata만 필요한 과제, 본문이 포함된 한 page, 모든 항목을 하나씩 처리하는 과제, 전체 복원 목록을 유지하는 과제는 서로 다른 결과다. 공통 필드·시간 단위·직렬화·상태·ID 순서를 맞추고 누락·중복·본문 checksum을 확인한다. metadata 과제에서 호환 전체 목록을 읽은 뒤 같은 필드와 앞 page만 남기는 기존 경로의 내부 비용은 측정에 포함한다. 이때 최종 소비 결과가 같다는 사실과 API 반환 형태가 다르다는 사실을 함께 기록한다. 서로 다른 과제의 지연·메모리 비를 같은 우위로 계산하지 않는다.
+
+| 조회 조건 | 기준과 후보의 호출·소비 경계 | 확인할 결과와 비용 |
+|---|---|---|
+| Q1 한 page metadata | 호환 `queue()` 뒤 같은 metadata·앞 page만 선택, native `list_items(..., with_payload=False)` | 같은 ID·상태·필드, page 결과 유지 중 peak memory·읽은/반환한 bytes·불필요한 본문 역직렬화 |
+| Q2 한 page 본문 | 호환 `queue()` 뒤 앞 page 선택, native `list_items(..., with_payload=True)` 뒤 동일 serializer로 복원 | 동일 본문·필드와 실제 복사/역직렬화 비용, C payload와 Python 결과가 겹치는 peak |
+| Q3 전체 순차 소비 | 기준 전체 목록과 후보의 `iter_items(..., with_payload=True)`·동일 역직렬화 결과를 하나씩 소비, 소비자가 별도 결과를 축적하지 않는 조건 | 전체 ID·상태·본문의 동일 digest, 마지막까지 걸린 시간과 중간 peak·page 교체·마지막 참조 해제 |
+| Q4 전체 목록 유지 | 호환 list와 native `iter_items(..., with_payload=True)`·동일 역직렬화 결과의 명시적 list 축적 | 전체 결과가 같은 경우의 메모리, iterator 사용만으로 전체 결과 비용이 사라지지 않는 조건 |
+| Q5 실패·수명·상태 | page 경계·빈 결과·소비 중단·OOM·payload/page 한도·혼합 상태·조회 중 변경 | partial 결과·예외·C 해제와 Python 보유 객체, DB 상태 불변 또는 명시한 실패/일관성 계약 |
+
+조회 fixture의 backlog는 128·1,024·10,000개, 본문은 256B·4,096B, 요청 page는 16·100개를 시작 가정으로 둔다. fixture 생성은 별도 단계에서 끝내고 조회 worker가 입력 본문 전체를 미리 들고 시작하지 않게 한다. 같은 DB 내용·serializer·cache 설정에서 backlog·본문·page 중 한 축씩 바꾼다. 결과 객체를 계속 유지할지, 한 page 또는 한 항목 처리 뒤 참조를 놓을지도 조건으로 고정한다. 이 수치는 수집 규모이며 승인된 메모리 상한이나 절감률이 아니다.
+
+첫 fixture는 모두 READY로 만들어 같은 대상 목록을 비교한다. 현재 `list_items`의 조건은 `id > after_id`이며 pending 상태 필터 인자는 없다. READY·LEASED·ACKED·FAILED 혼합에서는 원하는 pending 상태의 정의, 호출자 필터링과 실제로 훑은 행 수를 별도로 기록한다. 앞 page의 일부만 필터링한 결과를 필요한 pending page 전체로 바꾸어 부르지 않는다. 여러 page 사이의 변경·삭제는 고정 fixture와 별도 조건이며 iterator가 전체 snapshot을 보장한다고 가정하지 않는다.
+
+[현재 목록 계약](../../include/queue/ack_queue.h)의 page 개수 상한과 건당 payload 상한을 전체 bytes 상한과 구분한다. Python의 상한 초과 page 제한과 C의 거절도 같은 입력 의미라고 가정하지 않고 실제 경로대로 확인한다. `with_payload=False`는 반환 본문과 그 복사를 생략하는 선택이지 저장 엔진의 scan·행 해석·I/O가 0이라는 증거가 아니다. 전체 scan이 필요하면 그 읽기량·시간도 포함한다. 큰 payload·OOM·중간 소비 중단에서 잘못된 일부 성공이나 해제 후 참조가 없는지 검사하고, 실패한 DB·원본 오류를 보존한다.
+
+조회 전 열린 DB의 상주 메모리, 조회 중 peak, 반환 객체를 유지한 값, 참조를 놓은 뒤 값을 각각 기록한다. 엔진 요청 bytes·Python 객체/역직렬화 bytes·프로세스 RSS·읽은 bytes·payload 복사량·반환 bytes·실제 행 수와 page 수를 분리한다. 객체·ledger 해제와 RSS 회수를 같은 결과로 판정하지 않는다. RSS의 상속 고수위와 관측 주기 때문에 peak를 놓칠 수 있으면 측정 한계를 밝히고 0 또는 절감으로 판정하지 않는다. 복사·할당 계측은 별도 진단 표본으로 다루며 반환 개수만으로 엔진 전체 메모리나 장치 I/O를 추정하지 않는다.
+
+G5에는 조회별 필요한 필드·상태·결과 수명, backlog/page/payload 축과 전체 메모리 예산·허용 증가폭을 수집 전에 고정한다. 같은 Q1/Q2 결과와 page를 유지한 채 backlog만 늘렸을 때 엔진·binding·소비자 전체 비용이 어떻게 변하는지가 bounded 조회 가설의 반증 자료다. Q3의 전체 읽기 시간과 Q4의 전체 결과 보관 비용까지 backlog와 무관하다고 요구하지 않는다. 고정한 예산을 넘거나 호출자가 전체 본문을 축적하면 그 경로는 원래 메모리 문제를 해결했다고 판정하지 않는다. 실제 persist-queue와의 비교는 고정 버전의 공개 API·serializer·같은 조회 과제를 별도 기준군으로 검사한다. 현재 호환 계층의 정적 분석을 그 라이브러리의 실측이나 원 소비 프로젝트의 교체 효과로 바꾸지 않는다. 실제 소비 API의 변경·실측은 별도 후속 검증이다.
 
 ### 동등한 보장과 관측값
 
@@ -266,6 +295,7 @@ G5에는 부하별 최소 완료량 `Q_min`, p99 상한 `L99_max`, writer 최대
 | SQL·ACK·stream을 독립 또는 같은 DB 거래로 결합한다. | SQL 단독·ACK 단독·stream 단독·결합의 결과와 미사용 기능 호출·할당·I/O 대조 |
 | 독립 transaction이 실제로 겹쳐 진행한다. | 다른 table·같은 leaf의 다른 행·같은 행·unique/range·append·공유 cursor의 진행과 충돌 검사 |
 | 입력·결과·메모리 소유권과 자원 한도를 유지한다. | 반복 binding·schema 변경·cache hit/miss·eviction·OOM·spill·긴 reader·중단 writer 검사 |
+| pending 목록에서 필요한 결과와 조회 메모리를 통제한다. | Q1–Q5의 backlog/page/payload·metadata/본문·순차 소비/전체 축적·해제 전후와 실제 호출 경로 대조 |
 | claim·ACK·재생·실패 격리가 소비자별로 정확하다. | fanout·out-of-order ACK·lease 재획득·stale fence·retry·DLQ·redrive·sequence hole 검사 |
 | 성공 응답과 저장·복구 결과가 일치한다. | 게시 전후 종료·짧은/torn/reordered write·sync 실패·disk full·UNKNOWN 재조회·이관/복원 검사 |
 | 빈번한 갱신·삭제에서 총비용을 줄인다. | PUT/CLAIM/ACK/DELETE steady cycles, cleanup·checkpoint·회수 포함 CPU·지연·쓰기량·파일 성장 측정 |
@@ -290,6 +320,6 @@ G5에는 부하별 최소 완료량 `Q_min`, p99 상한 `L99_max`, writer 최대
 - G2 불확정 결과: 영속 요청 ID·결과 조회 권고와 업무 key 대조 방식의 선택, 재시작·만료·동일 ID의 다른 내용·응답 본문 보존 범위의 확정. 기록 비용과 필요한 재전송 기간이 선택 기준 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G3 자원·보존: payload·메모리·pin·spill·in-flight·ACK holes·로그·실패/결과 기록의 bytes와 개수 한도, 유한 대기 시간, replay·멱등 보존 기간의 확정. 한도 도달 시 publish 거절 권고와 명시적 consumer expiry·데이터 손실 정책 비교 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G4 프로세스·이관: 같은 프로세스 실험과 같은 호스트 직접 file writer의 별도 지원 게이트, 복구 소유권·프로세스 간 예약/차단·형식 전환·역이관 검증과 구현 분할. 기존 다중 프로세스의 안전한 단일 writer 지원을 조용히 축소하지 않는 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G5 비교 실행: E0–E7의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
+- G5 비교 실행: E0–E7·조회 Q1–Q5의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·조회 결과 수명·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - 느린 소비자·보존 한도 충돌, 지원 subject·replay·DLQ/redrive의 정확한 API 계약 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - 표시명 이후 패키지·import·ABI·경로·파일 형식의 별도 호환 전환과 상표 등 권리 확인 ([#258](https://github.com/woonyong-choi/totedb/issues/258))
