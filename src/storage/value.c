@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "storage/value.h"
+#include "value_internal.h"
 
 #define NUMBER_TEXT_BYTES 40u
 #define TWO_POW_63 9223372036854775808.0
@@ -65,6 +66,11 @@ static value_status_t check_view(const value_view_t *view)
         default:
             return VALUE_INVALID;
     }
+}
+
+value_status_t value_validate(const value_view_t *view)
+{
+    return check_view(view);
 }
 
 void value_clear(value_t *value)

@@ -15,6 +15,7 @@
 #include <string.h>
 #include "sql/database.h"
 #include "database_internal.h"
+#include "database_cache.h"
 #include "sql/sql_eval.h"
 #include "sql/sql_statement.h"
 #include "storage/catalog.h"
@@ -36,6 +37,19 @@ typedef struct {
     size_t cap;
 } page_list_t;
 
+typedef struct {
+    lexed_t *lexed;
+    sqlstmt_t *statement;
+    size_t lex_peak;
+    size_t parse_peak;
+} prepared_statement_t;
+
+database_exec_status_t database_prepare(database_t *db, const database_exec_options_t *options,
+                                        const uint8_t *sql, size_t size, const lexer_binding_t *binding,
+                                        prepared_statement_t *prepared);
+void database_prepared_clear(database_t *db, prepared_statement_t *prepared);
+void database_prepared_cache(database_t *db, const uint8_t *sql, size_t size, const prepared_statement_t *prepared);
+
 /* 쓰기 작업의 상태. database_internal.h의 설명을 따른다 */
 typedef struct {
     bool active;
@@ -52,6 +66,8 @@ struct database {
     catalog_t *catalog;   /* 게시된 카탈로그. 문장이 성공했을 때만 교체한다 */
     bool writable;
     bool poisoned;
+    int cache_mode;
+    database_cache_t *cache;
     /* 상주 메모리 회계(attach된 경우) */
     mem_ledger_t resident;
     size_t res_fixed;

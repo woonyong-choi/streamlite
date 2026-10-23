@@ -11,6 +11,7 @@
 #include "sql/database.h"
 #include "sql/result.h"
 #include "storage/page_file.h"
+#include "../src/sql/database_cache.h"
 
 /*
  * database의 실패 보존·불확정 결과 검사. 모든 문장에 대해 I/O 실패(pread·pwrite·fsync)와
@@ -20,7 +21,7 @@
  *   - 핸들이 poison됐으면 이후 문장은 모두 오류이고, 다시 열면 문장 전 또는 후 상태다(어느 쪽인지는 불확정).
  *   - 제어 쓰기 전의 fsync 실패는 반드시 문장 전 상태다.
  *   - 제어 쓰기 뒤의 fsync 실패는 오류로 응답하지만 다시 열면 새 상태가 보인다(불확정이라 성공이라 하지 않는다).
- * database.c·heap_store.c는 -Dmalloc=db_test_malloc -Dcalloc=db_test_calloc -Drealloc=db_test_realloc 으로 빌드한다.
+ * 실행기·parser·값의 할당과 해제를 같은 주입기로 빌드한다.
  */
 
 #define DIR_NAME "build/test_database_fault_dir"
@@ -45,8 +46,8 @@ static long g_alloc_fail_at, g_alloc_calls;
 static int alloc_fails(void) { return g_alloc_fail_at != 0 && ++g_alloc_calls == g_alloc_fail_at; }
 
 /*
- * 소유권 검사: 치환한 database.c·heap_store.c가 받은 할당만 등록부에 올리고, 해제할 때 내린다.
- * 그 두 모듈 밖에서 만든 할당(catalog·result·lexer·page_file 등)은 등록부에 없으므로 이 검사로는
+ * 소유권 검사: 치환한 실행기·parser·값·heap_store가 받은 할당만 등록부에 올리고, 해제할 때 내린다.
+ * 그 밖에서 만든 할당(catalog·result·lexer·page_file 등)은 등록부에 없으므로 이 검사로는
  * 보지 못한다. 해제된 포인터는 quarantine_flush 전까지 실제로 free하지 않고 보관해, 같은 주소가 다른
  * 모듈의 할당으로 재사용되어 생기는 오탐 없이 이중 해제를 센다. 이 검사는 실행한 경로에 대한 것이며
  * 프로그램 전체에 누수가 없다는 증거가 아니다.
@@ -456,6 +457,7 @@ static void test_statement(const statement_case_t *c)
             disarm();
             if (!hit && status == DATABASE_EXEC_OK && result != NULL && succeeded(result)) {
                 result_release(&result);
+                database_cache_close(db);
                 CHECK(tracked_live() == live_baseline && g_double_frees == doubles_before,
                       "%s %s: 주입 없이 성공한 문장도 할당을 모두 해제함 (남은 %zu, 기준 %zu)", c->name, KIND_NAMES[kind],
                       tracked_live(), live_baseline);
@@ -514,8 +516,9 @@ static void test_statement(const statement_case_t *c)
                 CHECK(answered_error && poisoned, "%s: fsync 실패는 오류 응답이고 핸들 poison", label);
             }
             result_release(&result);
+            database_cache_close(db);
             CHECK(tracked_live() == live_baseline && g_double_frees == doubles_before,
-                  "%s: 문장 하나가 끝나면 database.c·heap_store.c의 할당이 모두 정확히 한 번 해제됨 (남은 %zu, 기준 %zu, 이중 해제 %ld)",
+                  "%s: 캐시 퇴출 뒤 문장 할당이 모두 정확히 한 번 해제됨 (남은 %zu, 기준 %zu, 이중 해제 %ld)",
                   label, tracked_live(), live_baseline, g_double_frees - doubles_before);
             assert(database_close(db) == DATABASE_OK);
             quarantine_flush();
@@ -561,6 +564,8 @@ int main(void)
     for (size_t i = 0; i < sizeof(CASES) / sizeof(CASES[0]); i++) test_statement(&CASES[i]);
     free(g_big);
     clean_dir();
+    CHECK(tracked_live() == 0, "모든 핸들 종료 뒤 추적 할당 없음 (남은 %zu)", tracked_live());
+    quarantine_flush();
     printf("\n%s: %d/%d\n", g_fail == 0 ? "ALL PASSED" : "FAILED", g_run - g_fail, g_run);
     return g_fail == 0 ? 0 : 1;
 }

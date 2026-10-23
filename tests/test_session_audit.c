@@ -11,6 +11,7 @@
 
 #include "alloc_audit.h"
 #include "sql/session.h"
+#include "../src/sql/database_cache.h"
 #include "storage/page_file.h"
 
 /*
@@ -298,7 +299,15 @@ typedef struct {
     session_t *session;
     size_t base_shared;
     size_t base_live;
+    size_t base_cache;
 } fixture_t;
+
+static size_t cache_bytes(session_db_t *db)
+{
+    database_cache_stats_t stats;
+    database_cache_stats(session_db_handle(db), &stats);
+    return stats.bytes;
+}
 
 static const char *const SETUP[] = {
     "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, note TEXT)",
@@ -340,6 +349,7 @@ static fixture_t open_fixture(const session_limits_t *limits, bool reopen)
     }
     f.base_shared = pool_stats(f.pool).shared_used;
     f.base_live = audit_live_now();
+    f.base_cache = cache_bytes(f.db);
     return f;
 }
 
@@ -369,12 +379,16 @@ static void check_settled(fixture_t *f, const char *label, bool strict)
     CHECK(p.accounting_faults == 0, "%s: faults", label);
     CHECK(s.query_used == 0 && s.result_used == 0, "%s: 세션 몫 query %zu result %zu", label, s.query_used, s.result_used);
     CHECK(p.shared_used >= audit_live_now(), "%s: shared %zu < 살아 있는 할당 %zu", label, p.shared_used, audit_live_now());
+    size_t cache = cache_bytes(f->db);
     if (strict) {
-        CHECK(p.shared_used == f->base_shared, "%s: shared %zu 기준 %zu", label, p.shared_used, f->base_shared);
-        CHECK(audit_live_now() == f->base_live, "%s: 살아 있는 할당 %zu 기준 %zu", label, audit_live_now(), f->base_live);
+        CHECK(p.shared_used - cache == f->base_shared - f->base_cache,
+              "%s: cache 외 shared %zu 기준 %zu", label, p.shared_used - cache, f->base_shared - f->base_cache);
+        CHECK(audit_live_now() - cache == f->base_live - f->base_cache,
+              "%s: cache 외 살아 있는 할당 %zu 기준 %zu", label, audit_live_now() - cache, f->base_live - f->base_cache);
     } else {
         f->base_shared = p.shared_used;
         f->base_live = audit_live_now();
+        f->base_cache = cache;
     }
     CHECK(g_violations == 0, "%s: 순서 위반 %lu (%s)", label, g_violations, g_where);
 }
@@ -407,16 +421,18 @@ typedef struct {
     uint64_t before;
     uint64_t after;
     result_kind_t kind;
+    summary_t response;
 } reference_t;
 
 static reference_t reference(const case_t *c)
 {
     session_limits_t limits = big_limits();
     fixture_t f = open_fixture(&limits, false);
-    reference_t ref = {snapshot(f.session), 0, RESULT_KIND_ERROR};
+    reference_t ref = {.before = snapshot(f.session), .kind = RESULT_KIND_ERROR};
     result_t *result = NULL;
     assert(exec_raw(f.session, NULL, c->sql, &result) == DATABASE_EXEC_OK);
     ref.kind = result_kind(result);
+    ref.response = consume(result);
     result_release(&result);
     ref.after = snapshot(f.session);
     close_fixture(&f, "기준 실행");
@@ -466,7 +482,7 @@ static void test_reserve_sweep(void)
     for (size_t ci = 0; ci < CASE_COUNT; ci++) {
         const case_t *c = &CASES[ci];
         reference_t ref = reference(c);
-        long nomem = 0, ok = 0;
+        long nomem = 0, ok = 0, recovered = 0;
         for (long n = 1; n < 4000; n++) {
             session_limits_t limits = big_limits();
             fixture_t f = open_fixture(&limits, false);
@@ -493,6 +509,17 @@ static void test_reserve_sweep(void)
                 summary_t s = consume(result);
                 refused = s.error_class == RESULT_E_NOMEM;
             }
+            if (status == DATABASE_EXEC_OK && result != NULL && result_kind(result) == ref.kind) {
+                summary_t response = consume(result);
+                CHECK(response.rows == ref.response.rows && response.hash == ref.response.hash,
+                      "%s: 선택적 cache 거절 또는 회수 뒤 원래 응답", label);
+                result_release(&result);
+                check_settled(&f, label, false);
+                CHECK(snapshot(f.session) == ref.after, "%s: 성공은 정확히 한 번 반영", label);
+                close_fixture(&f, label);
+                recovered++;
+                continue;
+            }
             CHECK(refused, "%s: 거절은 NOMEM이어야 함 (status %d)", label, (int)status);
             nomem++;
             result_release(&result);
@@ -506,7 +533,7 @@ static void test_reserve_sweep(void)
             CHECK(snapshot(f.session) == ref.after, "%s: 후속 실행 뒤 상태", label);
             close_fixture(&f, label);
         }
-        printf("  %-13s 주입 지점 %ld곳, 정상 %ld\n", c->name, nomem, ok);
+        printf("  %-13s NOMEM %ld곳, cache 거절/회수 뒤 성공 %ld곳, 무주입 정상 %ld\n", c->name, nomem, recovered, ok);
         CHECK(nomem > 0 && ok == 1, "%s: sweep이 끝났다", c->name);
     }
     CHECK(total_points > 100, "총 주입 지점 %ld", total_points);

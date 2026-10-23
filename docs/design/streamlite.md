@@ -12,7 +12,7 @@ StreamLite는 SQL, 영속 이벤트 스트림, ACK 작업 처리를 각각 선�
 
 새 엔진의 기본 방향은 page/redo WAL, bytes 상한이 있는 buffer pool, MVCC, 조기 key 잠금으로 권고한다. 작은 상태의 잦은 변경을 durable commit과 본문 page 반영으로 분리하고, 같은 leaf의 다른 행을 쓰는 거래가 매번 옛 root를 병합하지 않게 하기 위해서다. 선택 근거와 반증 조건은 [성능과 안전을 함께 고르는 순서](#성능과-안전을-함께-고르는-순서)에 있다. 이는 현재 요구에서 도출한 설계 권고이며 새 backend의 구현·동등 조건 실측·제품 전환 승인은 아니다.
 
-현재 구현은 SQL 부분집합·단일 writer·선택형 ACK다. 문장 캐시·트랜잭션 변경 누적·영속 fanout 스트림·실제 동시 writer의 갱신 설계는 구현 완료가 아니다. StreamLite 표시명을 채택해도 기존 `totedb` 패키지·Python import·`tote_*` C ABI·`libtotedb`·DB 파일 형식은 그대로 둔다.
+기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache는 기본 OFF인 내부 비교 경로로 분리하며 성능 채택은 측정 전이다. transaction 변경 누적·영속 fanout 스트림·실제 동시 writer는 구현 완료가 아니다. StreamLite 표시명을 채택해도 기존 `totedb` 패키지·Python import·`tote_*` C ABI·`libtotedb`·DB 파일 형식은 그대로 둔다.
 
 ### 하지 않는 것
 
@@ -52,7 +52,7 @@ SQLite 기반 큐·outbox, DBOS 같은 내구 실행 SDK, 단일 노드 NATS도 
 
 ### SQL과 저장의 공통 비용
 
-SQL template와 실행별 binding을 분리하고 제한된 준비 결과 캐시를 검토한다. 현재 AST에는 binding 값이 복제되므로 SQL 문자열만 key로 AST를 재사용하지 않는다. 무효화는 schema 의미와 logical ID에 연결하고, 데이터 commit마다 물리 root가 바뀐다는 이유로 모든 준비 결과를 버리지 않는다.
+SQL template와 실행별 binding을 분리하고 제한된 준비 결과 cache를 둔다. parser의 AST에는 binding 값이 복제되므로 SQL 문자열만 key로 그 AST를 공유하지 않는다. 같은 handle의 데이터 commit마다 물리 root가 바뀐다는 이유로 모든 template를 버리지 않는다. 외부 게시 뒤 catalog reload는 schema 전용 세대가 없으므로 보수적으로 무효화하며, 이 miss 비용을 비교에 포함한다.
 
 불변 schema와 트랜잭션의 root·행 수 등 변경 상태를 분리한다. transaction-private dirty workspace에서 문장 간 변경을 누적하고 중복 인코딩·페이지 쓰기를 줄인다. 기존 fresh-page 재사용·읽기 cache는 유지하되 이것만으로 문장별 heap 완료 비용이 없어졌다고 보지 않는다. cache·결과·read/write set·private page·spill·회수 pin을 예산에 포함하고 OS 페이지 cache는 별도 측정한다.
 
@@ -155,11 +155,15 @@ cache는 DB handle마다 분리한다. key는 SQL의 정확한 bytes·길이와 
 
 hit도 입력 bytes 상한·binding 개수/값·취소·poison·실패한 transaction 검사를 생략하지 않는다. template를 빌리는 동안 pin하고, 실행마다 현재 binding을 복제한 독립 소유 AST를 만든 뒤 pin을 해제한다. 실행 AST의 이름·literal·binding 사본은 query 몫이다. 반환 결과는 기존 소유권 이전을 따르며 template나 호출자의 SQL/binding buffer를 참조하지 않는다. 잘못된 binding을 이전 값으로 메우거나 cache 준비 실패 뒤 SQL을 두 번 실행하지 않는다. 기존 오류 class·code·offset과 한 호출의 실행 횟수를 대조한다.
 
-schema를 해석한 실행 계획은 cache하지 않는다. 실행마다 잠금과 최신 catalog를 확보한 뒤 이름·열·색인·타입을 다시 해석한다. 같은 handle의 DDL에는 보수적으로 template를 무효화하고 rollback 뒤에도 옛 실행 metadata를 복원하지 않는다. 다른 handle의 게시를 감지해 [catalog를 다시 읽을 때](../../src/sql/database.c#L853-L896)도 우선 cache를 비운다. 이 정책은 외부의 데이터 변경에도 miss를 늘릴 수 있지만 별도 파일 세대 형식을 추가하지 않는다. 그 miss 비용을 측정하며, schema 전용 세대나 해석된 계획 재사용은 별도 개선 근거 없이 섞지 않는다. 이미 실행별로 복제한 AST와 호출자가 소유한 결과의 수명은 eviction과 독립이다.
+schema를 해석한 실행 계획은 cache하지 않는다. 실행마다 잠금과 최신 catalog를 확보한 뒤 이름·열·색인·타입을 다시 해석한다. 같은 handle의 DDL에는 보수적으로 template를 무효화하고 rollback 뒤에도 옛 실행 metadata를 복원하지 않는다. 다른 handle의 게시를 감지해 [catalog를 다시 읽을 때](../../src/sql/database.c#L863-L903)도 우선 cache를 비운다. 이 정책은 외부의 데이터 변경에도 miss를 늘릴 수 있지만 별도 파일 세대 형식을 추가하지 않는다. 그 miss 비용을 측정하며, schema 전용 세대나 해석된 계획 재사용은 별도 개선 근거 없이 섞지 않는다. 이미 실행별로 복제한 AST와 호출자가 소유한 결과의 수명은 eviction과 독립이다.
 
 cache는 없을 때 지연 생성하고 항목 수와 전체 bytes를 함께 제한한다. SQL key·template·parameter 목록·색인/교체 metadata·pin된 퇴출 대기 항목까지 상주 비용에 포함한다. 준비 중 old+new의 최고 요청량을 먼저 예약한다. 실행 binding을 포함한 AST 복제는 query ledger로, cache 소유물은 DB의 resident ledger로 계상한다. resident ledger가 없는 bounded 실행에는 문장 ledger를 붙잡아 cache를 만들지 않고 기존 경로를 쓴다. 무계상 직접 API에서도 cache 자체의 유한 한도는 지킨다. 한 handle의 한도가 여러 handle·pool 전체나 RSS의 한도를 뜻하지 않는다.
 
-퇴출은 참조하지 않는 LRU 항목부터 한다. pin된 항목을 해제하지 않으며 admission을 확보할 수 없으면 새 항목을 저장하지 않고 기존 parser로 한 번 실행한다. 선택적인 cache 저장 실패와 실제 실행 AST/결과의 NOMEM을 구분한다. 필수 실행 할당이 실패하면 기존 NOMEM 계약을 유지한다. 문장 반환 때 query 몫은 0이어야 하며 cache는 query 몫의 사후 초기화에 기대지 않는다. [session 회계](../../include/sql/session.h#L13-L32)처럼 결과는 호출자의 해제까지, cache는 DB close까지 각 소유자가 책임진다. 첫 구현은 현행 handle 실행 직렬화 계약을 따르며, 새 병렬 경로에서는 LRU·pin metadata의 짧은 동기화와 실행 중 참조를 따로 검증한다. cache 보호를 거래 전체의 전역 잠금으로 늘리지 않는다.
+퇴출은 참조하지 않는 LRU 항목부터 한다. pin된 항목을 해제하지 않으며 admission을 확보할 수 없으면 새 항목을 저장하지 않고 기존 parser로 한 번 실행한다. 선택적인 cache 저장 실패와 실제 실행 AST/결과의 NOMEM을 구분한다. 필수 실행 할당이 실패하면 기존 NOMEM 계약을 유지한다. session의 문장 반환 때 query 몫은 0이어야 하며 cache는 query 몫의 사후 초기화에 기대지 않는다. [session 회계](../../include/sql/session.h#L13-L32)처럼 결과는 호출자의 해제까지, cache는 DB close까지 각 소유자가 책임진다. 첫 구현은 현행 handle 실행 직렬화 계약을 따르며, 새 병렬 경로에서는 LRU·pin metadata의 짧은 동기화와 실행 중 참조를 따로 검증한다. cache 보호를 거래 전체의 전역 잠금으로 늘리지 않는다.
+
+내부 비교 경로는 [구문 복제](../../src/sql/sql_statement_clone.c)와 [cache 소유권](../../src/sql/database_cache.c)을 분리한다. miss는 현행 parser로 구문을 만들고 SQL 실행에 성공하면 값 없는 template를 저장한다. 저장은 실행 성공 뒤에만 시도하며 저장 거절 때문에 성공한 SQL을 재실행하거나 오류로 바꾸지 않는다. 필수 query 예약이 부족하면 참조 중이 아닌 cache를 먼저 회수한다. pin 때문에 준비 예약을 확보하지 못한 경우에는 pin을 놓고 실행 전에만 uncached 준비로 돌아간다. 실행 AST 할당이 실패했거나 SQL이 실행된 뒤에는 이 경로로 재시도하지 않는다.
+
+이 경로의 [회귀 시험](../../tests/test_database_cache.c)은 SQLite 값·타입 대조, binding 오류 위치, DDL·rollback·다른 handle, 항목/bytes 퇴출, pin, 큰 SQL, 취소, 실패 주입과 마지막 소유자 해제를 검사한다. 세션의 전체 할당 회계와 결과 보유 시험도 함께 검증한다. [시험 설정](../build-and-test.md#sql-template-cache)은 기본 OFF이며 새 writer·workspace·stream 구현이나 성능 채택을 뜻하지 않는다. 내부 통계는 cache가 살아 있는 동안의 hit/miss·퇴출·거절이며 전체 회수·비활성화·close 때 초기화한다. 수집기는 초기화를 감지해야 한다.
 
 ### 변경 누적과 실패 경계
 
@@ -193,7 +197,7 @@ SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈
 
 ### 공통 계약의 검증 입력
 
-이 표는 구현에서 확인할 기대 결과이며 실행한 시험이 아니다. cache·workspace·선택형 수명·조건부 SQL은 각각 회귀와 실패 검증을 마친 뒤 비계측 업무 결과로 판정한다.
+이 표는 각 구현이 확인할 기대 결과다. cache의 회귀·실패 검증은 앞의 시험 파일에 연결하며, workspace·선택형 수명·조건부 SQL의 새 경로는 검증 전이다. 비계측 업무 결과와 성능 채택은 별도 수집으로 판정한다.
 
 | 입력 | 기대 결과와 검사 경계 |
 |---|---|

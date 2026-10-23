@@ -551,6 +551,8 @@ static bool literal(parser_t *p, sqlexpr_t **out, size_t offset, bool (*read)(pa
 {
     sqlexpr_t *expr = new_expr(p, SQLEXPR_LITERAL, offset);
     if (expr == NULL) return false;
+    const lexer_token_t *token = current(p);
+    if (token != NULL && token->kind == LEXER_PARAMETER) expr->parameter_id = token->parameter_id;
     if (!read(p, &expr->value)) {
         expr_free(expr);
         return false;
@@ -1713,7 +1715,9 @@ size_t sqlstmt_parse_peak_bytes(const lexer_statement_t *statement, const lexer_
             case LEXER_PARAMETER:
                 if (binding != NULL && binding->values != NULL && token->parameter_id >= 1 &&
                     token->parameter_id <= binding->count) {
-                    total += binding->values[token->parameter_id - 1].size_bytes;
+                    size_t bytes = binding->values[token->parameter_id - 1].size_bytes;
+                    if (bytes > SIZE_MAX - total) return SIZE_MAX;
+                    total += bytes;
                 }
                 break;
             default: break;

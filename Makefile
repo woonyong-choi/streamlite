@@ -34,6 +34,15 @@ FAULT_SEED ?= 1
 TEST_RUNNER = $(PYTHON) tests/fault_runner.py --timeout $(TEST_TIMEOUT) --seed $(FAULT_SEED)
 .DEFAULT_GOAL := all
 
+SQL_TEMPLATE_CACHE ?= 0
+ifneq ($(SQL_TEMPLATE_CACHE),0)
+ifneq ($(SQL_TEMPLATE_CACHE),1)
+$(error SQL_TEMPLATE_CACHE must be 0 or 1)
+endif
+endif
+CACHE_FLAGS = -UTOTE_SQL_TEMPLATE_CACHE -DTOTE_SQL_TEMPLATE_CACHE=$(SQL_TEMPLATE_CACHE)
+override CFLAGS += $(CACHE_FLAGS)
+
 BENCHMARK ?= 0
 ifneq ($(BENCHMARK),0)
 ifneq ($(BENCHMARK),1)
@@ -54,7 +63,7 @@ BENCHMARK_FLAGS = -UTOTE_BENCHMARK
 endif
 override CFLAGS += $(BENCHMARK_FLAGS)
 SHARED_CFLAGS ?= -O2 -g $(WARNFLAGS) $(INCLUDES)
-override SHARED_CFLAGS += $(BENCHMARK_FLAGS)
+override SHARED_CFLAGS += $(BENCHMARK_FLAGS) $(CACHE_FLAGS)
 BUILD_FINGERPRINT = $(BUILD_DIR)/.build-fingerprint
 CONFIG_ID := $(shell printf '%s\n' 'BENCHMARK=$(BENCHMARK)' 'CC=$(CC)' 'CFLAGS=$(CFLAGS)' 'SHARED_CFLAGS=$(SHARED_CFLAGS)' 'LDFLAGS=$(LDFLAGS)' | shasum -a 256 | cut -d' ' -f1)
 ifeq ($(shell grep -Fx 'CONFIG_ID=$(CONFIG_ID)' $(BUILD_FINGERPRINT) 2>/dev/null),)
@@ -182,7 +191,7 @@ test-fault: $(BUILD_DIR)/test_fault_runtime $(BUILD_DIR)/fault_fixture
 	FAULT_FIXTURE=$(abspath $(BUILD_DIR)/fault_fixture) $(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_fault_fixture.json -- $(PYTEST) -q tests/test_fault_fixture.py --basetemp=$(BUILD_DIR)/fault/fixture-tests -p no:cacheprovider
 
 # SQL 실행기(#198). 파일마다 한 역할이며 공유 타입은 src/sql/database_exec.h에 있다
-DATABASE_EXEC_NAMES = database database_expr database_subquery database_ddl database_insert database_select \
+DATABASE_EXEC_NAMES = database database_prepare database_cache sql_statement_clone database_expr database_subquery database_ddl database_insert database_select \
                       database_group database_join database_update database_check
 DATABASE_EXEC_OBJS = $(addprefix $(BUILD_DIR)/sql/,$(addsuffix .o,$(DATABASE_EXEC_NAMES)))
 DATABASE_EXEC_FAULT_OBJS = $(addprefix $(BUILD_DIR)/sql/,$(addsuffix _fault.o,$(DATABASE_EXEC_NAMES)))
@@ -210,8 +219,17 @@ $(BUILD_DIR)/bench_free_space:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 $(BUILD_DIR)/test_database_sqlite: $(BUILD_DIR)/tests/test_database_sqlite.o $(DATABASE_OBJS)
 $(BUILD_DIR)/test_primary_index: $(BUILD_DIR)/tests/test_primary_index.o $(DATABASE_OBJS)
-$(BUILD_DIR)/test_database_fault: $(BUILD_DIR)/tests/test_database_fault.o $(filter-out $(DATABASE_EXEC_OBJS) $(BUILD_DIR)/storage/heap_store.o,$(DATABASE_OBJS)) $(DATABASE_EXEC_FAULT_OBJS) $(BUILD_DIR)/storage/heap_store_fault.o
+$(BUILD_DIR)/test_database_fault: $(BUILD_DIR)/tests/test_database_fault.o $(filter-out $(DATABASE_EXEC_OBJS) $(BUILD_DIR)/storage/heap_store.o $(BUILD_DIR)/sql/sql_statement.o $(BUILD_DIR)/storage/value.o,$(DATABASE_OBJS)) $(DATABASE_EXEC_FAULT_OBJS) $(BUILD_DIR)/storage/heap_store_fault.o $(BUILD_DIR)/sql/database_statement_fault.o $(BUILD_DIR)/storage/value_database_fault.o
 $(BUILD_DIR)/test_database_bounded_open: $(BUILD_DIR)/tests/test_database_bounded_open.o $(BUILD_DIR)/tests/alloc_audit.o $(DATABASE_AUDIT_OBJS)
+$(BUILD_DIR)/test_database_cache: $(BUILD_DIR)/tests/test_database_cache.o $(BUILD_DIR)/tests/alloc_audit.o $(DATABASE_AUDIT_OBJS)
+$(BUILD_DIR)/test_database_cache: LDLIBS += -lsqlite3
+$(BUILD_DIR)/test_database_cache:
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+test-database-cache: $(BUILD_DIR)/test_database_cache
+	$(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_database_cache.json -- ./$(BUILD_DIR)/test_database_cache
+
+.PHONY: test-database-cache
 $(DATABASE_BINS):
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
@@ -226,6 +244,14 @@ $(BUILD_DIR)/sql/sql_statement_fault.o: src/sql/sql_statement.c
 $(BUILD_DIR)/storage/value_statement_fault.o: src/storage/value.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -Dmalloc=sqlstmt_test_malloc -Dcalloc=sqlstmt_test_calloc -Dfree=sqlstmt_test_free -c -o $@ $<
+
+$(BUILD_DIR)/sql/database_statement_fault.o: src/sql/sql_statement.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Dmalloc=db_test_malloc -Dcalloc=db_test_calloc -Dfree=db_test_free -c -o $@ $<
+
+$(BUILD_DIR)/storage/value_database_fault.o: src/storage/value.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Dmalloc=db_test_malloc -Dcalloc=db_test_calloc -Dfree=db_test_free -c -o $@ $<
 
 $(BUILD_DIR)/storage/heap_store_test.o: src/storage/heap_store.c
 	@mkdir -p $(dir $@)
@@ -314,7 +340,7 @@ test-sqlite-session-diff: $(BUILD_DIR)/session_probe test-sqlite-session-diff-ha
 	LD_LIBRARY_PATH=$(abspath $(SQLITE_REF_DIR)) $(PYTHON) tests/sqlite_session_diff.py \
 		--probe ./$(BUILD_DIR)/session_probe --workdir $(SQLITE_DIFF_DIR)
 
-test-all: test test-overflow-file test-value-sqlite test-value-varchar test-database test-transaction test-session test-ack-queue test-ack-queue-python
+test-all: test test-overflow-file test-value-sqlite test-value-varchar test-database test-database-cache test-transaction test-session test-ack-queue test-ack-queue-python
 
 clean:
 	rm -rf $(BUILD_DIR)
@@ -326,6 +352,7 @@ clean:
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d
 -include $(DATABASE_OBJS:.o=.d) $(DATABASE_EXEC_FAULT_OBJS:.o=.d) $(BUILD_DIR)/sql/sql_statement_fault.d $(BUILD_DIR)/storage/heap_store_test.d
 -include $(DATABASE_AUDIT_OBJS:.o=.d)
+-include $(BUILD_DIR)/sql/database_statement_fault.d
 
 -include $(BUILD_DIR)/storage/transaction.d
 

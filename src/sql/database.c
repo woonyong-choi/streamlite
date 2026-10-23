@@ -37,14 +37,12 @@ typedef struct {
 
 static size_t overflow_write_bound(size_t size_bytes);
 
-static const lexer_limits_t LEXER_LIMITS = {
-    (size_t)16 << 20, (size_t)16 << 20, (size_t)1 << 20, LEXER_PARAMETER_CEILING
-};
-
 /* ── 계상 보조 ── */
 
 bool q_reserve(database_t *db, size_t bytes)
 {
+    if (mem_reserve(&db->ledger, MEM_SCOPE_QUERY, bytes)) return true;
+    if (!database_cache_trim(db)) return false;
     return mem_reserve(&db->ledger, MEM_SCOPE_QUERY, bytes);
 }
 
@@ -305,6 +303,7 @@ database_status_t database_close(database_t *db)
         db->layer = NULL;
     }
     if (db->work.active) database_work_end(db, DATABASE_WORK_NOT_APPLIED);
+    database_cache_close(db);
     mem_ledger_t resident = db->resident;
     size_t resident_bytes = db->res_fixed + db->res_catalog + db->res_lists;
     catalog_close(db->catalog);
@@ -335,6 +334,7 @@ database_status_t database_attach_ledger(database_t *db, const mem_ledger_t *res
     if (db == NULL) return DATABASE_INVALID;
     if (!mem_ledger_enabled(resident)) return DATABASE_OK;
     if (mem_ledger_enabled(&db->resident)) return DATABASE_INVALID;
+    database_cache_close(db);
     size_t fixed = sizeof(*db) + page_file_handle_bytes(db->file);
     size_t catalog = catalog_memory_bytes(db->catalog);
     size_t lists = page_file_list_peak_bytes(page_file_control(db->file)->page_count);
@@ -349,7 +349,10 @@ database_status_t database_attach_ledger(database_t *db, const mem_ledger_t *res
 
 size_t database_resident_bytes(const database_t *db)
 {
-    return db == NULL ? 0 : db->res_fixed + db->res_catalog + db->res_lists;
+    if (db == NULL) return 0;
+    database_cache_stats_t cache;
+    database_cache_stats(db, &cache);
+    return db->res_fixed + db->res_catalog + db->res_lists + cache.bytes;
 }
 
 /*
@@ -876,6 +879,7 @@ static database_status_t reload_catalog(database_t *db)
     size_t exact = bounded ? catalog_memory_bytes(fresh) : 0;
     assert(exact <= admission.admitted);
     mem_release(&db->resident, MEM_SCOPE_RESIDENT, admission.admitted - exact + db->res_catalog);
+    database_cache_clear(db);
     catalog_close(db->catalog);
     db->catalog = fresh;
     db->res_catalog = exact;
@@ -919,84 +923,10 @@ static database_exec_status_t exec_statement(database_t *db, const database_exec
     }
     if (cancel_requested(db)) return cancelled_result(db);
 
-    bool bounded = mem_ledger_enabled(&db->ledger);
-    lexer_limits_t limits = LEXER_LIMITS;
-    if (bounded) {
-        size_t max_sql = opts != NULL && opts->max_sql_bytes > 0 ? opts->max_sql_bytes : DATABASE_BOUNDED_SQL_BYTES;
-        if (max_sql < limits.max_input_bytes) limits.max_input_bytes = max_sql;
-    }
-    if (size > limits.max_input_bytes) return fail_result(db, RESULT_E_LIMIT, 25, "입력이 한도를 넘습니다");
-
-    const uint8_t *text = sql != NULL ? sql : (const uint8_t *)"";
-    size_t lex_peak = lexer_scan_peak_bytes(size, &limits);
-    if (!q_reserve(db, lex_peak)) return DATABASE_EXEC_NOMEM;
-    lexed_t *lexed = NULL;
-    lexer_error_t lex_error;
-    TB_BEGIN(bench_lexer, TB_PARSE);
-    lexer_status_t scanned = lexer_scan(text, size, &limits, &lexed, &lex_error);
-    TB_END(bench_lexer);
-    if (scanned == LEXER_NOMEM) {
-        q_release(db, lex_peak);
-        return DATABASE_EXEC_NOMEM;
-    }
-    if (scanned == LEXER_LIMIT) {
-        q_release(db, lex_peak);
-        return fail_result(db, RESULT_E_LIMIT, (int)lex_error.reason, "입력이 한도를 넘습니다");
-    }
-    if (scanned != LEXER_OK) {
-        q_release(db, lex_peak);
-        return fail_result(db, RESULT_E_SYNTAX, (int)lex_error.reason, "어휘 오류 (바이트 %zu)", lex_error.offset);
-    }
-
-    database_exec_status_t status = DATABASE_EXEC_OK;
-    sqlstmt_t *statement = NULL;
-    size_t parse_peak = 0;
-    if (lexed_statement_count(lexed) != 1) {
-        status = fail_result(db, RESULT_E_SYNTAX, 20, "한 번에 문장 하나만 실행할 수 있습니다");
-        goto done;
-    }
-    lexer_binding_t empty = {NULL, 0};
-    const lexer_binding_t *bound = binding != NULL ? binding : &empty;
-    lexer_status_t checked = lexer_check_binding(lexed, bound);
-    if (checked != LEXER_OK) {
-        status = fail_result(db, RESULT_E_SYNTAX, (int)checked, "매개변수 개수가 맞지 않습니다 (SQL %u개)",
-                             (unsigned)lexed_parameter_count(lexed));
-        goto done;
-    }
-    lexer_statement_t tokens;
-    if (lexed_statement_at(lexed, 0, &tokens) != LEXER_OK) {
-        status = fail_result(db, RESULT_E_INTERNAL, 21, "문장을 읽지 못했습니다");
-        goto done;
-    }
-    parse_peak = sqlstmt_parse_peak_bytes(&tokens, bound);
-    if (!q_reserve(db, parse_peak)) {
-        parse_peak = 0;
-        status = DATABASE_EXEC_NOMEM;
-        goto done;
-    }
-    sqlstmt_error_t parse_error;
-    TB_BEGIN(bench_parser, TB_PARSE);
-    sqlstmt_status_t parsed = sqlstmt_parse(&tokens, bound, &statement, &parse_error);
-    TB_END(bench_parser);
-    if (parsed == SQLSTMT_NOMEM) {
-        status = DATABASE_EXEC_NOMEM;
-        goto done;
-    }
-    if (parsed != SQLSTMT_OK) {
-        switch (parsed) {
-            case SQLSTMT_SYNTAX:
-                status = fail_result(db, RESULT_E_SYNTAX, (int)parse_error.reason, "문법 오류 (바이트 %zu)", parse_error.offset);
-                break;
-            case SQLSTMT_LIMIT:
-                status = fail_result(db, RESULT_E_LIMIT, (int)parse_error.reason, "한도를 넘습니다 (바이트 %zu)", parse_error.offset);
-                break;
-            default:
-                status = fail_result(db, RESULT_E_SEMANTIC, (int)parse_error.reason,
-                                     "지원하지 않거나 올바르지 않은 문장입니다 (바이트 %zu)", parse_error.offset);
-                break;
-        }
-        goto done;
-    }
+    prepared_statement_t prepared = {0};
+    database_exec_status_t status = database_prepare(db, opts, sql, size, binding, &prepared);
+    sqlstmt_t *statement = prepared.statement;
+    if (status != DATABASE_EXEC_OK) goto done;
     if (statement->kind == SQLSTMT_BEGIN || statement->kind == SQLSTMT_COMMIT || statement->kind == SQLSTMT_ROLLBACK) {
         if (db->control_sink == NULL) {
             status = fail_result(db, RESULT_E_SEMANTIC, 34, "트랜잭션 제어문은 연결(session)에서만 실행할 수 있습니다");
@@ -1032,6 +962,8 @@ static database_exec_status_t exec_statement(database_t *db, const database_exec
             goto done;
         }
     }
+    if (statement->kind == SQLSTMT_CREATE_TABLE || statement->kind == SQLSTMT_CREATE_INDEX ||
+        statement->kind == SQLSTMT_DROP_TABLE) database_cache_clear(db);
     switch (statement->kind) {
         case SQLSTMT_CREATE_TABLE: status = exec_create(db, &statement->create, out); break;
         case SQLSTMT_CREATE_INDEX: status = exec_create_index(db, &statement->index, out); break;
@@ -1045,10 +977,8 @@ static database_exec_status_t exec_statement(database_t *db, const database_exec
     if (locked_here) page_file_unlock(db->file);
 done:
     relations_free(db);
-    sqlstmt_free(statement);
-    q_release(db, parse_peak);
-    lexer_free(lexed);
-    q_release(db, lex_peak);
+    if (status == DATABASE_EXEC_OK) database_prepared_cache(db, sql, size, &prepared);
+    database_prepared_clear(db, &prepared);
     return status;
 }
 

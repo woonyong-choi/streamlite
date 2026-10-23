@@ -205,6 +205,7 @@ typedef struct sqlexpr {
     bool distinct;
     value_type_t cast_type;
     size_t offset;               /* 식이 시작한 입력 바이트 위치(오류 보고용) */
+    uint32_t parameter_id;
     value_t value;
     sqlstmt_name_t qualifier;    /* COLUMN의 테이블 이름. 없으면 size 0 */
     sqlstmt_name_t name;         /* COLUMN·FUNCTION 이름 */

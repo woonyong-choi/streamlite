@@ -31,6 +31,7 @@ make SANITIZE= BUILD_DIR=build-nosan test-database
 | `make test-value-sqlite` | 값 비교·변환을 시스템 SQLite와 대조 |
 | `make test-value-varchar` | VARCHAR 경계 값과 UTF-8 판정 |
 | `make test-database` | SQL 문장 parser, heap 저장소, 문장 실행, SQLite 대조, I/O·할당 실패 주입, 메모리 한도 열기, 기본 키 색인 |
+| `make test-database-cache` | 내부 SQL template의 binding·스키마·퇴출·할당 실패·메모리 소유권과 SQLite 결과 대조 |
 | `make test-transaction` | 트랜잭션 상태 기계, writer 경합, commit 결과, 실패 주입 |
 | `make test-session` | 세션 메모리 예산과 결과 수명 |
 | `make test-ack-queue` | ACK 큐의 C API와 실패 주입 |
@@ -44,6 +45,17 @@ make SANITIZE= BUILD_DIR=build-nosan test-database
 시험 실행기 [fault_runner.py](../tests/fault_runner.py)로 감싼 대상은 실행 결과와 시드 등을 `build/fault/`의 JSON으로 남긴다. `BUILD_DIR`를 바꾸면 이 경로도 해당 디렉터리 아래의 `fault/`로 바뀐다. CI는 기본 `build/fault/`를 sanitizer별 산출물로 올린다.
 
 모든 시험이 이 실행기를 거치는 것은 아니다. `make test-ack-queue-python`은 pytest를 직접 호출하므로 결과를 콘솔과 CI 작업 로그에서 확인한다. `make test-benchmark`의 직접 실행 항목도 콘솔에 결과를 남긴다. 이 실행들의 결과와 시드가 모두 `build/fault/`에 JSON으로 모인다고 가정하지 않는다.
+
+### SQL template cache
+
+`SQL_TEMPLATE_CACHE`는 내부 비교 빌드의 설정이며 값은 0과 1이다. 기본값 0은 현행 준비 경로를 사용하고 1은 [공통 실행 계약](design/streamlite.md#공통-실행-계약)의 cache를 활성화한다. 설정이 바뀌면 fingerprint가 객체와 공유 라이브러리를 다시 만든다. 이는 제품 기본값 변경이나 성능 채택이 아니다.
+
+```sh
+make SQL_TEMPLATE_CACHE=1 test-database-cache test-database test-session test-transaction
+make SQL_TEMPLATE_CACHE=0 all
+```
+
+`test-database-cache`는 기본 빌드에서도 내부 제어로 OFF와 ON을 대조하며 `test-all`에 포함한다. [database_cache.h](../src/sql/database_cache.h)의 제어·통계는 시험용 내부 인터페이스다. 공개 prepared handle이나 Python 설정으로 노출하지 않는다. cache hit도 binding 검사와 실행별 AST 복제를 수행하므로 lexer/parser를 건너뛴다는 사실만으로 지연·메모리 개선을 주장하지 않는다.
 
 ### 요청 단위 내부 계측
 
