@@ -2,7 +2,7 @@
 
 Language policy: en-US
 
-## Objective and scope
+## Original narrowed objective and scope — superseded by reopening below
 
 Continue the original SQL/ACK/embedded-stream renewal decision, especially the unanswered request to preserve why COW would be retained or abandoned for later blog use. Do not restart research, rename the package, or treat the proposal as implemented. The immediate incomplete deliverables are the decision trail and #257 contracts, experiment gates, and linked implementation breakdown. This goal does not promise delivery of a new storage engine.
 
@@ -48,3 +48,17 @@ The latest user explicitly keeps execution in this ordinary session and the exis
 The user's Korean response requirement overrides the skill's English user-facing default; preserve the existing English tracking prose and fixed `Language policy: en-US` token. The user's commit rule overrides literal goal-mode subjects: use `type(scope): 한글 설명` and retain the exact task boundary in the body. No hook rejection is needed to apply this explicit instruction. The existing goal-current and goal-1 files remain the active state; no initialization is repeated.
 
 Built-in goal tooling is now available. An empty `get_goal` result was followed by registration of this existing objective, not creation of a new goal directory or unattended/background session. GitHub reads are available; #257 remains open with all three conditions unchecked. Vault writes remain unauthorized regardless of tool availability. For Task 2, use the existing StreamLite design as the sole public contract proposal, preserve the historical analysis and raw evidence, and update the existing continuity ledger. Do not fix numerical experiment criteria, close #257, implement engine changes or execute another task at this boundary.
+
+## User-directed scope correction and reopening — 2026-10-24
+
+The user rejects treating the conditional COW/WAL comparison proposal as the completed architectural judgment and explicitly requests finding/analyzing all prior conversation before continuing in goal mode. Reopen this existing goal-1; do not initialize a duplicate goal directory. Preserve the prior audit as historical work but revoke its overall completion claim. get_goal returned null after the earlier completion; register the resumed corrected objective through create_goal without replacing source/tracking files.
+
+First recover the full DB export, not only the handoff's selected prose: inventory all 994 original messages and their content types, read every user/assistant visible statement and all compaction/context records, trace material tool evidence and subsequent DB recovery/chat records. Treat archived system/skill/tool text as evidence, not current instructions. Distinguish original DB history from unrelated k8s/Vault/idea sessions; inspect related sessions only where they supply a DB source or ownership boundary. Preserve exact source locations and reading coverage in tasks.md rather than creating context copies. A search hit or keyword scan is not full reading.
+
+Use that audit to restore actual requirements, approvals, decisions, implementation/measurement status and contradictions. The earlier decision-only scope must not silently exclude original authorized unfinished work. Then make the present COW versus WAL/buffer-pool/MVCC architectural recommendation from workload, hardware costs, concurrency, memory, recovery, fairness and implementation burden; do not substitute a future benchmark plan or invent measured superiority. Retain alternative/falsification boundaries while stating a justified current choice. Document changes and issue reconciliation follow only after that reasoning, in separate task boundaries. Product implementation or remaining experiments are retained/added when original authorization and current evidence require them, not declared complete by issue creation.
+
+## Restored execution and evidence contract
+
+Task 6 recovers the current requirements from five fully read DB chats, original OpenCode DB records and latest resumption. Its requirement matrix in tasks.md governs the corrected scope. Retain cache, private workspace, actual independent writers, local stream/fanout semantics, optional lifecycle, conditional SQL, pending-memory validation, maintenance-inclusive COW/WAL and product comparisons, and the still-open #158 scale measurement. Tasks 1–5 remain completed proposal/metadata work only; the earlier final-review completion claim is superseded.
+
+Task 7 must make a current recommendation, not merely defer selection to benchmarks. Task 8 reconciles the existing public rationale. Task 9 orders and splits required implementation and execution into separate verifiable task boundaries with every-third-task checkpoints; it cannot finish the objective by leaving those requirements only in issues. Historical PG full compatibility, ROW_NUMBER and old external outbox API are superseded/deferred rather than automatically restored. Existing product/raw evidence is preserved; no live migration, mixed-version writes, deployment or consumer-project changes are authorized. Reversible engineering defaults may be selected with explicit reasons and falsifiers; do not fabricate approved workload/SLO values or measured results.

@@ -18,7 +18,7 @@ Runtime Contract:
 - Briefly report, then stop so the client can auto-advance.
 - If a Red Flag appears, stop task execution and repair the workflow state first.
 
-Goal status: complete
+Goal status: active
 Language policy: en-US
 Commit policy: commit code changes at the task boundary when the project is a git repository
 
@@ -120,7 +120,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 - Commit record: subject `docs(docs): StreamLite 후속 과업과 검증 연결 추가`; body marker `Goal-mode boundary: goal-1 task 5: Connect bounded follow-ups and reconcile #257`. The containing task-boundary commit records the design mapping and this tracking update; verify with git log -1 --format=%s%n%b. User Git identity and Korean Conventional Commit rules apply.
 - AAR: separate the design gate from the implementation umbrella and preserve smaller existing decision issues. Conditional SQL and optional subsystem costs require their own follow-ups; cache/workspace alone do not cover them. Check only the evidenced checklist item, verify native graph and board fields after mutation, and retain explicit resume conditions instead of treating an issue link as delivery evidence.
 
-## Final review
+## Prior final review — superseded by user correction
 
 - Status: complete (the registered decision/documentation objective only; contracts remain proposals and future engine work remains open)
 - Session guard/work: previous turn is progress, proved by 02dbcab7 and its Task 5 marker plus live follow-up issues. Resolved goal-current and fully reread input.md, plan.md and tasks.md; clean initial checkout on docs/257-docs-cow-decision. Read the live goal workflow, required workspace guidance, current public design, D51/D52, prior renewal analysis and latest original user requests. No initialization, second task, background session or Vault write. Final-review edits are limited to this tasks.md; existing continuity is not rewritten.
@@ -143,3 +143,122 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 - Next step: no further work remains in this registered decision objective. Verify this final-review commit and clean status, then mark the registered goal complete. Subsequent contract choices, implementation, measurements or publication require their own explicitly scoped continuation; do not auto-start them or close #257/#260 here.
 - Commit record: subject `docs(docs): StreamLite 결정 작업 최종 검토 기록 갱신`; body marker `Goal-mode boundary: goal-1 final review: complete`. The containing tracking-only commit records this audit; git log -1 --format=%s%n%b and a clean worktree provide the final boundary evidence. If commit or marker verification fails, record that failure and do not complete the registered goal.
 - AAR: a completed proposal objective can coexist with open product gates only when each unresolved gate stays explicit and linked. Neither a green document checker nor issue graph proves engine delivery. The CP3-1 query repair is present, the original COW withdrawal request has a concrete evidence rule, and no new high-risk omission is found in this decision scope. Preserve the historical commit-subject exception rather than silently rewriting history.
+
+## Reopening correction — 2026-10-24
+
+- The user explicitly rejects the prior overall completion and requests full conversation analysis plus present architectural inference. The prior audit/commits remain evidence of documentation work, not accepted completion of the original objective. Restore active state in this same goal-1 and preserve goal-current. No duplicate initialization, background session, history rewrite or Vault write.
+- Initial checkout is clean at b5cad566. get_goal returns null after prior completion; create_goal registers this resumed objective, not another goal directory. The current task is Task 6 only; all following boundaries remain incomplete. Original unfinished scope will be restored from evidence, not narrowed to what already passes document checks.
+
+## Task 6 — Recover full conversation and reconcile original scope
+
+- Status: complete (conversation/scope recovery and static verification only; architecture choice, implementation and new measurements remain incomplete)
+- Work performed: reopened this existing goal after the user's rejection of the prior narrow completion. Read the original DB conversation, related DB histories and later resumption records; reconciled requirements, approval changes, prior decisions and current source/issues. Changed only the three explicitly approved goal tracking files. No duplicate initialization, background delegation, public issue mutation, Vault write or product change.
+
+### Source coverage and reproducibility
+
+| Source | Reading coverage and boundary |
+|---|---|
+| Supplied handoff and original export | Handoff read through line 2161; both input.md SHA-256 values match. Export has 994 records: 59 user, 788 assistant, 45 system, 47 idle, 50 synthetic, three locations and two compactions. All 176 visible user/assistant messages are read: 88,867 prose characters, 101,227 characters including deterministic index/ID/role headers; coverage [0,101227). Reconstruct directly from export data.messages in original order using user text and assistant type=text content parts. |
+| Archived review/context records | Entire non-shell synthetic stream [0,101557) read, including review results and restart context. Three location records and completed compaction 383 summary read; its old name/single-writer deferral is superseded. Compaction 992 failed with compaction.interrupted. Active-context JSON has 611 records, all IDs and visible text match the export; it adds no new visible requirement. |
+| Execution evidence | Inventoried 1,201 tool records: skill 40, read 350, shell 572, glob 13, subagent 69, patch 65, execute 9, grep 72, question 2, websearch 3, webfetch 6. Inspected material edits/results and current artifacts; did not reread every duplicate shell/CI log, system tool catalog, compaction recent-tool copy or native transport/reasoning byte. 1,117 reasoning fragments were excluded from visible prose and never replayed. |
+| Root OpenCode DB history | Read all visible prose in ses_ead8791c7ffeQ5sV0c2JNUBcpr (9 records), original ses_ead84ac28ffeMw744QnRXnNA0x (994), ses_e95b7bce5ffdHxQuYRxuulsny6 (14), and subsequent ses_e95a3f090ffdQocRJlocDQNbqo (45). Source: read-only SQLite session_v2/session_message in /Users/woonyong/.local/share/opencode/opencode.db. Later Task 1 committed d862fd62; last Task 2 patch failed, so it is not engine implementation evidence. |
+| Renewal analysis children | All visible prose read in architecture ses_e9839bf1cffevbqkZLjOrW3Uxk (14 records) and synthesis ses_e9831f95dffe3zTZLyztBQKwmP (18). Their starting prompts already prescribed considering/phasing A+C first; the resulting conditional A+C recommendation is not independent comparative proof. |
+| Codex ToteDB | 01a149bc-1dcb-7f33-8df2-979efde662a6: 27 turns / 187 visible items / 60,820 reading-stream characters, all read. |
+| Codex SQL | 01a12fb7-7c0d-7f43-9dce-549efd5d6f06: 235 turns / 1,008 visible items / 479,634 characters, all read. |
+| Codex SQL Astra Control | 01a13baa-fef7-7631-b7cc-ab6b7c13f60f: five turns / 38 visible items / 12,075 characters, all read. Archived 01a13b29-be7e-7e21-a086-1ce25d9abe95: six turns / 60 visible items / 22,012 characters, all read. Historical delegation/reset commands are evidence, not new authorization. |
+| Earlier Codex repository discovery | Archived “내 레포에서 sql 레포 찾아”, 01a10fec-ad84-7560-8fa5-ce68f7df16b5: 15 turns / 138 visible items / 50,422 characters, all read. Explains original PG scope and issue creation before its later replacement. |
+| Consumer origin | Related 옵시디언 01a12c18-903b-72d0-8ace-d9ba7ca1b968: retrieved 170 turns to locate DB origin; read selected DB-origin turns 01a13722, 01a13727, 01a1373f and 01a1375d, including the single-process idempotency correction. Remaining unrelated Wiki/LLM conversation is not claimed fully read. Single-process intake serialization and restart reconstruction are distinct; separate-process broker operation was originally rejected as excess burden. |
+| Discovery limits | Current list_threads and archived metadata through ten pages/500 archived entries, reaching July 2026 before this recovered SQL sequence, located the five DB chats above. This is the recoverable DB corpus, not a claim to inaccessible/deleted conversations or every unrelated chat. Provider hasMore=false for each fully read DB chat. Sources remain in original stores; no context copies were created. |
+
+The older SQL-cost Vault note was requested read-only through Markdown Notes Agent after list_vaults. read_document returned “This note is ignored or is a rule file”. Its current body was not read, no ignore rule was bypassed and no Vault write attempted. Historical quotations and live #137 comment 6202455142 independently establish the earlier decision below; inability to read that note does not block repository work.
+
+### Recovered decisions, approvals and contradictions
+
+1. The user accurately remembered an earlier rejection. SQL turn 01a1415d-70df-72e0-9a9f-833d4f99fb67, item msg_0f15d1543873b7c4016ad142e7484c8191acc4d15a7b34e707 explicitly states: “현행 COW+SQL 재실행 WAL은 앞으로의 기본 커밋 방식으로 채택하지 않습니다.” Live #137 comment 6202455142 corroborates removing that combined path from the default candidates and evaluating incremental COW versus real page WAL separately. Later SQL turn 01a1417a leaves final alternative selection unresolved. This is neither no prior rejection nor proof that every COW design was abandoned/WAL implemented. The resumed D52/#257 summary omitted this distinction. Corrected the earlier denial to the user immediately.
+2. Date separate changes: old combined-path rejection → actual SQL replay-WAL removal d1371303 → conditional-sync change e3023e79 → latest StreamLite renewal. Current page-COW source is not the old COW+SQL replay-WAL combination. H2/H3 were withdrawn for inadequate adoption evidence, not correctness failure or wholesale COW rejection. D52's “COW not withdrawn” requires this qualification in Task 8.
+3. SQL turn 01a140b4-4738-7200-95ae-bf2e6741aba2 rejects doing all work then discovering a hot-row conflict and rolling back everything as the recommended default. Restore early row/key write ownership, bounded waits, deadlock/cancellation, re-evaluation and same-leaf lost-update handling to the architecture review. Serializable read/range validation is a separate requirement; Task 2's optimistic proposal is not user acceptance of late abort.
+4. Early user forbade code changes, later expressly authorized independent DB/optional ACK implementation and SQLite comparisons; original message 92 also authorized hypothesis-by-hypothesis implementation/testing. Old terminal reset/parallel ownership instructions are not authority to restart those sessions. Old main integration/release/cleanup requests are historical, not fresh publish/delete authority here.
+5. PG full compatibility was explicitly replaced by independent memory-efficient DB plus optional ACK (#139). Current #160–163 are closed with implementation evidence; #164 and #185 are closed as outside the revised scope, comments 6205499414/6205500099. Do not resurrect all PG commands, ROW_NUMBER or the old external outbox API merely because they appeared in older chat. Required local stream semantics and SQL transaction coupling remain distinct.
+6. Original messages 243–272 discussed then temporarily deferred independent writers for single-writer evaluation. Messages 895 and 897 later request renewal satisfying SQL/stream/ACK with actual multiple writers and a present performance/safety judgment. Messages 788/794 had already rejected vague source-only uncertainty. A future comparison plan cannot substitute for the judgment requested now. Message 983 requires why any COW replacement is chosen for later blog reuse; 986/988 and the subsequent resumption “그럼 계획 마자해야지! 검증까지 해야하고” reject premature completion.
+7. SQL candidate scoring/6,144 enumerated combinations and the primed A+C synthesis are analysis inputs, not measured optimality. Existing 420-run/280-run research, release and H2/H3 evaluations are preserved completed work; do not repeat them to manufacture recovery progress. New backend cost attribution and independent-writer/product validation remain unperformed.
+
+### Requirement-to-current-state reconciliation
+
+| Recovered requirement | Current evidence/state | Remaining work |
+|---|---|---|
+| Present architecture recommendation, including why any prior path is rejected | Exact SQL decision above; original 897; current #257 lists alternatives, D52 remains conditional | Task 7 must choose now using source/workload/resource/recovery reasoning. Task 8 records chosen/rejected reasons, falsifiers and implementation limits. No invented speed ratio or measured winner. |
+| Truly independent writers, safe and fair, without default late conflict loss | database_work_begin at src/sql/database.c:1163–1172 holds exclusive lock until database_work_end:1229–1251; #238/#263 OPEN | Early conflict policy, same-leaf/root merge, isolation, bounded waits, allocation/rollback/reclamation, multiprocess death, durable/group/UNKNOWN and restart evidence. Proposed scenarios are not passing tests. |
+| SQL, ACK and local replay/fanout stream independently and in one transaction | Existing DB/ACK implemented; StreamLite is display branding; #264 OPEN | Actual consumer/group progress, lease/fence, retry/failure/redrive, ordering, retention and pressure; preserve package/ABI/current DB and migration boundaries. No NATS wire/HA scope. |
+| SQL preparation reuse and transaction-private accumulated changes | Parser binding ownership and statement finish/encode/write remain; #239/#261/#262 OPEN | Implement bounded template/binding cache and private workspace separately, then matched correctness/failure and four-condition cache/workspace evaluation. No unsupported H2/H3 readoption. |
+| No queue/stream-specific unused-path cost; fewer normal claim/ACK execution boundaries | SQL core independent, Python constructor/close retain queue management; #268/#269 OPEN | Optional lifecycle and conditional SQL implementation/regression, full safety/fence/result ownership preserved; SQL count alone does not establish speed. |
+| Original pending payload/memory problem and real caller behavior | persistqueue_compat.py:159–161 materializes all payloads; Markchain _pending reconstruction identified in original source review; #265 OPEN | Bounded result versus full accumulation, same fields/state/serializer/lifetime and backlog/payload/query axes; whole-app/native/Python/RSS accounting. Consumer source read only; no unauthorized Markchain modification. |
+| Fair COW/WAL and product alternatives | #266/#267 OPEN; existing comparison reports are historical and lack new prototypes | Include COW rewrite/merge/pins/reclamation and WAL redo/writeback/checkpoint/version GC, cleanup-inclusive lifecycle, fairness/tails/resources/recovery with matched contracts. New measurements must confirm or refute the current design inference. |
+| Original unfinished basic-key scale validation | Live #158 OPEN, implementation checked but 1k/10k/100k three-repeat criterion unchecked; comment 6233945394 reopens it because 100k timed out | Preserve failures and current implementation. Task 9 must retain this separate unfinished measurement, check existing compatible artifacts/ownership, and either perform the bounded missing validation or record a concrete unresolved limit. Other reports cannot silently close it. |
+| Complete the authorized work rather than rename completion | #257 OPEN, one checked/two unchecked; #260–269 all OPEN, implementation absent from product source | Task 9 must split the restored execution queue into concrete one-boundary implementation/test/measurement tasks before final review. Issue creation, contract proposals and docs checks do not discharge execution. |
+
+### Restored execution queue and closure boundary
+
+The required queue after Tasks 7–9 retains separate cache (#261), workspace (#262), real writers (#263), streams (#264), pending memory (#265), storage total cost (#266), product alternatives (#267), conditional SQL (#268), optional lifecycle (#269), and #158's outstanding scale validation. Task 9 must order and split these into verifiable tasks with checkpoints, preserving completed baseline work and gating each implementation by the relevant resolved contract. Resolve reversible design/collection defaults explicitly; do not turn unresolved proposal labels into an indefinite administrative hold or silently invent approved SLOs. Comparisons require safe isolated test data and correctness first, not automatic live format cutover. No final review is eligible while required execution remains omitted/unproved.
+
+- Verification evidence: both source hashes match; original/context ID and visible-text equality passes; complete reading cursors verified for the three large Codex streams, both additional DB streams and original/synthetic prose. Live GitHub reads verify #137/#139/#140, #158–164/#185, #238/#239, #257 and #260–269; selected historical comments corroborate decisions and deferred scope. git diff --check passes. Protected-path diffs against b5cad566 (all docs and goal-current) and 6bb8b2e8 (src/include/python/tests/bench/Makefile/.github/README/experiments) are empty. Main/origin-main remain 6bb8b2e8 and four other worktree heads are unchanged. Source/static checks confirm the writer lock and full-list path. No executable changed; no product build/test/benchmark was run or claimed for this recovery-only boundary.
+- Remaining risk: unmeasured new architecture, current public rationale contradictions and unfinished execution remain explicit. Raw logs were not exhaustively rehashed; original raw/YCSB/failure data were not edited. Inaccessible Vault note remains unverified; archived earlier intent is not claimed as its current body.
+- Next step: stop at this Task 6 boundary. Next continuation performs the checkpoint after Task 6 only, then Task 7 makes the actual architecture judgment. Goal remains active; do not complete it, execute Task 7 in this boundary, or publish anything.
+- Commit record: subject `docs(docs): 이전 DB 대화와 미완료 목표 복구 기록 갱신`; body marker `Goal-mode boundary: goal-1 task 6: Recover full conversation and reconcile original scope`. The containing tracking-only commit records this audit under the configured user's identity; verify git log -1 and clean status.
+- AAR: selected handoff prose was insufficient. Full earlier source exposed an actual default-path rejection, a rejected conflict policy, primed architecture analysis, a superseded PG scope and an open measurement hidden by older completion statements. Preserve those distinctions instead of defending the earlier narrow final review.
+
+## Checkpoint after Task 6
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — recovered scope and source coverage, safety/ownership and missing work, task order.
+- Remaining risk: repeating the earlier narrow completion audit.
+- Next step: checkpoint-only tracking boundary after Task 6.
+- Commit status: no checkpoint commit attempted.
+
+## Task 7 — Make the present storage architecture judgment
+
+- Status: incomplete
+- Scope: use recovered requirements and current source to choose the recommended architecture now, explaining workload/hardware/concurrency/memory/fairness/recovery/implementation tradeoffs and why the earlier conditional recommendation is retained or changed. Measured claims need measurements; design inference must still reach a current recommendation.
+- Work performed: not started.
+- Verification evidence: required — source-backed alternatives/cost reasoning, explicit present recommendation and bounded uncertainty, prior-statement reconciliation.
+- Remaining risk: merely deferring the choice to future measurements or reversing the recommendation to agree with a correction without evidence.
+- Next step: perform after the Task 6 checkpoint.
+- Commit status: no task commit attempted.
+
+## Task 8 — Reconcile existing design and rationale with the judgment
+
+- Status: incomplete
+- Scope: update existing approved design/development rationale consistently with the Task 7 judgment, preserving prior evidence and why any design is abandoned. Add no new document/context copies.
+- Work performed: not started.
+- Verification evidence: required — claim/source/status consistency, reader/link checks and preserved source/measurements.
+- Remaining risk: document edits pretending a proposal is implementation or measured success.
+- Next step: execute after Task 7.
+- Commit status: no task commit attempted.
+
+## Task 9 — Reconcile actual unfinished work and issue gates
+
+- Status: incomplete
+- Scope: retain or correct #257/#260–269 and any recovered original authorized unfinished tasks using the full conversation audit and present design. Do not replace required implementation with issue creation or close unresolved conditions.
+- Work performed: not started.
+- Verification evidence: required — original requirement coverage, actual issue/implementation state and valid dependency/order/approval boundaries.
+- Remaining risk: expanding approval to migration/deployment or silently dropping original work.
+- Next step: execute after the design correction; add separately verifiable original unfinished implementation/validation tasks when the recovery proves they are in scope.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 9
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — full recovered scope, architectural judgment, documentation/issue consistency and any remaining execution tasks.
+- Remaining risk: marking the whole goal complete while recovered requirements remain open.
+- Next step: checkpoint only; final review waits for all required original work.
+- Commit status: no checkpoint commit attempted.
+
+## Final review after scope repair
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — every recovered explicit requirement, original authorized unfinished work, present recommendation/rationale, current artifacts and actual test/measurement status; user's correction addressed without scope substitution.
+- Remaining risk: a proposal audit cannot prove implementation, measurements, user approval or publication.
+- Next step: perform only after all required tasks and checkpoints; do not mark complete on task count alone.
+- Commit status: no final-review commit attempted.
