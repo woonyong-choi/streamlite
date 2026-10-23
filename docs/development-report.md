@@ -8,7 +8,7 @@ ToteDB의 현재 목적은 SQLite 기반 Python 큐에서 겪는 사용성·기�
 
 이 문서는 CTO와 미래 기여자가 주요 제품·아키텍처·보장·측정 선택의 문제, 대안, 이유, 검증과 현재 상태를 함께 이해하도록 쓴 설명이다. D01~D52는 이 보고서의 추적 번호다. 당시 작성된 ADR이나 52번의 순차 회의를 뜻하지 않는다. 개별 lint·서식·rename 수정의 전수 Git 감사와 기록되지 않은 모든 선택은 범위 밖이다. 코드의 기초 선택 이유가 없으면 미확인으로 남긴다.
 
-공개 코드의 현재 해석 기준은 `e49a3d2f252c0e501bc7e76cc064e77e6ec98673`이다. 과거 선택에는 해당 커밋을, 수치에는 실험별 제품·도구 버전과 공개 결과를 사용한다. 이슈 본문은 수정 가능하므로 생성 시각을 최초 발견일이나 본문 전체의 작성일로 단정하지 않는다. first-parent 이력의 반영 순서와 커밋 작성 시각도 다를 수 있다. 이번 보고서 작성에서는 빌드·성능·장애 실험을 재실행하지 않았다. 시험 통과는 연결한 공개 기록의 보고값이다. ([기준 코드](https://github.com/woonyong-choi/totedb/tree/e49a3d2f252c0e501bc7e76cc064e77e6ec98673), [보고 범위 #246](https://github.com/woonyong-choi/totedb/issues/246))
+기초 코드의 해석 기준은 `e49a3d2f252c0e501bc7e76cc064e77e6ec98673`이다. 과거 선택에는 해당 커밋을, 수치에는 실험별 제품·도구 버전과 공개 결과를 사용한다. 이슈 본문은 수정 가능하므로 생성 시각을 최초 발견일이나 본문 전체의 작성일로 단정하지 않는다. first-parent 이력의 반영 순서와 커밋 작성 시각도 다를 수 있다. 기준 코드의 시험 통과는 연결한 공개 기록의 보고값이며 이번 문서 교정에서 빌드·성능·장애 실험을 재실행하지 않았다. 이후 내부 비교 구현과 그 회귀 검증은 아래 상태 표에서 구분하며, 과거 실측을 새 구현의 효과로 바꾸지 않는다. ([기준 코드](https://github.com/woonyong-choi/totedb/tree/e49a3d2f252c0e501bc7e76cc064e77e6ec98673), [보고 범위 #246](https://github.com/woonyong-choi/totedb/issues/246))
 
 StreamLite 리뉴얼의 현재 구조 권고와 과거 COW·WAL 선택의 관계는 D52에서 다룬다. 새 엔진의 설계 방향은 WAL 계열이며, 위 기준 코드의 COW 구현이나 기존 실험 결과가 그에 맞춰 바뀌었다는 뜻은 아니다.
 
@@ -486,9 +486,9 @@ FFI에도 SQL result에서 native payload로, ctypes에서 Python bytes로 복�
 
 #239의 확정 목표에는 SQL 문장·준비 결과의 제한된 cache가 포함된다. 현재 parser는 실행 binding을 `value_clone`하므로 SQL text를 key로 AST 자체를 재사용하면 실행별 값이 섞일 수 있다. template와 binding 소유권, schema 무효화, 예산·eviction·실패 보존을 분리해야 한다.
 
-이 cache는 미구현이다. 채택 조건은 hit뿐 아니라 miss·반복 없는 SQL 비용과 비계측 end-to-end 효과다. H2/H3를 근거 없이 재도입하거나 먼저 개선 배수를 약속하지 않는다. 코어의 큐 의존은 없지만 Python Database 생성자의 `_queues=set()`과 close의 목록 순회는 남아 있어 미사용 전용 비용 0을 달성했다고 쓰지 않는다.
+기준 코드에는 이 cache가 없다. 이후 내부 구현은 아래 상태 표에서 구분한다. 채택 조건은 hit뿐 아니라 miss·반복 없는 SQL 비용과 비계측 end-to-end 효과다. H2/H3를 근거 없이 재도입하거나 먼저 개선 배수를 약속하지 않는다. 기준 코드의 코어에는 큐 의존이 없지만 Python Database 생성자의 `_queues=set()`과 close의 목록 순회가 남는다. 이후 생성 경로를 바꾸더라도 import·공통 상태·전체 메모리까지 미사용 비용 0을 달성했다고 쓰지 않는다.
 
-원래 요구의 다음 판정에는 불편·미지원 시나리오와 우회 코드를 고정한 실제 pending 조회 메모리 비교가 필요하다. 빈번한 변경 효율은 일정 backlog에서 put·claim·ack·purge/DELETE를 반복하며 cleanup 포함 처리량·tail·쓰기량·파일 성장·재사용으로 판정해야 한다. 기존 fresh DB 처리량과 측정 밖 purge는 이 조건을 충족하지 않는다. 다중 writer의 위험은 #238로 분리했으며, 이후 StreamLite 검토는 D52와 #257로 잇는다. ([#239](https://github.com/woonyong-choi/totedb/issues/239), [Python lifecycle](../python/totedb/database.py#L206-L279), [현재 parser](../src/sql/sql_statement.c), [기존 측정 범위](experiments/local-db-comparison/report.md#ack-큐-네-조건의-정상-처리량), [#238](https://github.com/woonyong-choi/totedb/issues/238))
+원래 요구의 다음 판정에는 불편·미지원 시나리오와 우회 코드를 고정한 실제 pending 조회 메모리 비교가 필요하다. 빈번한 변경 효율은 일정 backlog에서 put·claim·ack·purge/DELETE를 반복하며 cleanup 포함 처리량·tail·쓰기량·파일 성장·재사용으로 판정해야 한다. 기존 fresh DB 처리량과 측정 밖 purge는 이 조건을 충족하지 않는다. 다중 writer의 위험은 #238로 분리했으며, 이후 StreamLite 검토는 D52와 #257로 잇는다. ([#239](https://github.com/woonyong-choi/totedb/issues/239), [기준 코드의 Python lifecycle](https://github.com/woonyong-choi/totedb/blob/e49a3d2f252c0e501bc7e76cc064e77e6ec98673/python/totedb/database.py#L206-L279), [현재 parser](../src/sql/sql_statement.c), [기존 측정 범위](experiments/local-db-comparison/report.md#ack-큐-네-조건의-정상-처리량), [#238](https://github.com/woonyong-choi/totedb/issues/238))
 
 ### D52 StreamLite의 새 요구와 COW 유지·교체의 판단 근거
 
@@ -524,6 +524,8 @@ WAL 권고로 새로 부담하는 것은 redo·full-page image·공유 frame·�
 
 ### 유지·철회·보류와 다음 판정 조건
 
+기준 코드 이후에는 [구문 template cache](../src/sql/database_cache.c)와 Python의 첫 큐 사용 시 등록부를 생성하는 경로를 구현하고 소유권·오류·수명 회귀를 검증했다. [캐시 시험](../tests/test_database_cache.c)과 [Python 수명 시험](../tests/test_queue_lifecycle.py)은 이 내부 구현의 검증 범위다. cache는 기본 OFF인 비교 경로이며, [실행 성공 뒤 저장하는 계약](design/streamlite.md#공통-실행-계약)을 따른다. 이 작업본의 구현·회귀를 기본 브랜치 통합·배포나 비계측 성능·전체 메모리 개선의 근거로 쓰지 않는다. workspace·새 backend·실제 동시 writer·영속 fanout stream의 완료와도 구분한다.
+
 | 현재 상태 | 대상 | 다음 판정 조건 |
 |---|---|---|
 | 유지 | 독립 SQL·선택형 ACK·호출자 거래 결합 | 세 사용 방식의 계약·실패·미사용 비용을 따로 검사 |
@@ -534,7 +536,7 @@ WAL 권고로 새로 부담하는 것은 redo·full-page image·공유 frame·�
 | 기본 개발 방향 권고, 미구현 | StreamLite page/redo WAL·buffer pool·MVCC·조기 잠금·실제 독립 writer | 설계 G1–G6와 복구·자원·전체 비용 검증, 기존 제품 전환은 별도 판단 |
 | 비교 후보 유지 | buffered COW와 동등한 조기 잠금·공통 개선 | 정리·복구 포함 같은 조건의 tail·공정성·전체 자원, WAL 권고의 반증 여부 |
 | 검토 중 | 공개 prepared API | binding·schema·소유권·예산 계약과 공개 범위 확정 |
-| 미구현 | 제한 SQL 문장·준비 결과 cache | binding·schema·예산·hit/miss와 OFF 업무 효과 |
+| 기준 코드에 없음, 후속 내부 구현·회귀 확인 | 제한 SQL 문장·준비 결과 cache, 기본 OFF | hit/miss·반복 없는 SQL·workspace 네 조건의 비계측 효과와 채택·제품 통합 판정 |
 | 요구 미충족 | 현재 메모리 우위·기존 큐 대비 속도·미사용 전용 비용 배제 | 원 소비 경로 메모리·정상/실패 계약별 비교와 lifecycle 비용 분리 |
 | 미검증 | 새 엔진의 총 편익·장기 INSERT/UPDATE/DELETE 효율 | SQLite 직접 ACK 대안의 기능·개발·검증·운영 비용, cleanup 포함 수명주기 비교 |
 
