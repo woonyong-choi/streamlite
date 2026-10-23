@@ -10,6 +10,8 @@
 
 StreamLite는 SQL, 영속 이벤트 스트림, ACK 작업 처리를 각각 선택하거나 같은 트랜잭션에서 결합하는 내장 엔진을 목표로 한다. 여러 독립 쓰기 트랜잭션이 실제로 겹쳐 진행하면서 결과·격리·복구·자원 상한을 지키는 것이 다중 writer의 요구다. 요청을 받아 한 writer가 차례로 실행하는 것만으로 이 요구를 충족했다고 표시하지 않는다.
 
+새 엔진의 기본 방향은 page/redo WAL, bytes 상한이 있는 buffer pool, MVCC, 조기 key 잠금으로 권고한다. 작은 상태의 잦은 변경을 durable commit과 본문 page 반영으로 분리하고, 같은 leaf의 다른 행을 쓰는 거래가 매번 옛 root를 병합하지 않게 하기 위해서다. 선택 근거와 반증 조건은 [성능과 안전을 함께 고르는 순서](#성능과-안전을-함께-고르는-순서)에 있다. 이는 현재 요구에서 도출한 설계 권고이며 새 backend의 구현·동등 조건 실측·제품 전환 승인은 아니다.
+
 현재 구현은 SQL 부분집합·단일 writer·선택형 ACK다. 문장 캐시·트랜잭션 변경 누적·영속 fanout 스트림·실제 동시 writer의 갱신 설계는 구현 완료가 아니다. StreamLite 표시명을 채택해도 기존 `totedb` 패키지·Python import·`tote_*` C ABI·`libtotedb`·DB 파일 형식은 그대로 둔다.
 
 ### 하지 않는 것
@@ -56,27 +58,29 @@ SQL template와 실행별 binding을 분리하고 제한된 준비 결과 캐시
 
 ### 영속 로그와 소비자 상태
 
-이벤트 원본은 하나의 논리 payload 정본으로 보존하고, 소비자별 cursor·ACK hole·lease·fence·시도·실패 상태를 hot metadata로 관리한다. 원본 하나라는 뜻은 WAL·COW·cache·FFI 복사가 전혀 없다는 뜻이 아니다. 우선 같은 저장 backend와 transaction을 사용하고 별도 segment가 필요하면 그 끝 위치·checksum과 SQL root를 함께 commit하는 계약을 정한다.
+이벤트 원본은 하나의 논리 payload 정본으로 보존하고, 소비자별 cursor·ACK hole·lease·fence·시도·실패 상태를 hot metadata로 관리한다. 원본 하나라는 뜻은 WAL·COW·cache·FFI 복사가 전혀 없다는 뜻이 아니다. 같은 저장 backend의 transaction으로 payload와 업무·소비자 상태를 확정한다. 별도 payload segment를 쓰면 그 끝 위치·checksum·가시성 참조도 같은 commit record로 보호한다. 장애 복구용 WAL은 replay용 이벤트 보관소와 역할이 다르므로, 소비자의 replay 기간 때문에 복구 WAL을 무조건 영구 보존하지 않는다.
 
 새 claim은 소비자·이벤트·현재 상태를 조건으로 소유권을 얻고 fence를 갱신한다. ACK·retry·실패 격리·redrive는 해당 소비자의 소유권과 상태를 검사한다. 재생 위치와 보존 한도, 긴 reader·느린 소비자의 pin을 함께 관리한다. 느린 소비자를 무기한 보존하면서 저장량 제한과 모든 publish 성공을 동시에 약속하지 않는다.
 
 ### 다중 writer의 검증·병합·게시
 
-각 transaction은 snapshot·schema version·필요 read/range set·logical mutation·private dirty map·할당/회수 집합을 소유한다. 다른 행을 바꿔도 같은 leaf·ancestor·catalog root를 공유할 수 있으므로, 옛 root를 그대로 교체하는 방식은 금지한다. 읽기·unique/range 충돌을 검증하고 최신 root와 변경을 병합한 뒤 짧은 게시 구간에서 다시 확인한다.
+각 transaction은 읽기 기준·schema 식별자·잠금·변경 version·실행별 메모리와 할당 책임을 가진다. 권고하는 WAL 경로는 논리 행·unique key·범위의 충돌과 물리 page의 짧은 latch를 분리한다. 같은 leaf의 다른 행은 page를 수정하는 짧은 구간만 조정하고, 그 page의 I/O나 transaction 전체 동안 latch를 유지하지 않는다. page split·root 교체·할당은 별도의 구조 변경과 redo 순서로 보호한다. 옛 page 사본을 통째로 덮어 다른 writer의 변경을 지우는 방식은 금지한다.
 
-같은 프로세스의 여러 connection과 현재 지원하는 같은 호스트 다중 프로세스를 구분해 검증한다. 회수는 활성 snapshot과 복구 fallback root의 참조가 끝난 뒤에만 수행한다. 현재 두 commit 지연 규칙을 임의 길이 snapshot의 다중 writer에 그대로 적용하지 않는다. 예약 sequence와 committed visibility를 구분하고 미완료 번호를 소비자가 완료로 건너뛰지 않게 한다.
+buffered COW 대조군에도 같은 조기 충돌 조정을 적용한다. 이 대조군은 private 변경을 최신 tree에 합쳐 게시해야 하므로 shared-leaf·ancestor·catalog의 재구성 비용이 남는다. row/key 잠금만 추가해 이 병합 문제까지 해결했다고 보지 않는다. COW 대조군의 병합을 WAL 권고안의 정상 commit 절차와 혼동하지 않는다.
 
-group commit은 독립 transaction의 충돌·결과·순서를 유지하고 자신의 결과가 포함된 durable barrier 뒤에만 성공을 응답한다. 게시 시작 뒤 timeout을 무반영 성공으로 돌려주지 않고 NOT_APPLIED와 UNKNOWN을 구분한다. 외부 callback이나 달라진 RETURNING 결과를 몰래 재실행하는 retry도 금지한다.
+같은 프로세스의 여러 connection과 같은 호스트의 직접 file writer를 각각 검증한다. WAL 안은 공유 buffer의 일관성, 잠금·transaction 상태의 프로세스 간 공유, 사망 소유자의 fencing과 복구 진입 차단까지 필요하다. DB 원본 파일을 직접 수정하는 공유 mapping으로 WAL-before-data를 우회하지 않으며, 명시적 writeback이 로그 내구 경계를 확인한다. PID나 timeout만으로 소유권을 회수하지 않는다. 이를 검증하지 못하면 새 backend의 다중 프로세스 지원을 완료하지 않으며, 기존 backend가 지원하던 안전한 단일 writer 사용도 보존한다.
+
+group commit은 독립 거래의 결과와 순서를 유지한다. 자신의 commit record까지 WAL이 동기화된 뒤에만 durable 성공을 반환하고 새 읽기 기준에 공개한다. 실행·page latch·durability group을 하나의 긴 전역 writer 잠금으로 합치지 않는다. 예약 sequence와 확정된 가시성 순서를 구분하고, 미완료 번호를 소비자가 완료로 건너뛰지 않게 한다. WAL append·group barrier·공유 cursor에는 직렬 구간이 남으므로 실행 중첩과 tail·공정성은 별도 검증한다.
 
 ### 계약 제안과 현재 구현 경계
 
-같은 leaf에 있는 행 A와 B를 두 transaction이 각각 변경한다고 가정한다. 먼저 끝난 A의 root 위에 B의 논리 변경을 합쳐 두 결과를 보존하는 것이 목표다. B가 옛 leaf 전체를 게시해 A를 지우면 정확성 실패다. leaf가 같다는 이유만으로 B를 항상 거절하면 안전할 수 있지만, 독립 쓰기의 진행 목표는 별도로 검증해야 한다.
+같은 leaf에 있는 행 A와 B를 두 transaction이 각각 변경한다고 가정한다. WAL 권고안에서는 page latch와 version 가시성으로 두 결과를 보존하고, COW 대조군에서는 최신 root에 B의 변경을 합친다. B가 옛 leaf 전체를 게시해 A를 지우면 정확성 실패다. leaf가 같다는 이유만으로 거래 전체를 항상 거절하는 방식도 독립 쓰기의 진행 목표를 충족한 것으로 세지 않는다.
 
-아래 계약은 검토할 제안이다. 반환 이름은 동작을 구분하는 표기이며 새 C ABI·Python 예외·설정 키를 정의하지 않는다. 격리·보존·자원 정책의 선택과 수치는 `미해결`의 G1–G4에 남긴다. 현 코드의 지원 범위를 제안으로 소급해 넓히지 않는다.
+아래 계약은 검토할 제안이다. 반환 이름은 동작을 구분하는 표기이며 새 C ABI·Python 예외·설정 키를 정의하지 않는다. 권고 방향과 별도로 공개 API·기본값·보존·자원 수치와 복구 형식의 구체화는 `미해결`의 G1–G6에 남긴다. 현 코드의 지원 범위를 제안으로 소급해 넓히지 않는다.
 
 | 경계 | 현재 구현의 근거 | 갱신안에서 확인할 차이 |
 |---|---|---|
-| writer와 격리 | [SQL transaction](../../include/sql/database_txn.h)의 단일 writer·SNAPSHOT, 읽기 전용 transaction handle 미지원 | 독립 writer의 동시 실행, 읽기·범위 검증, 긴 snapshot의 수명 |
+| writer와 격리 | [SQL transaction](../../include/sql/database_txn.h)의 단일 writer·SNAPSHOT, 읽기 전용 transaction handle 미지원 | 독립 writer의 동시 실행, 조기 key/range 잠금, 격리별 읽기와 긴 snapshot의 수명 |
 | 프로세스와 잠금 | [쓰기 시작·종료](../../src/sql/database.c)의 `database_work_begin`·`database_work_end`가 작업 전체에서 파일 writer 잠금 보유 | 같은 프로세스의 여러 connection과 같은 호스트의 여러 직접 file writer를 각각 검증 |
 | 결과 조회 | [transaction core](../../include/storage/transaction.h)의 `txn_query_commit`은 최근 writer 결과 ring과 같은 열기 세대에 한정 | 재시작 후 조회할 영속 식별자·결과 기록과 그 보존 종료 의미 |
 | 게시와 회수 | [page file](../../include/storage/page_file.h)의 조건부 manifest 1-sync 또는 data sync·control write·sync, fallback을 위한 지연 회수 | 병렬 할당·group별 내구 경계, 활성 snapshot과 복구 root를 함께 보호하는 회수 |
@@ -84,15 +88,17 @@ group commit은 독립 transaction의 충돌·결과·순서를 유지하고 자
 
 ### writer 범위와 격리
 
-목표는 같은 호스트에서 같은 DB를 연 여러 connection과 여러 프로세스의 직접 쓰기다. 단일 프로세스 실험을 먼저 하더라도 그것만으로 다중 프로세스 지원을 완료했다고 표시하지 않는다. 기존 file lock을 끈 채 프로세스 간 할당·게시·회수의 소유자를 비워 두는 전환은 허용하지 않는다. 한 connection은 한 번에 한 호출자가 소유하고, 병렬 실행은 서로 다른 connection에서 수행하는 안을 권고한다.
+목표는 같은 호스트에서 같은 DB를 연 여러 connection과 여러 프로세스의 직접 쓰기다. 한 connection은 한 번에 한 호출자가 소유한다. 파일 writer 잠금만 끄고 프로세스 간 할당·게시·회수의 책임을 비우는 전환은 허용하지 않는다.
 
-격리는 serializable 검증안을 권고한다. 각 transaction은 시작 snapshot과 자기 변경을 읽고, commit 때 읽은 행·없는 key·쓰기 전제·unique key와 필요한 predicate/range를 검증한다. 예를 들어 두 writer가 서로 다른 행을 바꿔도 같은 집계 조건에 의존하면 둘 다 성공시켜 업무 조건을 깨뜨릴 수 있다. snapshot isolation만으로 충분한 작업과 이 검증이 필요한 작업을 구분한다. serializable은 실행 결과를 어떤 직렬 순서와 같게 만드는 목표이며 외부 효과까지 포함하는 보장은 아니다.
+새 동시 쓰기의 격리는 serializable을 권고하고, 충돌 정책은 접근할 때 key·범위를 조정하며 잠금을 거래 종료까지 보유하는 strict two-phase locking을 권고한다. 쓰기 대상 행과 unique key의 권한을 비싼 변경 준비 전에 얻는다. 읽은 key·빈 key와 predicate/range도 보호해 write skew와 phantom을 막는다. schema·catalog·index 수명에는 호환 잠금을 적용하고, DDL과 읽기·쓰기의 충돌도 같은 잠금 계층에서 처리한다. 이를 모든 거래의 전역 배타 잠금으로 대체하지 않는다. 지원 색인으로 범위를 표현할 수 없는 scan·집계는 table 잠금으로 보수적으로 보호한다. 지원할 수 없는 문장은 동시 쓰기 모드에서 명시적으로 거절한다. 잠금마다 bytes를 계상하며 한도 초과를 무제한 lock 축적이나 조용한 격리 축소로 처리하지 않는다.
 
-정확한 범위 추적이 없는 scan·집계는 table/schema 변경 version으로 보수적으로 검증하는 안을 둔다. 이것도 불가능한 문장은 동시 쓰기 모드에서 명시적으로 거절한다. 검증하지 못한 읽기를 조용히 제외하거나 SNAPSHOT을 serializable로 표시하지 않는다. 보수적 table 검증은 무관한 행 변경도 충돌로 돌릴 수 있으므로 비용을 비교해야 한다. 모든 읽기 의존성과 schema 변경을 검증할 수 있기 전에는 이 격리안을 제공하지 않는다.
+이 경로의 읽기는 필요한 잠금을 얻은 뒤 확정된 version과 자기 변경을 읽는다. 거래 시작 snapshot을 고정한 채, 기다렸다는 이유로 그 뒤의 version을 임의로 섞지 않는다. 별도의 SNAPSHOT 경로는 고정된 읽기 기준을 유지하므로 대기한 행의 version이 바뀌면 serialization 실패가 필요할 수 있다. 현행 단일 writer의 SNAPSHOT API를 자동으로 serializable로 바꾸지 않는다. 격리별 공개 API·기본값과 지원 문장 범위는 G1에서 구체화한다.
 
-row version·unique/range·schema 전제가 그대로인 논리 변경만 최신 root에 합친다. 같은 행의 갱신·삭제, 같은 unique key의 삽입, 읽은 범위의 phantom이 전제를 바꾸면 전체 transaction을 충돌·확정 미적용으로 끝낸다. 물리 root만 바뀌면 제한된 내부 병합을 검토하되, 재계산한 결과가 앞서 반환한 행 수·ID·`RETURNING` 값과 달라지면 충돌을 반환한다. 이미 실행한 사용자 callback과 외부 효과는 엔진이 재실행하지 않는다. 호출자가 새 transaction으로 다시 실행할지는 별도 책임이다.
+A가 `id=1`의 값을 증가시키는 동안 B도 같은 행을 증가시키면, B는 그 행의 쓰기 권한 앞에서 기다린다. locking 경로에서는 권한을 얻은 뒤 확정된 값으로 SQL 조건과 계산을 수행한다. 반면 호출자가 밖에서 읽은 10으로 `SET value=11`을 보냈다면 이를 증가 연산이나 12로 바꾸지 않는다. 앞서 반환한 값·ID·RETURNING이나 사용자 callback을 몰래 재실행하지 않는다. COW를 사용하더라도 이 조기 조정 원칙은 같다.
 
-후보 root는 가능한 한 게시 잠금 밖에서 만들고 잠금 안에서 base·schema·읽기/쓰기 검증을 다시 확인한다. 바뀌었으면 제한된 병합 재시도 또는 충돌로 끝낸다. 한 writer의 열린 transaction이 다른 독립 writer의 실행 전체를 막지 않는 것이 목표다. durable barrier나 공유 cursor 때문에 직렬 구간이 남을 수 있으므로 짧은 잠금과 처리량 향상은 실측할 항목이다. 충돌률·재시도 상한·최대 대기·공정성 수치는 아직 정하지 않는다.
+같은 leaf의 다른 행은 논리 key가 독립이면 함께 실행한다. 같은 key·unique 충돌, 이미 읽은 범위와 겹치는 변경은 의미상 경합으로 다룬다. claim의 최소 eligible ID 선택도 같은 결과를 보존해야 하므로 잠긴 후보를 임의로 건너뛰는 정책을 추가하지 않는다. page latch와 transaction 잠금의 역할을 분리한다. MVCC 자체가 serializable이나 writer 병렬 진행을 보장하지 않는다는 점은 [PostgreSQL 18 격리 설명](https://www.postgresql.org/docs/18/transaction-iso.html)과도 구분해 읽는다.
+
+잠금 대기는 유한하게 제한하고 wait-for 관계의 cycle을 검사해 교착 victim을 정리한다. 큐 순서를 유지해 새 writer의 반복 추월을 막고, 취소·deadline 뒤 자기 잠금·version·예약을 정리한다. 대량 scan의 table 잠금은 무관해 보이는 쓰기도 막을 수 있으므로 잠금 범위·대기·완료량을 비교한다. MVCC를 쓰는 명시적 snapshot 읽기와 serializable 잠금 읽기의 진행·자원 비용도 구분한다. 조기 잠금은 피할 수 있는 재작업을 줄이는 선택이며 교착·timeout·제약 위반·snapshot 충돌을 없애겠다는 약속은 아니다. [PostgreSQL 18 잠금 설명](https://www.postgresql.org/docs/18/explicit-locking.html)은 행 잠금과 page latch, 교착 실패가 서로 다른 문제임을 확인할 참고다.
 
 ### commit 결과와 취소
 
@@ -100,8 +106,8 @@ transaction의 SQL 결과는 commit 전에는 잠정 결과다. 업무 변경·�
 
 | 상태 | 뜻 | 다음 상태 |
 |---|---|---|
-| 실행 중 | snapshot·binding·논리 변경과 private pages를 소유, 외부에 미게시 | 검증 중 또는 확정 미적용 |
-| 검증 중 | 읽기/쓰기 전제 검사와 최신 root의 후보 구성 | 게시 중, 실행 중의 제한된 병합, 또는 확정 미적용 |
+| 실행 중 | 읽기 기준·binding·잠금·변경 version을 소유, 미확정 version은 다른 거래에 비가시 | 검증 중 또는 확정 미적용 |
+| 검증 중 | 잠금 소유·제약·결과와 commit 순서 확인, COW 대조군은 최신 root 후보 구성 | 게시 중 또는 확정 미적용 |
 | 게시 중 | 조정자가 영속 상태를 바꿀 수 있어 단순 취소로 미적용을 약속할 수 없는 구간 | 반영·내구 확인, 확정 미적용의 증명, 또는 불확정 |
 | 반영·내구 확인 | 해당 transaction을 포함하는 durable barrier 완료 | 성공 응답과 결과 조회 기록 유지 |
 | 확정 미적용 | 어느 유효한 게시 상태에도 반영하지 않았음을 확인한 `NOT_APPLIED` | rollback 정리와 종료 |
@@ -121,10 +127,11 @@ COW의 sync 순서와 manifest 완전성, WAL 안의 WAL-before-data와 commit r
 |---|---|---|
 | 준비 결과와 schema | 공유 cache가 값 없는 불변 template와 schema 식별자를 보유, 실행 중 참조 유지 | schema 변경 때 새 사용 무효화, 참조 중 해제 금지, cache bytes 상한과 eviction |
 | SQL 입력·binding | 호출 동안 빌린 입력과 transaction이 계속 쓸 복사본 구분 | 호출 뒤 재사용할 값은 소유권 확보와 예산 예약, 이전 binding 재사용 금지 |
-| read/range set·논리 변경·private pages | transaction이 rollback·commit 정리까지 보유 | 후보 병합의 동시 사본까지 먼저 예약, OOM이면 부분 게시 없이 실패 |
+| key/range 잠금·논리 변경·실행별 workspace | transaction이 rollback·commit 정리까지 보유 | 잠금·version·COW 대조군 병합 사본까지 예약, OOM이면 논리 부분 반영 없이 실패 |
+| 공유 buffer·WAL buffer·transaction 상태·옛 version | DB 관리자가 pin·확정 상태·복구/가시성 horizon에 따라 관리 | 프로세스 전체 bytes와 dirty writeback·version GC·사망 소유권을 계상, 한도 초과는 admission 제한 |
 | 결과와 payload view | C 결과·Python 객체의 소유자와 해제 지점 구분 | borrowed view는 유효 기간과 pin 계상, 소유권 이전은 예산도 이전 |
 | 게시 후보·group buffer | commit 조정자가 barrier와 결과 확정까지 보유 | 그룹 전체·transaction별 예약, 한도 때문에 내구 확인 생략 금지 |
-| retire 목록·snapshot pin | DB 회수 관리자가 활성 reader/writer와 fallback 참조 종료까지 보유 | 논리 삭제와 물리 재사용 분리, 나이만으로 사용 중 페이지 재사용 금지 |
+| retire 목록·snapshot pin | DB 회수 관리자가 활성 reader/writer와 backend별 복구 참조 종료까지 보유 | 논리 삭제와 물리 재사용 분리, 나이만으로 사용 중 페이지 재사용 금지 |
 | spill과 결과 조회 기록 | transaction 또는 복구 관리자가 파일·ID·보존 종료를 소유 | private·미게시·checksum·disk quota·중단 복구를 검증하기 전 spill 자동 활성화 금지 |
 
 한도는 건수와 bytes를 함께 다룬다. 최대 payload·반환 bytes·in-flight bytes·ACK holes·private 작업량·cache·retire/pin·spill·보존 로그·실패 기록·결과 조회 기록의 범위를 정해야 한다. 연결별 한도만 두면 연결을 늘려 전체 한도를 우회하므로 DB 전체 한도와 여러 프로세스의 예약 회계를 함께 검증한다. 현재 ledger의 요청 bytes를 allocator overhead·단편화·RSS·OS page cache와 같다고 표시하지 않는다.
@@ -137,7 +144,7 @@ COW의 sync 순서와 manifest 완전성, WAL 안의 WAL-before-data와 commit r
 
 느린 소비자와 저장 상한이 충돌할 때는 기존 이벤트를 몰래 버리기보다 신규 publish를 거절하거나 제한된 시간만 기다리는 안을 권고한다. 자동 consumer expiry·강제 truncate는 별도 데이터 손실 정책이다. replay 기간·최대 보존 bytes·소비자별 지연·실패 격리 및 redrive pin의 한도와 우선순위를 정하기 전 무기한 보존이나 모든 publish 성공을 약속하지 않는다.
 
-논리 삭제는 필요한 소비자의 ACK horizon, 허용 replay 범위, 실패 기록·redrive·멱등 기록의 참조가 모두 끝난 자료만 대상으로 한다. 물리 재사용에는 여기에 활성 snapshot과 recovery fallback 참조의 종료도 필요하다. 보존 밖 replay는 빈 성공 대신 요청 위치가 남아 있지 않음을 알린다. 같은 fence의 중복 ACK는 ACKED 기록이 남은 동안에만 기존 완료로 판정하고, 새 fence 뒤 옛 ACK는 거절한다. FAILED를 ACKED로 바꾸는 호출은 redrive와 구분해 거절한다. terminal 기록을 지운 뒤 중복인지 stale인지 증명할 수 없으면 구분 불가를 반환한다. 한 소비자의 ACK·실패·redrive는 다른 소비자의 상태를 바꾸지 않는다.
+논리 삭제는 필요한 소비자의 ACK horizon, 허용 replay 범위, 실패 기록·redrive·멱등 기록의 참조가 모두 끝난 자료만 대상으로 한다. 물리 재사용에는 활성 snapshot과 각 backend의 복구 참조 종료도 필요하다. COW의 fallback page와 WAL의 redo/옛 행 version은 따로 확인한다. 보존 밖 replay는 빈 성공 대신 요청 위치가 남아 있지 않음을 알린다. 같은 fence의 중복 ACK는 ACKED 기록이 남은 동안에만 기존 완료로 판정하고, 새 fence 뒤 옛 ACK는 거절한다. FAILED를 ACKED로 바꾸는 호출은 redrive와 구분해 거절한다. terminal 기록을 지운 뒤 중복인지 stale인지 증명할 수 없으면 구분 불가를 반환한다. 한 소비자의 ACK·실패·redrive는 다른 소비자의 상태를 바꾸지 않는다.
 
 기존 single-writer backend·배포 기본값·파일은 전환 검증이 끝날 때까지 fallback으로 보존한다. 새 형식이 필요하면 원본을 보존한 채 별도 DB에 논리 이관하고 행·색인·event·consumer 상태·미완료 lease/fence·보존 이력을 대조한다. 새 형식 식별자·별도 경로·배타 전환으로 mixed-version writer 진입 거절을 검증한다. 검증하지 않은 구버전 프로세스가 새 DB를 열 수 있는 경로로 전환하지 않는다.
 
@@ -149,11 +156,11 @@ COW의 sync 순서와 manifest 완전성, WAL 안의 WAL-before-data와 commit r
 
 | 입력·중단 지점 | 제안 계약의 기대 결과 | 구현 시 필요한 관측 |
 |---|---|---|
-| 열린 A transaction과 독립 B writer | B가 A의 종료 전체를 기다리지 않고 실행·commit, A도 전제가 유지되면 병합 | connection·프로세스별 겹친 실행 시간과 durable 결과, 최대 대기 |
-| 같은 leaf의 다른 두 행 | 최신 root에 둘 다 보존, 제한된 병합 실패는 명시적 충돌 | barrier로 실행 순서 고정, 두 행·ancestor·catalog와 재개방 결과 |
-| 같은 행의 update/delete | 오래된 전제로 덮어쓰기 금지, 충돌한 거래 전체 미적용 | 행·색인·연관 이벤트에 부분 반영 없음 |
+| 열린 A transaction과 독립 B writer | B가 A의 종료 전체를 기다리지 않고 실행·commit, 두 결과 보존 | connection·프로세스별 겹친 실행 시간과 durable 결과, 최대 대기 |
+| 같은 leaf의 다른 두 행 | WAL은 짧은 latch·version으로, COW는 최신 root 병합으로 둘 다 보존 | barrier로 실행 순서 고정, 두 행·ancestor·catalog와 재개방 결과 |
+| 같은 행의 update/delete | 쓰기 준비 전 key 조정, locking 읽기와 snapshot 충돌 구분, 실패 거래 전체 미적용 | 행·색인·연관 이벤트에 부분 반영 없음 |
 | 같은 unique key 삽입 | 두 성공 금지, unique 충돌 또는 검증 충돌 | 재개방 뒤 unique 불변식과 실패 거래의 무반영 |
-| 범위·집계 뒤 다른 행 쓰기 | phantom·write skew가 생기는 두 거래의 동시 성공 거절 | 읽은 빈 범위·집계 전제, 보수적 table 검증과 schema 변경 |
+| 범위·집계 뒤 다른 행 쓰기 | 범위/table 잠금으로 전제 보호, phantom·write skew 허용 금지 | 읽은 빈 범위·집계 전제, table/range 잠금과 schema 변경 |
 | 열린 writer 정지·프로세스 종료 | 살아 있는 소유권 탈취 금지, 사망·권한 회수 확인 뒤 정리 | PID 재사용·소유 세대·고아 예약과 다른 writer 진행 |
 | 긴 reader와 반복 삭제 | pin·fallback 페이지 재사용 금지, 예산 초과는 명시적 backpressure | snapshot 내용 불변, pinned/reclaimable bytes와 admission 결과 |
 | 느린 소비자·보존 한도 도달 | 승인 없는 이벤트 손실 금지, publish 거절·유한 대기 | 보존 원본·소비자 cursor·실패 pin과 보존 밖 replay 응답 |
@@ -167,17 +174,54 @@ COW의 sync 순서와 manifest 완전성, WAL 안의 WAL-before-data와 commit r
 
 ### 성능과 안전을 함께 고르는 순서
 
-조건부 출발점은 공통 비용 제거 후 buffered COW·검증/병합과 로그·hot state 모델을 분리 검증하는 것이다. 기존 COW가 항상 가장 빠르거나 안전하다는 결정은 아니다. shared-root rebase·게시 대기·경로 재작성·snapshot 회수가 목표 tail·공정성·자원 상한을 못 채우거나 새 검증 비용이 WAL 설계 수준이면 WAL·buffer pool·MVCC 안과 비교한다.
+새 엔진은 page/redo WAL·bounded buffer pool·MVCC와 조기 key/range 잠금을 기본 개발 방향으로 권고한다. 현행 COW를 그대로 확장하는 안을 기본 방향에서 내리고, buffered COW는 같은 계약의 대조군으로 남긴다. 이는 잦은 INSERT·UPDATE·DELETE와 작은 ACK 상태 변경, 같은 page에 모인 독립 writer를 중시한 설계 추론이다. 새 WAL이 실측에서 이겼다거나 현행 COW 제품의 안전성이 실패했다는 판정은 아니다. 구현·복구·동등 조건 비교가 끝날 때까지 기존 backend·배포 기본값·DB를 보존한다.
 
-WAL 안도 WAL-before-data·page LSN·torn-page 보호·복구·checkpoint·version GC가 필요하다. SQLite·LMDB 또는 WAL이라는 이름만으로 진짜 동시 writer와 복구 안전성을 충족했다고 표시하지 않는다. 일반 SQLite backend는 총 구현 위험을 줄이는 대안이지만 실제 병렬 writer 요구는 충족하지 못한다.
+저장 방식과 격리·충돌 정책을 따로 고른다. COW도 여러 page version으로 snapshot을 제공할 수 있고, WAL도 단일 writer로 구현될 수 있다. buffer와 변경 누적은 양쪽에 적용한다. MVCC는 version의 가시성과 회수를, 조기 잠금은 경합의 조정 시점을 맡는다. 네 이름을 한 묶음의 성능 점수로 비교하지 않는다.
 
-COW 교체는 아직 결정하지 않았다. 기존 문장 WAL 제거와 H2/H3 후보 철회는 서로 다른 이유와 범위의 선택이다. [개발 선택 D52](../development-report.md#d52-streamlite의-새-요구와-cow-유지교체의-판단-근거)에 그 근거와 COW 교체 시 남길 실패 조건·대안 결과·감수할 비용을 연결한다. 계약과 공통 개선을 맞춘 대조 없이 기존 COW의 실패나 WAL의 우위로 결론 내리지 않는다.
+| 대안 | 같은 입력에서 얻는 것 | 부담과 현재 판단 |
+|---|---|---|
+| 현행 단일 writer COW | 기존 commit·fallback·오류 경계와 파일 유지 | 독립 writer가 열린 거래 전체를 기다려 새 요구 미충족, 현행 제품과 회귀 기준으로 보존 |
+| buffered COW + 조기 잠금·snapshot 관리 | 불변 page 읽기와 기존 codec·게시 경험 재사용, group 내부 page 변경 누적 | 같은 leaf·ancestor·catalog의 최신 병합과 재작성, 옛 page 회수와 게시 조정의 새 증명 필요, 비교군으로 유지 |
+| page/redo WAL + bounded pool·MVCC·조기 잠금 | durable group 사이에도 같은 mutable page의 변경을 모으고, 행 변경과 전체 root 게시를 분리 | WAL 순서·공유 frame·version/transaction 상태·checkpoint·GC·재시작을 새로 구현, 새 엔진의 기본 방향으로 권고 |
+| 일반 SQLite WAL + 제품 상태기계 | SQL·복구 구현 재사용과 작은 개발 범위 | writer 하나 제약으로 실제 독립 writer 요구 미충족, 요구 변경 전 채택 완료 판정 제외 |
+
+일반 SQLite WAL의 한 writer 제약은 [공식 WAL 문서](https://www.sqlite.org/wal.html#concurrency)에 있다. SQLite를 제품 대안으로 남기는 것과 이 제약을 충족했다고 주장하는 것은 다르다. WAL 권고의 근거도 PostgreSQL을 그대로 복제해야 한다는 뜻이 아니다.
+
+### 소스에서 확인한 비용과 저장 단위
+
+현재 [publish_inner](../../src/sql/database.c#L718-L755)는 transaction 안에서도 문장별 `heap_batch_finish` 뒤에 변경을 stage한다. [catalog_clone](../../src/storage/catalog.c#L249-L257)은 encode/decode를 거치고, [page_file_write](../../src/storage/page_file.c#L1171-L1198)는 page를 encode한 뒤 실제 파일 쓰기와 cache 갱신을 한다. 준비 결과 cache와 transaction workspace는 이 반복을 줄일 공통 개선이다. 이 비용 전부를 COW의 필수 비용으로 세거나, WAL을 붙이면 파싱·복사도 사라진다고 계산하지 않는다.
+
+여기서 COW 대조군은 변경 page를 복사하고 root를 직접 영속 게시하는 방식이다. 공통 개선을 적용해도 새로 공개할 변경 page와 필요한 참조 경로를 영속화한다. 같은 leaf의 서로 다른 행을 각 writer가 옛 사본에서 준비하면 최신 상태로 합쳐야 한다. 조기 행 잠금은 같은 행 충돌을 줄이지만 이 물리 공유를 없애지 않는다. WAL 안은 같은 page의 짧은 latch와 redo 순서로 이를 조정하고, commit은 해당 로그의 내구성에 연결한다. [PostgreSQL 18 WAL 설명](https://www.postgresql.org/docs/18/wal-intro.html)의 WAL-before-data 원칙은 data page를 매 commit마다 동기화하지 않고도 redo로 복구하는 경계를 설명한다. 이 원칙이 새 구현의 안전성 증거를 대신하지 않는다.
+
+page 크기를 `P`, 정리까지 포함한 durable group 수를 `G`, group `g`에서 누적한 COW 변경 page 집합을 `D_g`라고 둔다. buffered COW의 정상 page 쓰기 항은 `P * sum_g |D_g|`이며 catalog·control·free-list·회수 기록을 더한다. 같은 group 안의 여러 거래를 한 page에 합치는 대조군도 허용해야 공정하다. 현행 `P`는 [page_file.h](../../include/storage/page_file.h#L33)의 8192바이트이며, 이를 새 backend의 최종 형식으로 확정하지 않는다.
+
+같은 page 크기의 압축 없는 WAL 모델은 전체 page image 본문을 제외한 로그 bytes `R`, 전체 page image 수 `F`, data/index writeback page 수 `C`로 나누어 `R + P*F + P*C`를 본다. `R`에는 commit·checkpoint·할당·로그 header도 포함한다. GC가 만든 로그·image·writeback도 이 항에 포함하고 진단에서 별도 태그로 구분하며 다시 더하지 않는다. COW의 `D_g`에도 GC의 page 변경을 포함한다. 두 식은 저장 단위를 드러내는 분석 모형이며 실측값·성능비·물리 장치 쓰기량의 보장이 아니다. CPU에는 encode·병합·latch·version 탐색·잠금·GC를, 지연에는 admission·대기·group barrier·정리를 별도로 포함한다.
+
+작은 변경이 같은 page에 여러 durable group에 걸쳐 쌓이면 WAL은 group 사이의 data writeback도 합칠 수 있다. COW의 group 누적은 각 공개 group의 page 영속화까지 없애지 못한다. 이 차이가 WAL을 권고하는 구조적 이유다. 큰 bulk 쓰기, 큰 durability group, 거의 변경하지 않는 읽기에서는 이 이점이 줄 수 있고, 전체 page image·GC·cache miss 비용 때문에 WAL이 더 불리할 수도 있다. 각 commit이 새 물리 page를 무조건 할당한다고 가정하지 않는다. 현행 COW의 fresh 재사용과 조건부 1-sync도 대조군에 보존한다.
+
+메모리 우위는 저장 방식만으로 정해지지 않는다. COW의 옛 page는 디스크에 둘 수 있으므로 pin된 파일 bytes를 전부 RSS로 세지 않는다. WAL 안은 shared frame·redo buffer·잠금·transaction 상태·옛 행 version 때문에 새 상주 비용이 생긴다. 같은 전체 예산으로 cache와 실행별 작업량을 제한하고, allocator·OS cache·binding·호출자의 전체 payload 축적까지 포함한다. 작은 consumer 상태와 불변 payload의 분리는 양쪽에 똑같이 적용한다. WAL로 바꾸어도 호출자가 pending 본문 전체를 list로 유지하는 비용은 없어지지 않으며 [목록 비교](#pending-목록의-메모리와-호출-경계)로 따로 확인한다.
+
+### WAL 권고안의 복구·정리 경계
+
+redo는 실행된 변경을 복구하며 SQL이나 외부 callback을 다시 실행하지 않는다. 변경 record와 commit record를 checksum·순서로 확인하고, 해당 data page의 LSN까지 WAL이 동기화된 뒤에만 그 page를 파일에 쓴다. commit 성공도 해당 commit record의 durable barrier 뒤에만 반환한다. full-page image와 checksum으로 torn page를 복구하는 안을 우선하며 image 이후 redo와 구조 변경 순서까지 검사한다. [PostgreSQL 18 checkpoint 설명](https://www.postgresql.org/docs/18/wal-configuration.html)은 checkpoint 후 첫 변경의 전체 page image 비용과 회복 시간·쓰기 비용의 교환을 확인할 참고다.
+
+MVCC의 새 행 version은 만든 거래를 식별하고, 다른 거래에는 commit 상태와 가시성 순서가 공개될 때만 보인다. rollback은 논리 변경 전부를 비가시로 만든다. 미확정 version이 data 파일에 나갈 수 있는 경로에서는 redo만 있다는 이유로 rollback이 된다고 가정하지 않는다. 비확정 version의 영구 식별·commit 판정·재시작 후 비가시성과 GC를 함께 증명하는 안을 우선한다. index split·page 할당 같은 구조 변경은 논리 거래의 abort와 구분해 일관되게 복구한다. 이 계약이나 이전 값 보존을 증명할 수 없으면 미확정 page writeback을 허용하지 않는다. 정확한 record·version·복구 형식은 G6에 남긴다.
+
+checkpoint는 재개 지점, data writeback 완료와 필요한 transaction 상태를 영속화한 뒤에만 오래된 WAL을 회수한다. 긴 snapshot이 참조하는 옛 행 version은 따로 보존한다. checkpoint를 했다는 이유로 이 version이나 소비자의 replay payload를 지우지 않는다. COW 대조군도 활성 snapshot과 fallback이 참조하는 page를 회수하지 않는다. 양쪽 모두 장기 reader·실패 기록·느린 소비자에 의한 저장 압력과 남은 정리 debt를 측정한다.
+
+WAL의 복구 재생과 checkpoint·version GC는 COW의 root 선택·manifest 확인보다 큰 시작·정리 부담이 될 수 있다. COW의 새 병렬 게시도 기존 두 세대 회수 규칙만으로 안전해지지는 않는다. 양쪽의 성공 응답 보존, UNKNOWN, 프로세스 사망, disk full·OOM·sync 실패와 장기 정리를 같은 조건으로 확인한다. 전원 차단·lost write·network FS는 실제 검증 범위를 넘겨 보장하지 않는다. 새 형식과 다중 프로세스 공유 제어 영역의 비용도 숨기지 않는다.
+
+### 권고를 바꾸는 조건과 보존할 것
+
+같은 격리·조기 잠금·cache/workspace·payload 배치·group 정책에서 buffered COW가 필요한 tail·공정성·전체 메모리·정리·복구 기준을 채우고, WAL의 추가 복구/공유 상태·checkpoint/GC 비용이 이익을 없애면 COW를 다시 선택할 근거가 된다. 반대로 WAL의 correctness 실패나 자원 한도 위반은 기존 구현을 자동 폐기할 근거가 아니라 WAL 후보의 탈락 사유다. 두 후보가 모두 부적합하면 새 backend를 채택하지 않고 원인과 요구를 다시 검토한다. 실제 writer 요구를 포기하거나 표준 SQLite의 직렬화로 대체하려면 별도 요구 변경이 필요하다.
+
+포기하는 것은 새 엔진에서 현행 COW 게시를 무조건 기본으로 확장한다는 방향이다. B+Tree·행 codec·SQL 의미·선택형 ACK·소유권·오류 결과·예산을 함께 버리는 선택은 아니다. 재사용할 코드도 새 page/version/복구 계약과 맞는지 검사한다. 현행 제품의 파일과 단일 writer 경로는 새 backend 검증과 이관이 끝날 때까지 보존하며, 두 backend를 영구 지원하겠다는 약속은 하지 않는다. 현재 권고와 [이전 제품·저장 선택 D52](../development-report.md#d52-streamlite의-새-요구와-cow-유지교체의-판단-근거)의 이력, [기존 결합 경로 제외 근거](https://github.com/woonyong-choi/totedb/issues/137#issuecomment-6202455142)를 구분한다. 예전 SQL 재실행 WAL을 다시 얹는 안을 고른 것이 아니다.
 
 ### 분리 비교의 범위
 
 반복 SQL 준비 비용이 줄어든 COW와 준비 비용이 그대로인 WAL을 비교하면 저장 방식의 차이를 분리할 수 없다. 같은 변경 누적·준비 결과 재사용·payload 배치를 적용한 두 후보에서, COW의 병합·재작성·회수와 WAL의 redo·writeback·checkpoint·version GC를 비교한다. 짧은 put→drain만으로 장기 삭제·재사용이나 다중 writer의 이점을 판정하지 않는다.
 
-아래 E0–E7은 구현 후 사전 등록할 비교의 설계안이다. 수집기·실행 명령·환경·G1–G5를 채운 실행 계획의 대체물이 아니다. 기존 [로컬 DB 비교 계획](../experiments/local-db-comparison/design.md)과 [release 비용 계획](../experiments/release-cost/design.md)은 사전 지식으로만 사용하고 원자료·실패 표본·당시 판정은 고치지 않는다. 새 표본을 과거 결과에 합치거나 서로 다른 실험의 개선 배수를 곱하지 않는다.
+아래 E0–E7은 구현 후 사전 등록할 비교의 설계안이다. 수집기·실행 명령·환경·G1–G6를 채운 실행 계획의 대체물이 아니다. 기존 [로컬 DB 비교 계획](../experiments/local-db-comparison/design.md)과 [release 비용 계획](../experiments/release-cost/design.md)은 사전 지식으로만 사용하고 원자료·실패 표본·당시 판정은 고치지 않는다. 새 표본을 과거 결과에 합치거나 서로 다른 실험의 개선 배수를 곱하지 않는다.
 
 | 단계 | 기준과 후보 | 고정 조건과 반증할 가설 |
 |---|---|---|
@@ -264,7 +308,7 @@ lost update·같은 leaf의 변경 손실·unique/range 불변식 위반·중복
 
 두 조건 비교 cell은 새 DB의 사전 실행 1쌍과 정식 대응 10쌍을 제안한다. 이는 수집 한도이며 목표 효과를 검출하는 검정력 산정값이 아니다. 사전 실행은 통계에서 제외하되 정확성 실패는 보존한다. 같은 입력 seed와 반복 ID를 대응시키고 기준 먼저 5쌍·후보 먼저 5쌍을 한 쌍씩 교대로 배치한다. E2는 사전 1block·정식 10block으로 네 조건을 매번 모두 실행하고 시작 조건을 순환한다. 이때 같은 반복 block의 대응을 유지하고 cache별 workspace 효과와 workspace별 cache 효과를 따로 계산한다. 실행 중 결과를 보고 순서·반복 수·payload·주요 부하를 바꾸거나 유리한 구간만 늘리지 않는다. 재실행은 새 실행 ID로 남기고 실패 표본을 대체하지 않는다.
 
-정식 수집 전 후보·기준 commit과 binary hash, 도구·binding·실제 SQLite 링크 버전, OS·장치·filesystem, 설정 조회값, 입력 hash·작업 seed, 도착률·종료 조건·timeout, 결과 분석 버전, G1–G5를 실행 계획에 고정한다. 명령과 env 기록을 재현할 수 없으면 수집하지 않는다. 기존 성공 경로 비교 도구를 새 concurrency·장기 stream 시험에 그대로 쓸 수 있다고 가정하지 않는다.
+정식 수집 전 후보·기준 commit과 binary hash, 도구·binding·실제 SQLite 링크 버전, OS·장치·filesystem, 설정 조회값, 입력 hash·작업 seed, 도착률·종료 조건·timeout, 결과 분석 버전, 해당 G1–G6 계약을 실행 계획에 고정한다. 명령과 env 기록을 재현할 수 없으면 수집하지 않는다. 기존 성공 경로 비교 도구를 새 concurrency·장기 stream 시험에 그대로 쓸 수 있다고 가정하지 않는다.
 
 정확성 실패·설정 불일치·원자료 손실을 발견하면 해당 비교의 성능 수집을 중단하고 DB·부분 결과·원본 오류를 보존한다. 계획한 반복 수와 실제 완료·실패·미실행 수를 모두 남긴다. 실행·복구·정리 timeout과 전체 수집 시간/저장 예산도 수집 전에 정한다. 느린 실행을 이상치로 제거하거나 실패를 성공 실행으로 교체하지 않는다.
 
@@ -280,17 +324,17 @@ G5에는 부하별 최소 완료량 `Q_min`, p99 상한 `L99_max`, writer 최대
 |---|---|
 | 비교 불가 | 기능·원자성·isolation·내구성·보존·측정 경계가 다르거나 설정/완료 자료가 불완전 |
 | 후보 탈락 | 정확성 실패, 승인된 자원·지연·공정성·복구 상한 위반, 기존 DB·기능 보존 실패 |
-| 효과 보류 | G1–G5 미확정, 표본 부족·구간 퇴화, 비율 구간에 1 포함, 또는 실질 개선 기준 미달. 무효과·동등성의 증명은 아님 |
+| 효과 보류 | 해당 G1–G6 미확정, 표본 부족·구간 퇴화, 비율 구간에 1 포함, 또는 실질 개선 기준 미달. 무효과·동등성의 증명은 아님 |
 | 성능 채택 후보 | 모든 안전·자원 게이트 통과 후 주요 부하에서 `L(처리량 비) > 1 + delta_min`, `U(p99 비) <= 1 + epsilon99`, `Q_min`·`L99_max`·`W_max` 충족 |
 | 제품 채택 후보 | 필요한 로컬 전달 의미, 전체 앱 배포·자원·연동 이익, SQLite 조합 대비 이익을 각각 근거로 충족. 실제 병렬 writer 미충족을 다른 장점으로 상쇄하지 않는 조건 |
 
-같은 예산에서 COW가 shared-root 병합·경로 재작성·pin/회수·공정성 기준에 실패하고 WAL 안이 통과하면 교체 근거가 된다. COW의 국소 구현 결함인지 구조상 비용인지와 배제하지 못한 원인도 남긴다. 둘 다 실패하면 어느 쪽도 채택하지 않으며 SQLite 제품 대안과 요구·비용을 다시 비교한다. SQLite를 택해 실제 병렬 writer 요구를 완화하려면 별도 명시적 결정이 필요하다. 우열이 불확정이면 기존 backend를 보존한다.
+WAL을 새 엔진의 기본 방향으로 권고하더라도 제품 채택은 이 비교의 검증 결과로 판단한다. 같은 예산에서 COW가 shared-root 병합·경로 재작성·pin/회수·공정성 기준에 실패하고 WAL 안이 통과하면 제품 교체 근거가 된다. COW의 국소 구현 결함인지 구조상 비용인지와 배제하지 못한 원인도 남긴다. 둘 다 실패하면 어느 쪽도 채택하지 않으며 SQLite 제품 대안과 요구·비용을 다시 비교한다. SQLite를 택해 실제 병렬 writer 요구를 완화하려면 별도 명시적 결정이 필요하다. 우열이 불확정이면 기존 backend를 보존한다.
 
 탈락·철회에는 실패한 부하와 사전 기준, 양쪽 commit·설정·원자료·실패 표본, 원인 경로와 반례, 포기할 기존 보장, 새 복구·checkpoint·이관 부담과 복원 범위를 D52에 연결한다. 수집 전 계획 commit이 결과의 조상인지, 원자료 hash와 집계 재생성이 일치하는지도 검사한다. 성능 채택 후보가 나와도 기본 backend 변경·기존 파일 전환·배포 완료를 뜻하지 않는다.
 
 ### 후속 구현과 검증
 
-[구조 결정 #257](https://github.com/woonyong-choi/totedb/issues/257)은 계약과 선택 기준을, [후속 구현 #260](https://github.com/woonyong-choi/totedb/issues/260)은 독립 구현·측정 결과를 추적한다. 이슈 연결은 계약 확정·제품 코드·실측의 완료를 뜻하지 않는다. G1–G5를 먼저 정하고, 각 과업은 자기 선행 조건과 검증 근거를 채운 뒤 완료한다.
+[구조 결정 #257](https://github.com/woonyong-choi/totedb/issues/257)은 계약과 선택 기준을, [후속 구현 #260](https://github.com/woonyong-choi/totedb/issues/260)은 독립 구현·측정 결과를 추적한다. 이슈 연결은 계약 확정·제품 코드·실측의 완료를 뜻하지 않는다. 각 과업에 필요한 G1–G6를 구체화하고, 각 과업은 자기 선행 조건과 검증 근거를 채운 뒤 완료한다.
 
 | 결과 | 후속 과업 | 선행 조건과 보존할 검증 경계 |
 |---|---|---|
@@ -311,17 +355,19 @@ G5에는 부하별 최소 완료량 `Q_min`, p99 상한 `L99_max`, writer 최대
 | 요구사항 | 검증 계획 |
 |---|---|
 | SQL·ACK·stream을 독립 또는 같은 DB 거래로 결합한다. | SQL 단독·ACK 단독·stream 단독·결합의 결과와 미사용 기능 호출·할당·I/O 대조 |
-| 독립 transaction이 실제로 겹쳐 진행한다. | 다른 table·같은 leaf의 다른 행·같은 행·unique/range·append·공유 cursor의 진행과 충돌 검사 |
+| 독립 transaction이 실제로 겹쳐 진행한다. | 다른 table·같은 leaf의 다른 행·같은 행·unique/range·append·공유 cursor의 조기 잠금·실행 중첩·교착·최대 대기와 재개방 결과 검사 |
 | 입력·결과·메모리 소유권과 자원 한도를 유지한다. | 반복 binding·schema 변경·cache hit/miss·eviction·OOM·spill·긴 reader·중단 writer 검사 |
 | pending 목록에서 필요한 결과와 조회 메모리를 통제한다. | Q1–Q5의 backlog/page/payload·metadata/본문·순차 소비/전체 축적·해제 전후와 실제 호출 경로 대조 |
 | claim·ACK·재생·실패 격리가 소비자별로 정확하다. | fanout·out-of-order ACK·lease 재획득·stale fence·retry·DLQ·redrive·sequence hole 검사 |
-| 성공 응답과 저장·복구 결과가 일치한다. | 게시 전후 종료·짧은/torn/reordered write·sync 실패·disk full·UNKNOWN 재조회·이관/복원 검사 |
+| 성공 응답과 저장·복구 결과가 일치한다. | G6의 WAL 순서·LSN·page image·미확정 version·구조 변경·checkpoint/GC와 게시 전후 종료·sync 실패·UNKNOWN 재조회·이관/복원 검사 |
 | 빈번한 갱신·삭제에서 총비용을 줄인다. | PUT/CLAIM/ACK/DELETE steady cycles, cleanup·checkpoint·회수 포함 CPU·지연·쓰기량·파일 성장 측정 |
 | 단일 노드 JetStream·SQLite 대안과 같은 보장을 비교한다. | NATS R=1 file의 periodic sync와 per-write sync를 구분하고 전체 앱 자원·배포·통합 비용 비교 |
 
 ## 단점
 
-- COW의 병합·회수와 WAL의 복구·checkpoint 모두 새 안전성 검증 비용이 크다.
+- WAL 권고안은 공유 buffer·잠금·transaction 상태와 version 복구·checkpoint·GC를 새로 구현한다. COW 경험만으로 그 안전성을 승계할 수 없다.
+- strict two-phase locking의 range/table 잠금은 읽기·대량 갱신에서 writer 대기와 교착을 늘릴 수 있다.
+- buffered COW 대조군도 병합·재작성·snapshot 회수와 병렬 게시의 새 검증 비용을 부담한다.
 - 소비자·ACK hole·보존·실패 metadata는 별도 상한과 청소가 필요하다.
 - 별도 server가 없다는 사실만으로 NATS보다 CPU·RAM·지연이 작다는 결론은 나오지 않는다.
 - 원래의 bounded 조회·장기 삭제 효율과 현재 성능 열세를 이름 변경으로 해결할 수는 없다.
@@ -330,14 +376,17 @@ G5에는 부하별 최소 완료량 `Q_min`, p99 상한 `L99_max`, writer 최대
 
 - SQLite 기반 큐·outbox: 구현·복구 부담을 줄일 수 있으므로 총비용 비교에 남긴다.
 - 단일 노드 NATS: 이미 가볍게 배포할 수 있고 Go에는 서버 내장도 가능하므로 다중 노드 설정만 비교하지 않는다.
-- WAL 기반 저장: 동시성·갱신과 복구 비용을 같은 workload로 대조한 뒤 채택 여부를 판단한다.
+- buffered COW 기반 확장: 불변 page·기존 게시 경험을 재사용하지만 잦은 작은 갱신과 shared-leaf 병합 때문에 기본 방향에서 제외한다. 같은 계약의 총비용 비교에서 [권고를 바꾸는 조건](#권고를-바꾸는-조건과-보존할-것)을 충족하면 재선택한다.
+- commit 때만 충돌을 찾는 낙관적 쓰기: 경합이 적으면 잠금 비용을 줄일 수 있지만 hot key에서 뒤늦은 전체 재작업을 기본 경로로 만들므로 현재 권고에서 제외한다.
+- SQL 재실행 WAL과 현행 COW의 결합: 로그 승인 뒤에도 COW 본문 게시 비용을 내므로 이번 권고의 redo와 writeback 분리와 다르다. [기존 제거 이력](../development-report.md#d52-streamlite의-새-요구와-cow-유지교체의-판단-근거)과 구분한다.
 
 ## 미해결
 
-- G1 격리·충돌: serializable 검증 권고와 명시적 snapshot isolation 중 선택, 보수적 table 검증의 비용·지원 문장 범위·호출자 retry·결과 반환 계약의 확정. 검증 비용이 요구 부하를 못 채우고 앱이 write skew를 허용하는 조건에서 격리 대안을 다시 비교 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
+- G1 격리·충돌: 권고한 serializable·조기 key/range 잠금의 공개 API·기본값·지원 문장, 교착 victim·대기 상한·잠금 예산·승격 정책의 구체화. 현행 SNAPSHOT 보존과 명시적 snapshot 경로의 실패 의미, 반환 결과·호출자 retry의 경계 검증 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G2 불확정 결과: 영속 요청 ID·결과 조회 권고와 업무 key 대조 방식의 선택, 재시작·만료·동일 ID의 다른 내용·응답 본문 보존 범위의 확정. 기록 비용과 필요한 재전송 기간이 선택 기준 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G3 자원·보존: payload·메모리·pin·spill·in-flight·ACK holes·로그·실패/결과 기록의 bytes와 개수 한도, 유한 대기 시간, replay·멱등 보존 기간의 확정. 한도 도달 시 publish 거절 권고와 명시적 consumer expiry·데이터 손실 정책 비교 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G4 프로세스·이관: 같은 프로세스 실험과 같은 호스트 직접 file writer의 별도 지원 게이트, 복구 소유권·프로세스 간 예약/차단·형식 전환·역이관 검증과 구현 분할. 기존 다중 프로세스의 안전한 단일 writer 지원을 조용히 축소하지 않는 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G5 비교 실행: E0–E7·조회 Q1–Q5의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·조회 결과 수명·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
+- G6 WAL·version 형식: redo·commit·구조 변경 record, page LSN·full-page image·checksum·복구 시작점과 로그 회수, 비확정 version·abort·transaction 상태 정리, 공유 frame·사망 소유권과 다중 프로세스 fencing의 형식·구현 증명 ([#263](https://github.com/woonyong-choi/totedb/issues/263), [#266](https://github.com/woonyong-choi/totedb/issues/266))
 - 느린 소비자·보존 한도 충돌, 지원 subject·replay·DLQ/redrive의 정확한 API 계약 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - 표시명 이후 패키지·import·ABI·경로·파일 형식의 별도 호환 전환과 상표 등 권리 확인 ([#258](https://github.com/woonyong-choi/totedb/issues/258))
