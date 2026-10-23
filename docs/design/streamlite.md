@@ -140,6 +140,74 @@ COW의 sync 순서와 manifest 완전성, WAL 안의 WAL-before-data와 commit r
 
 중단 writer와 긴 reader의 등록에는 프로세스 재시작·PID 재사용·소유 세대를 구분하는 식별과 참조 해제가 필요하다. 시간이 오래 지났다는 이유만으로 살아 있는 snapshot의 pin을 훔치지 않는다. 죽은 소유자의 부재와 게시 권한 회수를 증명한 뒤에만 예약·pin을 회수한다. 증명할 수 없으면 신규 예약을 제한하고 운영자가 원인을 확인할 상태를 제공한다. 긴 reader가 보존 공간을 붙잡는 동안에도 다른 writer가 진행할 수 있는 범위는 남은 예산에 한정한다.
 
+### 공통 실행 계약
+
+같은 `SELECT ?1`을 7과 9로 차례로 호출하면 각각 7과 9를 돌려줘야 한다. 첫 binding이 들어 있는 AST를 재사용하면 이 계약을 깨뜨린다. 현행 [parse_parameter](../../src/sql/sql_statement.c#L447-L465)는 binding의 값을 복제하며, [sqlstmt_t 소유권](../../include/sql/sql_statement.h)은 이름과 값을 해제까지 소유한다. 공통 개선은 이 의미와 오류·거래 수명을 보존하는 내부 구현으로 시작한다. 공개 prepared handle·새 격리 기본값·저장 형식 변경은 포함하지 않는다.
+
+| 선택지 | 얻는 것 | 비용과 판단 |
+|---|---|---|
+| binding 없는 구문 template와 실행별 소유 AST | lexer·parser 재사용과 기존 실행기 입력의 수명 보존 | hit에도 AST·값 복제와 schema 해석 비용이 남지만 첫 구현으로 선택 |
+| binding이 든 현행 AST 공유 | 재구성 작업 감소 | 다른 실행의 값 혼입·수명 침범 때문에 제외 |
+| lexer 토큰만 cache | parser 변경 범위 축소 | 반복 parser 준비 비용이 남으므로 준비 결과 cache의 완료로 대체하지 않는 판단 |
+| 공유 template를 실행기가 직접 참조 | hit의 복제 감소 | 모든 식·결과·오류 경로의 불변성과 pin 수명 변경이 필요하므로 후속 비교 후보로 보류 |
+
+cache는 DB handle마다 분리한다. key는 SQL의 정확한 bytes·길이와 내부 구문 형식 식별자다. 공백·주석·문자열 literal을 임의로 지우거나 binding 값·타입을 key에 넣지 않는다. template는 SQL 자체의 이름·literal과 parameter ID·오류 offset을 소유하되 실행 binding, catalog 포인터, 해석된 column 번호·row locator·실행 결과를 보관하지 않는다. 처음에는 지원하는 SELECT·INSERT·UPDATE·DELETE의 구문을 대상으로 하며 DDL·거래 제어는 기존 경로로 실행한다. cache 대상 밖 문장을 지원하지 않는 것으로 바꾸지 않는다.
+
+hit도 입력 bytes 상한·binding 개수/값·취소·poison·실패한 transaction 검사를 생략하지 않는다. template를 빌리는 동안 pin하고, 실행마다 현재 binding을 복제한 독립 소유 AST를 만든 뒤 pin을 해제한다. 실행 AST의 이름·literal·binding 사본은 query 몫이다. 반환 결과는 기존 소유권 이전을 따르며 template나 호출자의 SQL/binding buffer를 참조하지 않는다. 잘못된 binding을 이전 값으로 메우거나 cache 준비 실패 뒤 SQL을 두 번 실행하지 않는다. 기존 오류 class·code·offset과 한 호출의 실행 횟수를 대조한다.
+
+schema를 해석한 실행 계획은 cache하지 않는다. 실행마다 잠금과 최신 catalog를 확보한 뒤 이름·열·색인·타입을 다시 해석한다. 같은 handle의 DDL에는 보수적으로 template를 무효화하고 rollback 뒤에도 옛 실행 metadata를 복원하지 않는다. 다른 handle의 게시를 감지해 [catalog를 다시 읽을 때](../../src/sql/database.c#L853-L896)도 우선 cache를 비운다. 이 정책은 외부의 데이터 변경에도 miss를 늘릴 수 있지만 별도 파일 세대 형식을 추가하지 않는다. 그 miss 비용을 측정하며, schema 전용 세대나 해석된 계획 재사용은 별도 개선 근거 없이 섞지 않는다. 이미 실행별로 복제한 AST와 호출자가 소유한 결과의 수명은 eviction과 독립이다.
+
+cache는 없을 때 지연 생성하고 항목 수와 전체 bytes를 함께 제한한다. SQL key·template·parameter 목록·색인/교체 metadata·pin된 퇴출 대기 항목까지 상주 비용에 포함한다. 준비 중 old+new의 최고 요청량을 먼저 예약한다. 실행 binding을 포함한 AST 복제는 query ledger로, cache 소유물은 DB의 resident ledger로 계상한다. resident ledger가 없는 bounded 실행에는 문장 ledger를 붙잡아 cache를 만들지 않고 기존 경로를 쓴다. 무계상 직접 API에서도 cache 자체의 유한 한도는 지킨다. 한 handle의 한도가 여러 handle·pool 전체나 RSS의 한도를 뜻하지 않는다.
+
+퇴출은 참조하지 않는 LRU 항목부터 한다. pin된 항목을 해제하지 않으며 admission을 확보할 수 없으면 새 항목을 저장하지 않고 기존 parser로 한 번 실행한다. 선택적인 cache 저장 실패와 실제 실행 AST/결과의 NOMEM을 구분한다. 필수 실행 할당이 실패하면 기존 NOMEM 계약을 유지한다. 문장 반환 때 query 몫은 0이어야 하며 cache는 query 몫의 사후 초기화에 기대지 않는다. [session 회계](../../include/sql/session.h#L13-L32)처럼 결과는 호출자의 해제까지, cache는 DB close까지 각 소유자가 책임진다. 첫 구현은 현행 handle 실행 직렬화 계약을 따르며, 새 병렬 경로에서는 LRU·pin metadata의 짧은 동기화와 실행 중 참조를 따로 검증한다. cache 보호를 거래 전체의 전역 잠금으로 늘리지 않는다.
+
+### 변경 누적과 실패 경계
+
+workspace는 transaction이 소유한 catalog·행·색인 변경과 dirty page의 최신 사본을 문장 사이에 유지한다. 같은 transaction은 자기 변경을 읽고 다른 transaction은 미확정 변경을 보지 않는다. 새 문장은 이전 문장까지의 작업 상태에서 시작하며, 공개된 page를 직접 덮거나 다른 writer의 변경을 자기 rollback으로 해제하지 않는다. 정상 문장 반환은 commit의 내구 성공이 아니다.
+
+문장별 논리 검증·제약 오류는 그 문장에서 반환한다. 오류·취소·필수 할당 실패 뒤에는 [현행 실패 상태](../../include/sql/database_txn.h#L14-L24)처럼 transaction을 실패로 표시하고, 후속 문장과 commit을 거절하며 명시적 rollback으로 정리한다. 실패한 문장의 일부 catalog·색인·dirty map만 다음 문장에 넘기지 않는다. 앞선 성공 문장의 결과를 몰래 다시 계산하지 않는다. 새로 할당할 사본·재할당의 old+new·예약/retire 목록까지 할당 전에 계상한다.
+
+문장마다 수행하던 물리 완료를 미루면 I/O 오류가 commit에서 관측될 수 있다. 이 이동을 숨기거나 모든 commit 오류를 UNKNOWN으로 합치지 않는다. 게시 권한 인수 전과 미적용을 증명한 실패, 인수 후 확정할 수 없는 실패를 구분한다. NOT_APPLIED면 자기 private 자원을 정리하고, UNKNOWN이면 게시·회수를 차단하며 저장 자원을 재사용하지 않는다. 임의 spill·큰 transaction의 자동 분할·내구 barrier 생략으로 예산을 맞추지 않는다. 새 다중 writer의 공유 buffer/version과 복구 형식은 G6의 별도 계약을 따른다.
+
+workspace의 문장 밖 보유량은 현재 작업 catalog와 같은 DB resident/shared 회계에 남기고, 별도 transaction 작업량 한도로 제한한다. session의 query/result 한도를 transaction 전체 한도라고 다시 해석하지 않는다. 실행 중 임시 사본과 반환 결과도 동시에 존재할 수 있으므로 전체 shared 예산과 각 scope를 함께 검사한다. cache/workspace의 OFF·ON 네 조건에는 같은 논리 입력·결과·상위 예산과 내구 조건을 적용한다.
+
+### 공통 개선의 시험용 한도
+
+아래 값은 유한한 구현·회귀 대상을 만드는 가역적인 시험 설정이다. 제품 기본값·사용자 SLO·채택 기준이나 RSS 보장이 아니다. 새 경로는 명시적인 내부 시험 설정으로 OFF·ON을 비교하고, 효과와 회귀 판정 전 기존 배포 기본값을 바꾸지 않는다. 공개 설정 API를 이 표에서 확정하지 않는다.
+
+| 대상 | 초기 시험 설정 | 이유와 한도 도달 동작 |
+|---|---|---|
+| cache | handle당 64항목·총 1MiB, 원 SQL 16KiB 이하만 admission | 반복 짧은 문장과 eviction을 함께 검증하는 출발값이며, 큰 SQL이나 예산 부족은 지원을 줄이지 않고 uncached 실행 |
+| transaction workspace | 작업당 요청 bytes 8MiB와 기존 shared 예산을 모두 적용 | 작은 commit group과 초과 거절을 검증하는 출발값이며, 부족하면 NOMEM·실패 상태와 명시적 rollback |
+| scope와 최고치 | resident cache/workspace + 실행 query + 보유 result를 중복 없이 합산 | 재할당 old+new·퇴출 대기·동시 결과를 포함하며, 예약 실패 뒤 카운터와 소유권 보존 |
+
+실제 부하에서 miss·admission 거절·NOMEM·추가 복제·처리량·tail·전체 메모리가 불리하면 한도나 cache 공유 방식을 독립 가설로 다시 검토한다. 수집 뒤 목표를 맞추려고 실패 표본을 버리거나 한도를 바꾸지 않는다. G5의 실제 workload·수치 판정 기준은 수집기 사전 계획에서 따로 고정한다. [현재 C API](../../src/capi/totedb.c#L119-L142)의 무제한 pool 설정을 이 시험값으로 바꿨다거나, 여러 pool의 프로세스 전체 상한을 구현했다고 주장하지 않는다.
+
+### 선택형 수명과 조건부 갱신
+
+SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈 목록을 복제하지 않는 경로를 선택한다. 하위 자원 등록은 기능을 처음 명시적으로 사용할 때 지연 생성한다. 공통 소유 자원 등록부가 필요하면 generic 수명 관리와 queue/stream 전용 호출·분기를 실제 경로에서 구분한다. `_queues`를 다른 이름으로 바꾸는 것만으로 전용 비용을 제거했다고 판정하지 않는다. SQL 실행에는 기능 전용 polling·dispatcher·등록 호출을 넣지 않는다.
+
+등록한 자원은 기존처럼 DB보다 오래 살지 않는 강한 소유 관계와 명시적 unregister를 유지한다. 닫기 중 등록부가 바뀌어도 각 자원을 한 번만 닫고, 해제 오류가 나면 살아 있는 handle을 잃지 않는다. [현재 Python close](../../python/totedb/database.py#L265-L281)처럼 열린 native transaction 때문에 DB close가 Busy이면 DB는 열려 있고 먼저 닫힌 큐는 닫힌 상태인 경계를 보존한다. 이를 조용히 transaction 자동 rollback으로 바꾸지 않는다. 공통 close 검사까지 비용 0이라고 약속하지 않고 생성·실행·종료를 각각 관측한다.
+
+정상 claim은 최소 eligible ID를 고른 조건부 UPDATE와 RETURNING으로 합치는 안을 먼저 구현한다. ACK도 ID·상태·fence를 조건으로 갱신하고, 영향 행이 없을 때만 필요한 상태를 다시 읽는 안을 우선한다. 이는 [일반 SQL](../../include/sql/sql_statement.h)의 기존 갱신·서브쿼리·RETURNING 의미를 활용하는 구현 방향이며 실제 지원·접근 경로는 구현에서 검증한다. 최소 후보를 임의로 건너뛰거나 fence·만료 검사를 제거하지 않는다. 같은 fence의 ACKED만 중복 성공으로 판정하고 FAILED를 완료로 바꾸지 않는다. 실패 경로의 추가 SQL·scan·복사·반환 소유권도 비교하며 SQL 수만으로 성능을 채택하지 않는다.
+
+### 공통 계약의 검증 입력
+
+이 표는 구현에서 확인할 기대 결과이며 실행한 시험이 아니다. cache·workspace·선택형 수명·조건부 SQL은 각각 회귀와 실패 검증을 마친 뒤 비계측 업무 결과로 판정한다.
+
+| 입력 | 기대 결과와 검사 경계 |
+|---|---|
+| 같은 `SELECT ?1`에 7·9, TEXT·BLOB·NULL과 반복 parameter | 매 호출 현재 값·타입·bytes를 반환, 이전 binding과 입력 buffer의 수명 침범 없음 |
+| 같은 buffer 주소의 SQL bytes 변경, 잘못된 UTF-8·복수 문장·binding 개수/값 | 정확한 SQL key로 구분하고 기존 오류 class·code·offset과 실행 횟수 보존 |
+| cache한 조회 뒤 DROP/recreate·색인 변경·transaction DDL/rollback·다른 handle 게시 | 현재 catalog에서 다시 해석, 옛 열 번호·포인터 사용 없음, conservative flush의 miss 기록 |
+| 기존 입력 한도 안에서 cache admission의 16KiB를 넘는 SQL·64항목 초과·pin/eviction·cache 저장 OOM | 지원 SQL은 uncached 경로로 한 번 실행, 사용 중 template·기존 항목·카운터 손상 없음 |
+| AST/결과 NOMEM·취소·오류 뒤 query 종료, 결과 보유 중 session/DB 종료 | query 몫 0, cache는 resident 소유, 결과는 해제까지 유효하고 마지막 소유자가 반환 |
+| transaction의 첫 변경 성공 뒤 제약 오류·OOM·취소 | 실패 상태에서 문장/commit 거절, rollback 뒤 기존 DB 보존, 다른 거래 자원 해제 없음 |
+| workspace의 자기 변경 조회·같은 page 재수정·DELETE/재사용·최고량 초과 | 자기 최신 값과 최종 원자성 보존, 반복 물리 완료·최고 bytes·거절 관측, 자동 분할 없음 |
+| 게시 전후 I/O·sync 실패와 응답 유실 | NOT_APPLIED/UNKNOWN/내구 성공을 해당 경계로 판정, 불확정 저장 자원 재사용 없음 |
+| SQL 단독 생성/실행/종료와 기능 첫 사용·반복 close·Busy close | 전용 빈 set/list·polling 없음, 명시 사용의 등록·강한 소유·오류 뒤 handle 상태 보존 |
+| 최소 eligible 후보 경합·expiry·stale/중복 ACK·FAILED·반환 결과 해제 | 기존 후보와 fence/상태 의미 일치, 실패 readback·scan·복사·추가 SQL도 비용에 포함 |
+
 ### 소비자 보존과 이관
 
 느린 소비자와 저장 상한이 충돌할 때는 기존 이벤트를 몰래 버리기보다 신규 publish를 거절하거나 제한된 시간만 기다리는 안을 권고한다. 자동 consumer expiry·강제 truncate는 별도 데이터 손실 정책이다. replay 기간·최대 보존 bytes·소비자별 지연·실패 격리 및 redrive pin의 한도와 우선순위를 정하기 전 무기한 보존이나 모든 publish 성공을 약속하지 않는다.
@@ -338,7 +406,7 @@ WAL을 새 엔진의 기본 방향으로 권고하더라도 제품 채택은 이
 
 | 결과 | 후속 과업 | 선행 조건과 보존할 검증 경계 |
 |---|---|---|
-| 준비 결과 cache | [#261](https://github.com/woonyong-choi/totedb/issues/261) | #239의 cache 선택과 G1–G3, binding/schema·hit/miss·예산·비계측 업무 결과 |
+| 준비 결과 cache | [#261](https://github.com/woonyong-choi/totedb/issues/261) | 공통 실행 계약으로 구현 착수, binding/schema·소유권·예산 회귀 뒤 #239의 hit/miss·비계측 업무 판정 |
 | transaction 변경 누적 | [#262](https://github.com/woonyong-choi/totedb/issues/262) | #239의 공통 비용 선택과 G1–G3, cache/workspace 교차·오류/rollback·삭제/회수·peak memory |
 | 실제 독립 writer | [#263](https://github.com/woonyong-choi/totedb/issues/263) | #238·#257의 계약과 #266 뒤 제품 통합, 비교용 원형의 프로세스별 실행 중첩·shared leaf·격리·UNKNOWN·회수 검증은 비교 전에 수행 |
 | 소비자별 stream | [#264](https://github.com/woonyong-choi/totedb/issues/264) | #257의 전달·보존·실패 계약, fanout·lease/fence·replay·redrive·같은 DB 거래·형식 변경 시 이관/복원 |
@@ -346,7 +414,7 @@ WAL을 새 엔진의 기본 방향으로 권고하더라도 제품 채택은 이
 | buffered COW와 WAL/MVCC 총비용 | [#266](https://github.com/woonyong-choi/totedb/issues/266) | #238·#257 계약과 #261·#262 공통 개선, 비교용 prototype의 안전성·정리/회수·checkpoint/GC·실패 포함 판정 |
 | SQLite·로컬 JetStream 제품 대안 | [#267](https://github.com/woonyong-choi/totedb/issues/267) | #263·#264의 필요한 구현/복구와 G5, 전달 의미·전체 앱 비용·외부 SQL 경계·같은 보장의 채택 조건 |
 | 조건부 claim·ACK | [#268](https://github.com/woonyong-choi/totedb/issues/268) | #239·#257의 SQL/결과 선택, 최소 후보·expiry·stale/중복 ACK·실패 readback·실제 scan/쓰기/복사 비용 |
-| 미사용 큐 초기화·종료 비용 | [#269](https://github.com/woonyong-choi/totedb/issues/269) | #239·#257의 선택형 수명 계약, SQL 단독 전용 관리 비용과 명시적 기능 사용의 등록/해제 보존 |
+| 미사용 큐 초기화·종료 비용 | [#269](https://github.com/woonyong-choi/totedb/issues/269) | 선택형 수명 계약으로 구현 착수, SQL 단독 전용 비용과 명시 사용의 등록/해제·Busy close 회귀 뒤 효과 판정 |
 | 기존 기본키 조회의 규모 검증 | [#158](https://github.com/woonyong-choi/totedb/issues/158) | 기존 구현·실패 표본을 보존하고 1천·1만·10만 행의 스캔 수와 p50/p95/p99를 같은 조건으로 3회 측정, 시간 제한의 부분 적재를 요청 규모 완료로 세지 않는 조건 |
 
 공통 실행 계약을 먼저 구체화한 뒤 cache·workspace·선택형 수명·조건부 SQL을 각각 구현하고 검증한다. 수집기와 사전 계획을 고정한 뒤 대응 실측으로 각 비용을 판정한다. pending 조회와 기존 기본키 규모 검증은 별도 입력·결과로 남긴다. 앞선 보고서나 이슈 연결만으로 이 실측을 완료하지 않는다.
