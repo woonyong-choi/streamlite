@@ -173,6 +173,92 @@ WAL 안도 WAL-before-data·page LSN·torn-page 보호·복구·checkpoint·vers
 
 COW 교체는 아직 결정하지 않았다. 기존 문장 WAL 제거와 H2/H3 후보 철회는 서로 다른 이유와 범위의 선택이다. [개발 선택 D52](../development-report.md#d52-streamlite의-새-요구와-cow-유지교체의-판단-근거)에 그 근거와 COW 교체 시 남길 실패 조건·대안 결과·감수할 비용을 연결한다. 계약과 공통 개선을 맞춘 대조 없이 기존 COW의 실패나 WAL의 우위로 결론 내리지 않는다.
 
+### 분리 비교의 범위
+
+반복 SQL 준비 비용이 줄어든 COW와 준비 비용이 그대로인 WAL을 비교하면 저장 방식의 차이를 분리할 수 없다. 같은 변경 누적·준비 결과 재사용·payload 배치를 적용한 두 후보에서, COW의 병합·재작성·회수와 WAL의 redo·writeback·checkpoint·version GC를 비교한다. 짧은 put→drain만으로 장기 삭제·재사용이나 다중 writer의 이점을 판정하지 않는다.
+
+아래 E0–E7은 구현 후 사전 등록할 비교의 설계안이다. 수집기·실행 명령·환경·G1–G5를 채운 실행 계획의 대체물이 아니다. 기존 [로컬 DB 비교 계획](../experiments/local-db-comparison/design.md)과 [release 비용 계획](../experiments/release-cost/design.md)은 사전 지식으로만 사용하고 원자료·실패 표본·당시 판정은 고치지 않는다. 새 표본을 과거 결과에 합치거나 서로 다른 실험의 개선 배수를 곱하지 않는다.
+
+| 단계 | 기준과 후보 | 고정 조건과 반증할 가설 |
+|---|---|---|
+| E0 비교 적격성 | 현재 single-writer 제품과 각 후보의 기능·결과 대조 | SQL 단독·ACK 단독·stream 단독·같은 DB 결합을 구분, 미구현 기능은 비교 불가, 성공 경계·보존·자원·isolation 일치 확인 |
+| E1 준비 결과 cache | 같은 저장 구현에서 cache만 OFF/ON | SQL·binding·문장/commit 수 유지, 반복 해석 CPU·할당 감소가 최종 업무에도 남는지 확인 |
+| E2 변경 누적 workspace | E1의 cache OFF/ON 각각에 workspace OFF/ON을 교차한 네 조건 | 문장 수·내구 경계 유지, clone·heap 완료·root restamp·중복 encode/pwrite 감소와 peak memory 증가 대조 |
+| E3 조건부 SQL | 고정한 cache/workspace에서 기존 claim·ACK와 조건부 갱신 | lease·최소 후보 선택·fence·중복 ACK 의미 유지, 정상·실패 readback의 SQL 수와 전체 비용 대조 |
+| E4 원본과 상태 배치 | 같은 E3 설정에서 기존 배치와 공유 payload·소비자별 상태 | fanout·보존·transaction 범위 유지, PUT 추가 비용과 CLAIM/ACK·삭제 절감 대조 |
+| E5 실제 동시 writer | 같은 backend·공통 설정에서 writer 1개와 여러 개 | 같은 프로세스·여러 프로세스 별도, 실행 중첩·독립 진행과 shared-leaf/root·행·unique/range·cursor 충돌의 비용 대조 |
+| E6 저장 방식 | 같은 공통 개선과 로그·소비자 모델을 가진 buffered COW와 WAL·buffer pool·MVCC | SQL 결과·isolation·writer 범위·durable 성공·자원·보존을 맞춘 뒤 병합/회수와 redo/checkpoint/GC 총비용 대조 |
+| E7 제품 대안 | SQLite 기반 같은 상태기계, 같은 호스트의 JetStream R=1 file과 비교 | SQL/ACK 결합과 순수 messaging을 구분, 필요한 기능·복구·전체 앱 자원·설치·연동 부담 대조 |
+
+각 단계의 불일치·미지원은 0초·0byte·실패 속도로 순위에 넣지 않는다. E1–E4의 효과를 한꺼번에 넣은 뒤 어느 변경이 원인인지 추정하지 않는다. E5에서는 처리량이 늘지 않아도 실행 중첩 여부를 먼저 확인한다. 실행 중첩만으로 tail·공정성·총비용 개선을 주장하지 않는다. E6의 부분 prototype이 복구·회수 검사를 통과하지 못하면 완성 backend의 대안으로 채택하지 않는다.
+
+### 입력과 실행 경계
+
+초기 입력은 기존 비교의 크기를 재사용하는 실험 가정이다. 제품 최대값·실제 고객 부하·승인된 SLO가 아니다. SQL fixture는 10,000행, 짧은 실행은 1,024논리 작업, payload는 256B와 4,096B, commit 묶음은 1개와 32개를 제안한다. writer 수는 1·2·4, 소비자 그룹은 1·4를 각각 분리 축으로 사용한다. 모든 조합을 자동 실행하지 않고 아래 부하별 필요한 축만 사전 등록한다.
+
+| 부하 | 작업과 입력 | 분리해 확인할 내용 |
+|---|---|---|
+| SQL 반복·배치 | 같은 key 집합의 UPDATE, 개별 commit과 32개 묶음, SQL만 사용 | cache·workspace 효과, 큐 미사용 호출·할당·I/O, binding과 schema 변경 |
+| ACK 수명주기 | PUT→CLAIM→ACK→DELETE, backlog 목표 1,024개 | 성공한 완료 ID·payload·fence, terminal 보존·purge 비용과 페이지 재사용 |
+| 독립·충돌 쓰기 | 다른 table, 같은 leaf의 다른 행, 같은 행, unique/range, 인접 append·공유 cursor | leaf는 실제 페이지 배치로 확인, 무작위 key를 독립 물리 페이지로 가정하지 않는 조건 |
+| stream·실패 처리 | payload 원본과 그룹별 소비, 역순 ACK·재획득·실패 격리·redrive·replay | 이벤트 완료와 그룹별 delivery 완료를 따로 계산, ACK holes와 느린 소비자 pin |
+| 장기 반복·압력 | 30분 수집 가정의 수명주기, 긴 reader·멈춘 writer·느린 소비자·대형 payload | 유지되는 backlog와 실제 성장, 승인한 한도의 직전·도달·초과에서 admission·회수·복구 |
+
+장기 실행의 30분은 최초 수집 예산이다. 그 시간 안에 cleanup·checkpoint·GC가 발생하지 않거나 파일 성장의 안정 여부를 확인하지 못하면 장기 효율 판정을 보류한다. 고정 길이 작업을 끝낸 시간과 고정 도착률의 지속 부하는 다른 그룹이다. 지속 부하는 목표 도착률·burst·최대 in-flight·처리 지연을 G5에 고정하고, 밀린 요청·거절·timeout을 분모에서 빼지 않는다. 클라이언트가 응답을 기다리며 천천히 보내는 방식만으로 과부하 tail을 설명하지 않는다.
+
+기준과 후보는 같은 호스트·filesystem·장치·CPU 배치·메모리 한도·입력 hash·작업 seed·초기 DB 내용·cache 조건을 사용한다. 다른 실행과 장치 부하를 공유하면 그 사실을 기록하고 적용 범위를 제한한다. 새 프로세스·새 DB가 OS cache까지 비웠다는 뜻은 아니다. warm과 cold 주장을 분리하고, cold 조건을 통제하지 못하면 warm 관측으로만 보고한다.
+
+최종 성능은 [Makefile](../../Makefile)의 `BENCHMARK=0`에 해당하는 비계측 빌드로 비교한다. 요청 단계·lock·syscall 진단은 별도 계측 빌드와 별도 표본으로 수집하고, 계측 ON/OFF 비용을 확인한다. 진단 CPU·wall 시간이나 `pwrite` 성공 bytes를 비계측 업무 성능·물리 장치 쓰기량으로 대신하지 않는다. 기존 [DB 수집기](../../bench/local_db_compare.py)는 현재 성공 경로와 재개방 비교의 근거이며 E5–E7의 수집기가 구현됐다는 근거가 아니다.
+
+steady 구간의 cleanup·checkpoint·GC는 실제 실행한 CPU·I/O·지연에 포함한다. 신규 입력을 멈춘 뒤 남은 작업·정리 debt를 같은 종료 조건까지 처리한 시간도 별도로 기록한다. 활성 구간 처리량과 `완료량 / (활성 시간 + 추가 drain·필수 정리 시간)`을 함께 내고 겹친 정리 시간을 두 번 더하지 않는다. 물리 파일 축소와 재사용 가능 공간은 다르므로 각 backend에 파일 길이 0을 요구하지 않는다. 정리가 제한 시간 안에 끝나지 않으면 잔여 bytes·pin·debt와 timeout을 남기고 정리 비용을 0으로 계산하지 않는다.
+
+### 동등한 보장과 관측값
+
+SQLite는 WAL/FULL·실제 연결 수·cache·checkpoint 설정을 기록하고 같은 상태기계와 원자성·fence·보존 계약을 검증한다. 일반 WAL의 writer 직렬화는 제품 대안의 제약으로 남기며 E5의 실제 병렬 writer 충족으로 세지 않는다. 새 다중 연결 실험은 [공식 WAL 문서](https://www.sqlite.org/wal.html#the_wal_reset_bug)가 명시한 WAL-reset 수정 포함 버전의 binary·source hash를 고정한다. 과거 버전의 결과와 새 비교를 합쳐 전후 개선으로 해석하지 않는다.
+
+JetStream은 같은 호스트의 단일 노드 R=1·file storage를 사용하고 프로세스·consumer·client·필요 relay를 모두 계상한다. [공식 sync 설정](https://docs.nats.io/reference/config/jetstream/sync_interval)의 `always`는 매 write 명시적 sync이며 periodic과 별도 그룹이다. 실행할 server·client 버전과 실제 설정을 고정하고 publish 확인·consumer ACK 확인·재시작 보존을 각각 검사한다. 설정 이름만으로 DB의 durable commit과 같은 내구성이라고 판정하지 않는다. 이 공식 계약의 확인일은 2026-10-24이며 실제 비교 binary는 아직 고정하지 않는다.
+
+순수 messaging 비교는 필요한 filter·fanout·lease·재전달·중복 억제·실패 보존·replay 의미가 같은 부분만 측정한다. SQL 결합 비교에서는 외부 SQL DB와 JetStream 사이의 outbox·relay·멱등 처리 및 복구를 포함한다. 그 조합에 같은 DB의 단일 transaction 원자성이 없으면 기능 차이를 명시하고, 더 약한 계약의 처리량을 동등한 통합 효과로 해석하지 않는다. 설치 단계·프로세스·포트·설정·복구 절차·연동 코드·실제 투입 시간을 각각 관측하며 코드 줄 수를 개발 시간으로 환산하지 않는다.
+
+| 관측값 | 측정 경계와 단위 | 함께 보존할 자료 |
+|---|---|---|
+| 완료 처리량·오류 | durable 완료한 논리 작업/s, stream은 event/s와 delivery/s 분리 | offered·admitted·완료·거절·timeout·UNKNOWN 건수, ID·payload audit |
+| 지연·공정성 | 예정 도착 또는 호출부터 최종 durable 응답까지 ms, p50·p95·p99·최대 | begin 대기·retry·재조회 포함, writer별 완료량·최대 대기와 미완료 요청 |
+| CPU·메모리 | 앱과 backend·relay 전체의 CPU 초·RSS bytes, 엔진 요청 bytes 별도 | 새 프로세스·측정 구간, allocator·OS cache의 계상 범위 |
+| 변경·쓰기 비용 | logical changed bytes, unique dirty pages, encode·pwrite·redo bytes/calls, fsync calls·wall | COW rebase·경로 재작성, WAL writeback·checkpoint·GC, 계측 여부 |
+| 공간·정리 | live·retained·pinned·reclaimable·spill·log·file high-water bytes | 시간별 backlog·ACK holes·삭제·회수량, 종료 때 남은 debt |
+| 복구·사용 비용 | reopen·중단 복구·이관/복원 시간, 설치·연동의 실제 작업 | durable 승인 목록, 복구 상태, 원본 오류·실패 DB·사용한 절차 |
+
+lost update·같은 leaf의 변경 손실·unique/range 불변식 위반·중복 claim·stale ACK 수용·sequence hole 건너뛰기·부분 결합 반영·성공 응답 뒤 유실·UNKNOWN 오보고·조기 페이지 재사용은 정확성 탈락 조건이다. 앞의 15개 시나리오에 게시 전후 종료, short/torn/reordered write·sync 실패·disk full·OOM·spill·fallback·mixed-version·이관 복원을 적용한다. 정상 reopen·프로세스 종료·OS crash·전원 차단은 각각 검증 범위를 기록하고, 실행하지 않은 장애 종류는 미검증으로 남긴다.
+
+### 반복과 판정 규칙
+
+두 조건 비교 cell은 새 DB의 사전 실행 1쌍과 정식 대응 10쌍을 제안한다. 이는 수집 한도이며 목표 효과를 검출하는 검정력 산정값이 아니다. 사전 실행은 통계에서 제외하되 정확성 실패는 보존한다. 같은 입력 seed와 반복 ID를 대응시키고 기준 먼저 5쌍·후보 먼저 5쌍을 한 쌍씩 교대로 배치한다. E2는 사전 1block·정식 10block으로 네 조건을 매번 모두 실행하고 시작 조건을 순환한다. 이때 같은 반복 block의 대응을 유지하고 cache별 workspace 효과와 workspace별 cache 효과를 따로 계산한다. 실행 중 결과를 보고 순서·반복 수·payload·주요 부하를 바꾸거나 유리한 구간만 늘리지 않는다. 재실행은 새 실행 ID로 남기고 실패 표본을 대체하지 않는다.
+
+정식 수집 전 후보·기준 commit과 binary hash, 도구·binding·실제 SQLite 링크 버전, OS·장치·filesystem, 설정 조회값, 입력 hash·작업 seed, 도착률·종료 조건·timeout, 결과 분석 버전, G1–G5를 실행 계획에 고정한다. 명령과 env 기록을 재현할 수 없으면 수집하지 않는다. 기존 성공 경로 비교 도구를 새 concurrency·장기 stream 시험에 그대로 쓸 수 있다고 가정하지 않는다.
+
+정확성 실패·설정 불일치·원자료 손실을 발견하면 해당 비교의 성능 수집을 중단하고 DB·부분 결과·원본 오류를 보존한다. 계획한 반복 수와 실제 완료·실패·미실행 수를 모두 남긴다. 실행·복구·정리 timeout과 전체 수집 시간/저장 예산도 수집 전에 정한다. 느린 실행을 이상치로 제거하거나 실패를 성공 실행으로 교체하지 않는다.
+
+고정 작업의 지연은 API 호출, 지속 부하의 지연은 예정 도착에서 시작해 각각 최종 durable 응답까지 잰다. 두 경계를 같은 비율로 비교하지 않는다. 실행별 percentile은 `ceil(p*n)`번째 관측값을 택하는 nearest-rank로 고정한다. `p`는 0과 1 사이의 누적 비율이고 `n`은 지연 관측 수다. 전체 요청 수와 미완료 요청의 censor·timeout도 별도로 보존하며 성공한 요청의 percentile만으로 그 비교를 통과시키지 않는다.
+
+처리량은 대응한 `후보/기준` 비율 10개와 그 중앙값·범위를 보고한다. tail도 실행별 p99의 대응 비를 내고 서로 다른 실행의 percentile을 전체 요청 p99라고 합치지 않는다. 재표집은 실행 쌍을 단위로 유지하고 [SciPy bootstrap 계약](https://docs.scipy.org/doc/scipy/reference/generated/scipy.stats.bootstrap.html)의 paired BCa·10,000회·seed 257을 분석안으로 둔다. 분석 runtime과 RNG 버전도 고정한다. 퇴화 표본·NaN·대응 누락은 판정 보류이며 유리한 방법으로 사후 교체하지 않는다. 같은 호스트의 반복 구간은 해당 실행 변동의 근사 추정이며 장비·고객 모집단의 보장이 아니다.
+
+E1–E4의 여러 원인 탐색 구간은 명목 95%로 표시하고 그중 좋은 구간을 골라 채택하지 않는다. 채택 비교의 후보·주요 부하·효과와 판정할 구간 수 `m`을 정식 수집 전에 고정하고 각 구간의 신뢰수준을 `1 - 0.05/m`으로 조정하는 [Bonferroni 안](https://www.itl.nist.gov/div898/handbook/prc/section4/prc473.htm)을 둔다. 이 보정이 bootstrap의 작은 표본 불확실성이나 공유 호스트의 상관을 해결하지는 않는다. 후보를 탐색 표본에서 골랐으면 새로운 정식 표본으로 비교한다. 정밀도가 부족하면 보류하고 변경한 계획과 새 표본을 별도 등록한다. 실패·timeout·부하 미완료를 빼고 성공 표본만으로 효과 비를 만들지 않는다.
+
+G5에는 부하별 최소 완료량 `Q_min`, p99 상한 `L99_max`, writer 최대 대기 `W_max`, 메모리·저장량·회수 debt 상한, 복구 시간, 실질 개선폭 `delta_min`과 tail 악화 허용폭 `epsilon99`를 값·단위·구간·대상과 함께 정한다. 실제 사용자 부하·자원과 연결되지 않은 임의 값을 승인된 합격선으로 쓰지 않는다. 아래 식의 `L`과 `U`는 조정한 구간의 하한과 상한이다.
+
+| 판정 | 사전 조건과 해석 |
+|---|---|
+| 비교 불가 | 기능·원자성·isolation·내구성·보존·측정 경계가 다르거나 설정/완료 자료가 불완전 |
+| 후보 탈락 | 정확성 실패, 승인된 자원·지연·공정성·복구 상한 위반, 기존 DB·기능 보존 실패 |
+| 효과 보류 | G1–G5 미확정, 표본 부족·구간 퇴화, 비율 구간에 1 포함, 또는 실질 개선 기준 미달. 무효과·동등성의 증명은 아님 |
+| 성능 채택 후보 | 모든 안전·자원 게이트 통과 후 주요 부하에서 `L(처리량 비) > 1 + delta_min`, `U(p99 비) <= 1 + epsilon99`, `Q_min`·`L99_max`·`W_max` 충족 |
+| 제품 채택 후보 | 필요한 로컬 전달 의미, 전체 앱 배포·자원·연동 이익, SQLite 조합 대비 이익을 각각 근거로 충족. 실제 병렬 writer 미충족을 다른 장점으로 상쇄하지 않는 조건 |
+
+같은 예산에서 COW가 shared-root 병합·경로 재작성·pin/회수·공정성 기준에 실패하고 WAL 안이 통과하면 교체 근거가 된다. COW의 국소 구현 결함인지 구조상 비용인지와 배제하지 못한 원인도 남긴다. 둘 다 실패하면 어느 쪽도 채택하지 않으며 SQLite 제품 대안과 요구·비용을 다시 비교한다. SQLite를 택해 실제 병렬 writer 요구를 완화하려면 별도 명시적 결정이 필요하다. 우열이 불확정이면 기존 backend를 보존한다.
+
+탈락·철회에는 실패한 부하와 사전 기준, 양쪽 commit·설정·원자료·실패 표본, 원인 경로와 반례, 포기할 기존 보장, 새 복구·checkpoint·이관 부담과 복원 범위를 D52에 연결한다. 수집 전 계획 commit이 결과의 조상인지, 원자료 hash와 집계 재생성이 일치하는지도 검사한다. 성능 채택 후보가 나와도 기본 backend 변경·기존 파일 전환·배포 완료를 뜻하지 않는다.
+
 ### 요구사항
 
 | 요구사항 | 검증 계획 |
@@ -204,6 +290,6 @@ COW 교체는 아직 결정하지 않았다. 기존 문장 WAL 제거와 H2/H3 �
 - G2 불확정 결과: 영속 요청 ID·결과 조회 권고와 업무 key 대조 방식의 선택, 재시작·만료·동일 ID의 다른 내용·응답 본문 보존 범위의 확정. 기록 비용과 필요한 재전송 기간이 선택 기준 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G3 자원·보존: payload·메모리·pin·spill·in-flight·ACK holes·로그·실패/결과 기록의 bytes와 개수 한도, 유한 대기 시간, replay·멱등 보존 기간의 확정. 한도 도달 시 publish 거절 권고와 명시적 consumer expiry·데이터 손실 정책 비교 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G4 프로세스·이관: 같은 프로세스 실험과 같은 호스트 직접 file writer의 별도 지원 게이트, 복구 소유권·프로세스 간 예약/차단·형식 전환·역이관 검증과 구현 분할. 기존 다중 프로세스의 안전한 단일 writer 지원을 조용히 축소하지 않는 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- workload·지연·RAM·저장량 예산과 효과 채택 기준, COW/WAL 분리 실험 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
+- G5 비교 실행: E0–E7의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - 느린 소비자·보존 한도 충돌, 지원 subject·replay·DLQ/redrive의 정확한 API 계약 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - 표시명 이후 패키지·import·ABI·경로·파일 형식의 별도 호환 전환과 상표 등 권리 확인 ([#258](https://github.com/woonyong-choi/totedb/issues/258))
