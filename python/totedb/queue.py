@@ -145,7 +145,11 @@ class Queue:
             raise BusyError("another writer holds the database", status=status)
         check(status)
         self._handle: ctypes.c_void_p | None = handle
-        db.register_queue(self)
+        try:
+            db.register_queue(self)
+        except MemoryError:
+            self.close()
+            raise
 
     @property
     def handle(self) -> ctypes.c_void_p:
@@ -240,7 +244,8 @@ class Queue:
         """payload를 바꾼다. fence 0은 아직 claim하지 않은 작업, 아니면 그 claim이 유효한 작업만 된다."""
         check(
             self._call(
-                lambda: _lib.tote_queue_update(self.handle, _txn_handle(txn), item_id, fence, payload, len(payload)), txn
+                lambda: _lib.tote_queue_update(self.handle, _txn_handle(txn), item_id, fence, payload, len(payload)),
+                txn,
             )
         )
 
@@ -257,7 +262,10 @@ class Queue:
         count = ctypes.c_size_t()
         check(
             self._call(
-                lambda: _lib.tote_queue_purge(self.handle, None, 1 if include_failed else 0, limit, ctypes.byref(count)), None
+                lambda: _lib.tote_queue_purge(
+                    self.handle, None, 1 if include_failed else 0, limit, ctypes.byref(count)
+                ),
+                None,
             )
         )
         return count.value

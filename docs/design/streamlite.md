@@ -12,7 +12,7 @@ StreamLite는 SQL, 영속 이벤트 스트림, ACK 작업 처리를 각각 선�
 
 새 엔진의 기본 방향은 page/redo WAL, bytes 상한이 있는 buffer pool, MVCC, 조기 key 잠금으로 권고한다. 작은 상태의 잦은 변경을 durable commit과 본문 page 반영으로 분리하고, 같은 leaf의 다른 행을 쓰는 거래가 매번 옛 root를 병합하지 않게 하기 위해서다. 선택 근거와 반증 조건은 [성능과 안전을 함께 고르는 순서](#성능과-안전을-함께-고르는-순서)에 있다. 이는 현재 요구에서 도출한 설계 권고이며 새 backend의 구현·동등 조건 실측·제품 전환 승인은 아니다.
 
-기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache는 기본 OFF인 내부 비교 경로로 분리하며 성능 채택은 측정 전이다. transaction 변경 누적·영속 fanout 스트림·실제 동시 writer는 구현 완료가 아니다. StreamLite 표시명을 채택해도 기존 `totedb` 패키지·Python import·`tote_*` C ABI·`libtotedb`·DB 파일 형식은 그대로 둔다.
+기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache는 기본 OFF인 내부 비교 경로로 분리하며 성능 채택은 측정 전이다. Python의 큐 등록부는 첫 명시 사용 때 생성하며 수명·실패 회귀를 검증했다. transaction 변경 누적·영속 fanout 스트림·실제 동시 writer는 구현 완료가 아니다. StreamLite 표시명을 채택해도 기존 `totedb` 패키지·Python import·`tote_*` C ABI·`libtotedb`·DB 파일 형식은 그대로 둔다.
 
 ### 하지 않는 것
 
@@ -191,13 +191,15 @@ workspace의 문장 밖 보유량은 현재 작업 catalog와 같은 DB resident
 
 SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈 목록을 복제하지 않는 경로를 선택한다. 하위 자원 등록은 기능을 처음 명시적으로 사용할 때 지연 생성한다. 공통 소유 자원 등록부가 필요하면 generic 수명 관리와 queue/stream 전용 호출·분기를 실제 경로에서 구분한다. `_queues`를 다른 이름으로 바꾸는 것만으로 전용 비용을 제거했다고 판정하지 않는다. SQL 실행에는 기능 전용 polling·dispatcher·등록 호출을 넣지 않는다.
 
-등록한 자원은 기존처럼 DB보다 오래 살지 않는 강한 소유 관계와 명시적 unregister를 유지한다. 닫기 중 등록부가 바뀌어도 각 자원을 한 번만 닫고, 해제 오류가 나면 살아 있는 handle을 잃지 않는다. [현재 Python close](../../python/totedb/database.py#L265-L281)처럼 열린 native transaction 때문에 DB close가 Busy이면 DB는 열려 있고 먼저 닫힌 큐는 닫힌 상태인 경계를 보존한다. 이를 조용히 transaction 자동 rollback으로 바꾸지 않는다. 공통 close 검사까지 비용 0이라고 약속하지 않고 생성·실행·종료를 각각 관측한다.
+등록한 자원은 기존처럼 DB보다 오래 살지 않는 강한 소유 관계와 명시적 unregister를 유지한다. 닫기 중 등록부가 바뀌어도 각 자원의 해제를 중복하지 않고, 해제 오류가 나면 살아 있는 handle을 잃지 않는다. [현재 Python close](../../python/totedb/database.py#L265-L288)처럼 열린 native transaction 때문에 DB close가 Busy이면 DB는 열려 있고 먼저 닫힌 큐는 닫힌 상태인 경계를 보존한다. 이를 조용히 transaction 자동 rollback으로 바꾸지 않는다. 공통 close 검사까지 비용 0이라고 약속하지 않고 생성·실행·종료를 각각 관측한다.
+
+현재 Python 구현은 SQL 단독 생성에서 큐 등록부를 할당하지 않는다. 첫 큐 사용 때 기존 instance dict에 등록부를 두고, 이후 같은 등록부를 사용한다. 마지막 큐가 닫혀도 빈 등록부는 DB 수명 동안 유지한다. close의 등록부 존재 검사와 기능을 사용한 뒤 snapshot 복제는 남는다. 큐를 여는 데 성공한 뒤 Python 등록 할당이 실패하면 native handle을 해제하고 `MemoryError`를 그대로 전달한다. 설치 과정에서 이미 commit한 큐 테이블까지 되돌리지는 않는다. [수명 시험](../../tests/test_queue_lifecycle.py)은 강한 소유·반복 close·Busy 뒤 commit/rollback·재개방·Python 등록 할당/close 오류와 동시 첫 등록을 검사한다. 호출·등록부 할당 관측은 SQL 단독 경로의 빈 set/목록 제거를 확인하며, import·공통 DB 상태·전체 RSS나 비계측 지연의 비용 0을 입증하지 않는다. stream 수명은 구현 전이며 실제 기능을 추가할 때 같은 계약을 적용한다.
 
 정상 claim은 최소 eligible ID를 고른 조건부 UPDATE와 RETURNING으로 합치는 안을 먼저 구현한다. ACK도 ID·상태·fence를 조건으로 갱신하고, 영향 행이 없을 때만 필요한 상태를 다시 읽는 안을 우선한다. 이는 [일반 SQL](../../include/sql/sql_statement.h)의 기존 갱신·서브쿼리·RETURNING 의미를 활용하는 구현 방향이며 실제 지원·접근 경로는 구현에서 검증한다. 최소 후보를 임의로 건너뛰거나 fence·만료 검사를 제거하지 않는다. 같은 fence의 ACKED만 중복 성공으로 판정하고 FAILED를 완료로 바꾸지 않는다. 실패 경로의 추가 SQL·scan·복사·반환 소유권도 비교하며 SQL 수만으로 성능을 채택하지 않는다.
 
 ### 공통 계약의 검증 입력
 
-이 표는 각 구현이 확인할 기대 결과다. cache의 회귀·실패 검증은 앞의 시험 파일에 연결하며, workspace·선택형 수명·조건부 SQL의 새 경로는 검증 전이다. 비계측 업무 결과와 성능 채택은 별도 수집으로 판정한다.
+이 표는 각 구현이 확인할 기대 결과다. cache와 Python 큐 수명의 회귀·실패 검증은 앞의 시험 파일에 연결하며, workspace·stream 수명·조건부 SQL의 새 경로는 검증 전이다. 비계측 업무 결과와 성능 채택은 별도 수집으로 판정한다.
 
 | 입력 | 기대 결과와 검사 경계 |
 |---|---|

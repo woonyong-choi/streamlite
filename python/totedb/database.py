@@ -213,7 +213,7 @@ class Database:
         handle = ctypes.c_void_p()
         check(_lib.tote_open(os.fsencode(path), 1 if create else 0, ctypes.byref(handle)))
         self._handle: ctypes.c_void_p | None = handle
-        self._queues: set[Closable] = set()
+        self._queues: set[Closable]
         self.busy_timeout_s = busy_timeout_s
 
     @property
@@ -264,18 +264,25 @@ class Database:
 
     def register_queue(self, queue: Closable) -> None:
         """이 DB를 쓰는 큐를 등록한다. DB를 닫을 때 먼저 닫힌다(큐는 DB보다 오래 살 수 없다)."""
-        self._queues.add(queue)
+        queues = getattr(self, "_queues", None)
+        if queues is None:
+            queues = self.__dict__.setdefault("_queues", set())
+        queues.add(queue)
 
     def unregister_queue(self, queue: Closable) -> None:
         """큐가 스스로 닫혔다."""
-        self._queues.discard(queue)
+        queues = getattr(self, "_queues", None)
+        if queues is not None:
+            queues.discard(queue)
 
     def close(self) -> None:
         """등록된 큐를 닫고 DB를 닫는다. 열린 트랜잭션이 있으면 BusyError이며 DB는 열려 있고 큐만 닫혀 있다."""
         if self._handle is None:
             return
-        for queue in list(self._queues):
-            queue.close()
+        queues = getattr(self, "_queues", None)
+        if queues is not None:
+            for queue in list(queues):
+                queue.close()
         status = _lib.tote_close(ctypes.byref(self._handle))
         check(status)
         self._handle = None

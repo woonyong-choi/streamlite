@@ -35,7 +35,7 @@ make SANITIZE= BUILD_DIR=build-nosan test-database
 | `make test-transaction` | 트랜잭션 상태 기계, writer 경합, commit 결과, 실패 주입 |
 | `make test-session` | 세션 메모리 예산과 결과 수명 |
 | `make test-ack-queue` | ACK 큐의 C API와 실패 주입 |
-| `make test-ack-queue-python` | Python 바인딩의 DB·트랜잭션·큐 계약 |
+| `make test-ack-queue-python` | Python 바인딩의 DB·트랜잭션·큐 계약과 선택형 수명·등록 실패·Busy close |
 | `make test-all` | 위 대상 전체 |
 | `make test-runner` | 시험 실행기와 실패 판정기 |
 | `make test-fault` | 실패 주입 런타임 |
