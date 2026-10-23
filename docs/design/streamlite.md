@@ -74,6 +74,8 @@ group commit은 독립 transaction의 충돌·결과·순서를 유지하고 자
 
 WAL 안도 WAL-before-data·page LSN·torn-page 보호·복구·checkpoint·version GC가 필요하다. SQLite·LMDB 또는 WAL이라는 이름만으로 진짜 동시 writer와 복구 안전성을 충족했다고 표시하지 않는다. 일반 SQLite backend는 총 구현 위험을 줄이는 대안이지만 실제 병렬 writer 요구는 충족하지 못한다.
 
+COW 교체는 아직 결정하지 않았다. 기존 문장 WAL 제거와 H2/H3 후보 철회는 서로 다른 이유와 범위의 선택이다. [개발 선택 D52](../development-report.md#d52-streamlite의-새-요구와-cow-유지교체의-판단-근거)에 그 근거와 COW 교체 시 남길 실패 조건·대안 결과·감수할 비용을 연결한다. 계약과 공통 개선을 맞춘 대조 없이 기존 COW의 실패나 WAL의 우위로 결론 내리지 않는다.
+
 ### 요구사항
 
 | 요구사항 | 검증 계획 |
