@@ -10,6 +10,8 @@ ToteDB의 현재 목적은 SQLite 기반 Python 큐에서 겪는 사용성·기�
 
 공개 코드의 현재 해석 기준은 `e49a3d2f252c0e501bc7e76cc064e77e6ec98673`이다. 과거 선택에는 해당 커밋을, 수치에는 실험별 제품·도구 버전과 공개 결과를 사용한다. 이슈 본문은 수정 가능하므로 생성 시각을 최초 발견일이나 본문 전체의 작성일로 단정하지 않는다. first-parent 이력의 반영 순서와 커밋 작성 시각도 다를 수 있다. 이번 보고서 작성에서는 빌드·성능·장애 실험을 재실행하지 않았다. 시험 통과는 연결한 공개 기록의 보고값이다. ([기준 코드](https://github.com/woonyong-choi/totedb/tree/e49a3d2f252c0e501bc7e76cc064e77e6ec98673), [보고 범위 #246](https://github.com/woonyong-choi/totedb/issues/246))
 
+StreamLite 리뉴얼의 현재 구조 권고와 과거 COW·WAL 선택의 관계는 D52에서 다룬다. 새 엔진의 설계 방향은 WAL 계열이며, 위 기준 코드의 COW 구현이나 기존 실험 결과가 그에 맞춰 바뀌었다는 뜻은 아니다.
+
 기여는 팀 과제의 공동 결과, 개인 주도 엔진 구현, 과제 종료 뒤 개인 확장을 구분한다. 팀은 5인이며 병합 기여자는 4인이라는 출처 설명을 따른다. 팀 전체 구현을 개인 성과로 합산하지 않는다. 과거 문서의 짧은 해시·커밋 수·변경 줄 수도 현재 이력의 통계로 다시 쓰지 않는다. ([기여와 출처](attribution.md))
 
 | 근거의 종류 | 이 문서에서 뜻하는 것 | 뜻하지 않는 것 |
@@ -209,7 +211,7 @@ WAL은 없었던 기능이 아니라 D15에서 실제 연결한 구현이다. 10
 
 당시 명시 이유는 data fsync, control write, fsync가 원자성과 응답 뒤 보존을 제공해 문장 WAL이 해당 계약에 중복된다는 것이었다. 느리다는 추정이나 거래 내부 원자성만 필요하다는 설명으로 바꾸지 않는다. WAL·durable_pair와 관련 경로를 제거했다.
 
-현재 `BEGIN DURABLE/VOLATILE`, WAL path·변환·정보, 큐·C/Python durability 선택은 없다. 달성 보증은 항상 DURABLE이다. 초기 #139의 두 모드 요구는 역사이며 현재 무내구 선택 모드로 소개하지 않는다. COW 게시 선택을 유지한다. ([제거 전 결정](https://github.com/woonyong-choi/totedb/issues/9#issuecomment-6205475634), [제거 구현](https://github.com/woonyong-choi/totedb/commit/d137130))
+현재 `BEGIN DURABLE/VOLATILE`, WAL path·변환·정보, 큐·C/Python durability 선택은 없다. 달성 보증은 항상 DURABLE이다. 초기 #139의 두 모드 요구는 역사이며 현재 무내구 선택 모드로 소개하지 않는다. 제거 이후 현행 구현은 COW 게시를 사용한다. StreamLite 새 엔진의 구조 권고는 D52로 구분한다. ([제거 전 결정](https://github.com/woonyong-choi/totedb/issues/9#issuecomment-6205475634), [제거 구현](https://github.com/woonyong-choi/totedb/commit/d137130))
 
 ### D22 조건부 1-fsync와 두 번 동기화 경로 병존
 
@@ -490,38 +492,48 @@ FFI에도 SQL result에서 native payload로, ctypes에서 Python bytes로 복�
 
 ### D52 StreamLite의 새 요구와 COW 유지·교체의 판단 근거
 
+2026-10-24의 현재 권고는 새 엔진을 page/redo WAL·bounded buffer pool·MVCC·조기 key/range 잠금으로 개발하는 것이다. 현행 COW를 무조건 확장하는 방향에서 변경한다. 작은 ACK·행 상태 변경이 잦고 독립 writer가 같은 page를 공유하는 요구에서는, commit의 로그 영속화와 data page writeback을 분리하는 쪽을 우선한다. 기존 단일 writer COW 제품은 새 구현·복구·동등 조건 검증과 별도 이관 판단이 끝날 때까지 보존한다. 이 권고는 설계 추론이며 새 backend의 구현·실측 우위·배포 완료가 아니다. ([현재 구조 권고](design/streamlite.md#성능과-안전을-함께-고르는-순서))
+
 예를 들어 같은 leaf의 서로 다른 두 행을 두 transaction이 바꾸더라도, 나중 transaction이 옛 root를 그대로 게시하면 먼저 확정한 변경을 잃을 수 있다. 쓰기 잠금만 없애는 변경으로는 이 문제를 풀지 못한다. 현재 `database_work_begin`은 작업 종료까지 배타 잠금을 유지한다. 따라서 현재의 단일 writer COW와, 검증·병합을 추가할 다중 writer COW는 같은 구현이 아니다. 이 설명은 현재 코드와 제안의 대조이며 동시 갱신 실험 결과가 아니다. ([현재 잠금](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1163-L1172), [작업 종료](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1229-L1251), [리뉴얼 구조](design/streamlite.md#다중-writer의-검증병합게시))
 
 2026-10-23의 StreamLite 리뉴얼은 SQL·영속 재생 스트림·ACK를 각각 사용하거나 같은 transaction으로 결합하는 제품 가설을 더했다. 채택하려면 필요한 로컬 JetStream 전달 의미를 충족하고, 같은 보장에서 전체 자원·배포·연동 부담을 줄이며, SQLite 조합 대비 자체 엔진의 이익을 보여야 한다. 실제 동시 writer의 안전성과 작업당 비용 절감도 함께 요구한다. 완료된 수요 분석과 표시명 변경은 이 조건의 구현·실측 완료가 아니다. ([구조 결정 #257](https://github.com/woonyong-choi/totedb/issues/257), [표시명·구조 제안 PR259](https://github.com/woonyong-choi/totedb/pull/259), [제품 가설과 대안](design/streamlite.md#해결하는-문제))
 
-2026-10-24 확인 범위에서 COW는 철회하지 않았다. 서로 다른 선택의 이유를 한 번의 저장 구조 실패로 합치지 않는다.
+기존 공개 검토에는 이미 “현재 COW+SQL 재실행 WAL을 기본안으로 유지할 근거는 없음”과 “현행 COW+SQL 로그를 기본 후보에서 내리고 증분 COW와 실제 페이지 WAL을 분리”한다는 판단이 있다. 당시 제외한 결합 경로, 이후 문장 WAL 제거, 이번 새 엔진의 WAL 권고는 다른 선택이다. 댓글은 후속 내용을 누적한 기록이므로 본문의 모든 판단을 댓글 생성일의 결정으로 소급하지 않는다. 이번 권고를 당시 이미 WAL을 선택·구현했다는 역사로 바꾸지도 않는다. ([기존 결합 경로 제외](https://github.com/woonyong-choi/totedb/issues/137#issuecomment-6202455142))
 
 | 선택과 상태 | 직접 근거 | 말할 수 있는 이유와 한계 |
 |---|---|---|
-| 문장 재실행 WAL 제거, 반영 완료 | [D21의 제거 커밋](https://github.com/woonyong-choi/totedb/commit/d1371303cc3a7da670eb80a5c101d043ee2a3815) | 당시 COW의 data sync·control write·sync가 제공하는 보존 계약에 SQL 재실행 로그가 중복된다는 판단이다. WAL·buffer pool·MVCC와 성능을 대조해 COW가 이겼다는 기록이 아니다. |
-| 조건부 1-fsync 추가, 유지 | [D22의 후속 커밋](https://github.com/woonyong-choi/totedb/commit/e3023e7), [현재 게시 계약](../include/storage/page_file.h#L221-L243) | manifest 조건을 충족할 때만 한 번 동기화한다. WAL 제거의 이유와 이후 sync 횟수 변경을 구분한다. 전원 차단 안전성 전체를 입증한 것은 아니다. |
+| 기존 COW+SQL 재실행 WAL, 기본 후보 제외 | [#137의 당시 검토](https://github.com/woonyong-choi/totedb/issues/137#issuecomment-6202455142) | SQL 로그 뒤에도 COW 게시 비용을 내는 결합 경로를 기본 후보에서 내린다. 개선 COW와 실제 page WAL은 별도 후보로 남긴 판단이며, 모든 COW의 철회나 대안 구현 완료가 아니다. |
+| 2026-10-16 문장 재실행 WAL 제거, 반영 완료 | [D21의 제거 커밋](https://github.com/woonyong-choi/totedb/commit/d1371303cc3a7da670eb80a5c101d043ee2a3815) | 당시 COW의 data sync·control write·sync가 제공하는 보존 계약에 SQL 재실행 로그가 중복된다는 판단이다. WAL·buffer pool·MVCC와 성능을 대조해 COW가 이겼다는 기록이 아니다. |
+| 같은 날 뒤이은 조건부 1-fsync 추가, 유지 | [D22의 후속 커밋](https://github.com/woonyong-choi/totedb/commit/e3023e7), [현재 게시 계약](../include/storage/page_file.h#L221-L243) | manifest 조건을 충족할 때만 한 번 동기화한다. WAL 제거의 이유와 이후 sync 횟수 변경을 구분한다. 전원 차단 안전성 전체를 입증한 것은 아니다. |
 | H2 직접 clone·H3 버퍼 재사용, 제품 후보 철회 | [D46의 평가](experiments/queue-contention/report.md#단일-writer-후속-비용-평가), [원 결과](experiments/queue-contention/results/single-writer-cost.json) | 정확성 실패가 아니라 누적 업무 성능의 채택 근거 부족이다. COW나 transaction workspace 전체를 시험해 포기한 것이 아니다. |
-| 현재 단일 writer COW, 유지 | [현재 잠금](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1163-L1172), [페이지 회수 계약](../include/storage/page_file.h#L183-L209) | 기존 게시·fallback·fresh 재사용을 보존하는 출발점이다. 임의 길이 snapshot의 병렬 writer 회수까지 안전하다는 증거가 아니다. |
-| buffered COW와 WAL·buffer pool·MVCC 비교, 제안 | [리뉴얼 구조](design/streamlite.md#성능과-안전을-함께-고르는-순서), [#257](https://github.com/woonyong-choi/totedb/issues/257) | 새 요구에 맞는 구조를 고르려는 후속 검토다. 두 후보의 구현·공정 비교와 COW 교체 결정은 아직 없다. |
+| 현재 단일 writer COW, 제품 구현 보존 | [현재 잠금](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1163-L1172), [페이지 회수 계약](../include/storage/page_file.h#L183-L209) | 기존 DB·게시·오류·fallback·fresh 재사용을 보존한다. 새 엔진의 기본 구조로 다시 채택했다는 뜻이 아니며, 병렬 writer 회수의 안전성 증거도 아니다. |
+| 새 엔진의 page/redo WAL·buffer pool·MVCC·조기 잠금, 현재 권고 | [리뉴얼 구조](design/streamlite.md#성능과-안전을-함께-고르는-순서), [복구 계약](design/streamlite.md#wal-권고안의-복구정리-경계) | 작은 변경의 page writeback을 durable group 사이에도 합칠 수 있다는 구조적 이익을 우선한다. 복구·공유 상태·checkpoint·version GC를 새로 구현하고 검증하는 부담을 감수하는 설계안이다. |
+| buffered COW, 동등 조건 비교 후보 유지 | [권고를 바꾸는 조건](design/streamlite.md#권고를-바꾸는-조건과-보존할-것) | 같은 조기 잠금·cache·workspace·group 정책으로 비교한다. 요구를 충족하고 WAL의 추가 비용이 이익을 없애면 다시 선택할 수 있다. 두 후보의 구현·실측은 아직 없다. |
 
-현재 COW를 출발점으로 남기는 이유는 기존 게시·오류 구분·회수 경계를 보존하면서 공통 반복 비용을 분리해 확인할 수 있기 때문이다. 이는 후속 설계 판단이지 최초 COW 채택 동기의 복원이 아니다. 문장마다 남는 `catalog_clone`의 encode/decode와 `heap_batch_finish` 뒤 페이지 쓰기는 줄일 후보지만 COW에 필수인 비용이라고 확정하지 않는다. 읽기 cache와 fresh 재사용은 이미 있으므로 매 수정이 항상 새 물리 페이지를 요구한다는 설명도 쓰지 않는다. ([clone](../src/storage/catalog.c#L249-L257), [문장 완료](../src/sql/database.c#L718-L755), [페이지 쓰기](../src/storage/page_file.c#L1186-L1198), [회수 계약](../include/storage/page_file.h#L183-L209))
+문장마다 남는 `catalog_clone`의 encode/decode와 `heap_batch_finish` 뒤 페이지 쓰기는 공통 개선 대상이다. 이를 COW의 필수 비용으로 확정하거나 WAL을 붙이면 파싱·복사도 사라진다고 계산하지 않는다. 읽기 cache와 fresh 재사용도 이미 있다. 기존 게시·오류·회수 경계를 회귀 기준으로 보존하는 이유와 새 엔진의 기본 방향을 고르는 이유를 구분한다. 이 설명은 현재 코드 해석이며 최초 COW 채택 동기의 복원이 아니다. ([clone](../src/storage/catalog.c#L249-L257), [문장 완료](../src/sql/database.c#L718-L755), [페이지 쓰기](../src/storage/page_file.c#L1186-L1198), [회수 계약](../include/storage/page_file.h#L183-L209))
 
-COW 유지가 불리해지는 조건은 공유 root 병합·최신 tree에 변경을 다시 적용하는 rebase·게시 대기가 목표 지연이나 writer 공정성을 깨는 경우다. 변경 경로 재작성·긴 reader의 페이지 점유·회수 비용이 메모리와 저장량 한도를 깨는 경우도 같다. 이 비용을 고치는 검증·복구·이관 부담이 WAL 안에 가까워지면 기존 코드 재사용만으로 COW를 우선하지 않는다. 목표 workload와 수치 예산은 #257에서 정할 항목이며, 현재 충족 또는 실패를 판정한 값은 없다.
+공통 개선을 적용한 direct page-COW도 각 durable group에서 공개할 변경 page와 참조 경로를 영속화해야 한다. 같은 leaf의 다른 행을 바꾼 writer도 최신 tree에 변경을 병합하고 root 게시를 조정해야 한다. WAL은 변경 로그를 먼저 영속화한 뒤 같은 data page의 변경을 여러 group에 걸쳐 모아 쓸 수 있다. 이 저장 단위 차이가 작은 변경이 잦은 새 요구에서 WAL을 우선하는 이유다. COW의 group 누적·fresh 재사용·조건부 1-sync도 공정한 대조에 포함하며, 매 변경에 새 물리 page를 할당한다고 가정하지 않는다. 큰 bulk·큰 group·읽기 중심 입력에서는 이 이점이 줄 수 있다. ([비용 모형과 소스](design/streamlite.md#소스에서-확인한-비용과-저장-단위))
 
-WAL 안에는 같은 cache·workspace·payload/소비자 상태 배치를 적용해 공통 개선을 COW 또는 WAL만의 효과로 세지 않는다. 같은 SQL 결과·격리·writer 범위·성공 응답의 내구성·메모리·보존 조건에서 COW의 재작성·병합·회수와 WAL의 redo·buffer writeback·checkpoint·version GC를 함께 비교해야 한다. WAL도 data보다 로그를 먼저 영속화하는 규칙, page LSN·torn-page 보호·충돌 처리·복구가 필요하다. WAL이라는 이름만으로 동시 writer나 더 낮은 총비용이 보장되지 않는다. 일반 SQLite는 총 구현 위험을 줄일 대안으로 남기되 실제 병렬 writer 충족으로 계산하지 않는다. ([대안과 미해결](design/streamlite.md#대안), [SQLite WAL](https://www.sqlite.org/wal.html), [PostgreSQL WAL](https://www.postgresql.org/docs/18/wal-intro.html))
+조기 key/range 잠금은 같은 행·범위의 충돌을 작업 초기에 조정하고 transaction 끝까지 유지하는 권고다. MVCC는 version 가시성과 회수를 맡는다. 이 정책은 buffered COW에도 적용할 수 있으므로 WAL만의 이익으로 세지 않는다. page latch만으로 거래 격리가 생기지는 않으며, 같은 leaf의 서로 다른 행 변경도 유실 없이 진행해야 한다. 기존 SNAPSHOT의 고정된 읽기 시점은 유지하고, 대기 뒤 충돌 실패가 필요한 경우도 구분한다. 자동 callback 재실행이나 deadlock·timeout이 전혀 없다는 약속은 하지 않는다. ([writer 범위와 격리](design/streamlite.md#writer-범위와-격리))
 
-나중에 COW를 교체한다면 이 절에 실패한 요구와 workload·사전 기준, 기준본과 후보 commit·설정, 실패·중단 표본을 포함한 원 결과, 비용이 발생한 경로와 배제하지 못한 원인, 대안의 같은 조건 결과를 연결한다. 국소 구현 실패인지 COW 구조의 한계인지도 구분한다. 포기하는 기존 게시·복구 경계와 새로 부담하는 복구·checkpoint·이관 비용, 기존 DB 보존·복원 방법을 선택 이유에 함께 적는다. 이 근거가 없는 지금은 ‘COW를 버려 성능을 해결했다’가 아니라 ‘COW를 유지하되 새 요구에 따라 교체할 조건을 정리했다’까지가 블로그에 쓸 수 있는 결론이다. 구체적인 계약과 비교 실험은 #257의 다음 작업이며, 이 기록은 그 완료를 대신하지 않는다.
+WAL 권고로 새로 부담하는 것은 redo·full-page image·공유 frame·거래 상태·checkpoint·version GC·재시작 경로다. page LSN까지 로그를 먼저 영속화하고 commit barrier 뒤에만 성공을 반환해야 한다. 미확정 version의 영구 식별·abort 뒤 비가시성·구조 변경 복구를 증명하기 전에는 미확정 page writeback을 허용하지 않는다. checkpoint도 긴 snapshot의 옛 version이나 소비자의 replay payload를 지울 근거가 아니다. COW의 root·manifest 복구보다 시작·정리 비용이 커질 수 있고, 옛 COW page가 차지한 디스크 bytes를 전부 RSS로 셀 수도 없다. 호출자가 전체 pending payload를 모으는 비용은 backend 변경으로 사라지지 않는다. ([새 복구·정리 의무](design/streamlite.md#wal-권고안의-복구정리-경계), [목록 메모리 비교](design/streamlite.md#pending-목록의-메모리와-호출-경계))
+
+현재 포기하는 방향은 새 엔진에서 현행 COW 게시를 무조건 확장하는 것이다. B+Tree·행 codec·SQL·선택형 ACK·소유권·오류 경계도 모두 폐기하는 결정은 아니다. 대조군에는 같은 cache·workspace·payload/소비자 상태 배치와 격리·writer·내구성·전체 예산을 적용한다. COW의 재작성·병합·pin·회수와 WAL의 로그·writeback·checkpoint·GC·복구를 정리 완료까지 비교한다. buffered COW가 필요한 tail·공정성·메모리·복구 기준을 채우고 WAL의 추가 부담이 이익을 없애면 권고를 바꾼다. WAL 후보가 correctness나 자원 한도를 위반하면 채택하지 않는다. 일반 SQLite는 제품 구현 부담을 줄일 대안으로 남기되 한 writer 제약을 실제 독립 writer의 충족으로 계산하지 않는다. ([대안](design/streamlite.md#대안), [비교·채택 기준](design/streamlite.md#분리-비교의-범위))
+
+이 절의 이전 ‘COW를 철회하지 않았다’와 ‘실패하면 WAL을 검토한다’는 표현은 기존 구현의 보존과 새 구조의 선택을 구분하지 못했다. 현재 블로그에 쓸 수 있는 판단은 ‘작은 변경과 실제 독립 writer를 위해 WAL 계열로 개발 방향을 바꾸도록 권고하고 복구·정리 부담을 감수한다’이다. 구현 완료나 성능 해결로 쓰지 않는다. workload·수치 예산, 후보 commit·설정과 실패·중단 표본을 포함한 원 결과, 원인 경로·반례와 기존 DB 복원 범위는 후속 구현·실측에서 연결할 근거다. [#257](https://github.com/woonyong-choi/totedb/issues/257)의 남은 계약과 [후속 구현·검증](design/streamlite.md#후속-구현과-검증)은 이 기록으로 완료되지 않는다.
 
 ### 유지·철회·보류와 다음 판정 조건
 
 | 현재 상태 | 대상 | 다음 판정 조건 |
 |---|---|---|
 | 유지 | 독립 SQL·선택형 ACK·호출자 거래 결합 | 세 사용 방식의 계약·실패·미사용 비용을 따로 검사 |
-| 유지 | 가변 값·catalog·색인·COW 게시·지연 회수·예산·소유권 | 실패 때 옛/새 상태와 회계·소유권 보존 |
+| 현행 제품 보존 | 가변 값·catalog·색인·COW 게시·지연 회수·예산·소유권 | 실패 때 옛/새 상태와 회계·소유권 보존, 새 엔진 재사용은 별도 계약 검사 |
 | 유지 | TEXT 구간 순회·안전한 LIMIT, 매크로 계측·배포 격리 | 지원 정렬 의미와 OFF/ON 분리의 회귀 방지 |
 | 철회 | PG 전체 호환, 구 서버·엔진, 문장 WAL·두 durability 모드 | 현재 제품의 기능으로 다시 소개하지 않는 조건 |
 | 철회 | H2 직접 clone·H3 cache buffer 재사용 제품 후보 | 동일 계약의 새 전후 근거 없이는 재채택 금지 |
-| 검토 중 | StreamLite 병렬 writer·buffered COW/WAL·공개 prepared API | #257의 충돌·복구·자원 계약과 효과의 사전 기준, D52의 유지·교체 근거 필요 |
+| 기본 개발 방향 권고, 미구현 | StreamLite page/redo WAL·buffer pool·MVCC·조기 잠금·실제 독립 writer | 설계 G1–G6와 복구·자원·전체 비용 검증, 기존 제품 전환은 별도 판단 |
+| 비교 후보 유지 | buffered COW와 동등한 조기 잠금·공통 개선 | 정리·복구 포함 같은 조건의 tail·공정성·전체 자원, WAL 권고의 반증 여부 |
+| 검토 중 | 공개 prepared API | binding·schema·소유권·예산 계약과 공개 범위 확정 |
 | 미구현 | 제한 SQL 문장·준비 결과 cache | binding·schema·예산·hit/miss와 OFF 업무 효과 |
 | 요구 미충족 | 현재 메모리 우위·기존 큐 대비 속도·미사용 전용 비용 배제 | 원 소비 경로 메모리·정상/실패 계약별 비교와 lifecycle 비용 분리 |
 | 미검증 | 새 엔진의 총 편익·장기 INSERT/UPDATE/DELETE 효율 | SQLite 직접 ACK 대안의 기능·개발·검증·운영 비용, cleanup 포함 수명주기 비교 |
@@ -537,3 +549,5 @@ WAL 안에는 같은 cache·workspace·payload/소비자 상태 배치를 적용
 현재 선택의 기준은 ‘새 엔진으로 구현할 수 있다’가 아니라 ‘필요한 보장을 유지하면서 사용·실행·정리 비용을 줄였다는 근거가 있다’여야 한다. TEXT 개선과 H2/H3 철회의 차이는 내부 작업 제거가 아니라 비계측 업무 효과를 확인했는지에 있다. 같은 기준을 원래 요구에 적용하면 기능 경계는 구현됐지만 메모리·반복 삭제 효율·실제 교체 편익은 아직 완료라고 부를 수 없다.
 
 다음 판단은 SQLite 위 직접 ACK라는 대안을 남긴 채 필요한 사용 장면을 고정하는 것이다. 문장 cache나 페이지 변경 누적은 그 장면의 비용을 줄일 후보이지 제품 필요성의 대체 증거가 아니다. 일정 backlog와 cleanup을 포함한 수명주기 비교가 목표를 충족하지 못하면 그 결과도 후보 철회와 같은 수준의 결정 근거로 남겨야 한다. 이 보고서는 기존 공개 근거를 종합한 Markdown 정본이며, 새 실험·코드·배포 결과를 만들지 않는다.
+
+StreamLite의 새 엔진에는 WAL·bounded buffer pool·MVCC·조기 잠금을 현재 개발 방향으로 권고한다. 이유는 작은 변경의 로그 영속화와 data writeback을 분리하고 독립 writer를 조정하는 데 있다. D52는 이전 결합 경로 제외·문장 WAL 제거·현행 COW 보존과 이 권고를 구분한다. 새 복구·checkpoint·GC 부담을 포함한 구현·실측은 남아 있으며, 동등 조건의 buffered COW 결과가 권고를 뒤집을 수도 있다.

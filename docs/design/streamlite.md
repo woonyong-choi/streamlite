@@ -215,7 +215,7 @@ WAL의 복구 재생과 checkpoint·version GC는 COW의 root 선택·manifest �
 
 같은 격리·조기 잠금·cache/workspace·payload 배치·group 정책에서 buffered COW가 필요한 tail·공정성·전체 메모리·정리·복구 기준을 채우고, WAL의 추가 복구/공유 상태·checkpoint/GC 비용이 이익을 없애면 COW를 다시 선택할 근거가 된다. 반대로 WAL의 correctness 실패나 자원 한도 위반은 기존 구현을 자동 폐기할 근거가 아니라 WAL 후보의 탈락 사유다. 두 후보가 모두 부적합하면 새 backend를 채택하지 않고 원인과 요구를 다시 검토한다. 실제 writer 요구를 포기하거나 표준 SQLite의 직렬화로 대체하려면 별도 요구 변경이 필요하다.
 
-포기하는 것은 새 엔진에서 현행 COW 게시를 무조건 기본으로 확장한다는 방향이다. B+Tree·행 codec·SQL 의미·선택형 ACK·소유권·오류 결과·예산을 함께 버리는 선택은 아니다. 재사용할 코드도 새 page/version/복구 계약과 맞는지 검사한다. 현행 제품의 파일과 단일 writer 경로는 새 backend 검증과 이관이 끝날 때까지 보존하며, 두 backend를 영구 지원하겠다는 약속은 하지 않는다. 현재 권고와 [이전 제품·저장 선택 D52](../development-report.md#d52-streamlite의-새-요구와-cow-유지교체의-판단-근거)의 이력, [기존 결합 경로 제외 근거](https://github.com/woonyong-choi/totedb/issues/137#issuecomment-6202455142)를 구분한다. 예전 SQL 재실행 WAL을 다시 얹는 안을 고른 것이 아니다.
+포기하는 것은 새 엔진에서 현행 COW 게시를 무조건 기본으로 확장한다는 방향이다. B+Tree·행 codec·SQL 의미·선택형 ACK·소유권·오류 결과·예산을 함께 버리는 선택은 아니다. 재사용할 코드도 새 page/version/복구 계약과 맞는지 검사한다. 현행 제품의 파일과 단일 writer 경로는 새 backend 검증과 이관이 끝날 때까지 보존하며, 두 backend를 영구 지원하겠다는 약속은 하지 않는다. [제품·저장 선택 D52](../development-report.md#d52-streamlite의-새-요구와-cow-유지교체의-판단-근거)는 현재 권고와 과거 선택의 이력을 구분한다. [기존 결합 경로 제외 근거](https://github.com/woonyong-choi/totedb/issues/137#issuecomment-6202455142)처럼 예전 SQL 재실행 WAL을 다시 얹는 안을 고른 것이 아니다.
 
 ### 분리 비교의 범위
 
