@@ -291,3 +291,29 @@ README는 화면 폭에 따라 움직이는 [기본 SVG](assets/transaction-queu
 GitHub의 HTML 링크는 재생 화면이 아니라 소스보기다. 장면을 선택하려면 저장소를 내려받은 뒤 `docs/assets/transaction-queue.html` 또는 `transaction-queue-narrow.html`을 로컬 브라우저에서 연다. `storage-publication`과 `queue-lifecycle`의 기본·좁은 HTML도 같은 방식으로 연다. GitHub에서 움직이는 SVG가 보이는 것과 HTML의 장면 선택 기능은 구분한다.
 
 재생성은 ToteDB 루트에서 `node tools/render-figures.mjs`로 한다. 큐 2개는 `buildFigure(source, {strict: true, baseDir})`의 기본 폭으로 빌드하고 `toSvg(result, {name})`·`toHtml(result, name)`으로 내보낸다. 좁은 배치는 고정 도구의 내부 `src/build.js`에 있는 `reflowFigure`로 같은 기준 시간표를 유지한다. 원본의 장면 값을 trace와 대조하고 정지 출력으로 덮어쓰지 않는다. 7개 원본과 22개 생성물의 정확한 옵션·환경·바이트 대조는 [아키텍처의 재생성](architecture.md#그림-원본과-재생성)을 따른다.
+
+## pending 조회 수집
+
+[사전 계획](design/streamlite.md#pending-조회-수집의-사전-계획)은 실제 persist-queue 1.1.0, 현재 호환 계층과 native 목록 API를 같은 최종 소비 결과로 비교한다. `bench/pending_query_plan.json`은 현재 macOS 작업본의 고정 binary 경로·hash를 사용한다. 다른 호스트의 재빌드는 같은 등록으로 덮어쓰지 않고 별도 계획·환경으로 다룬다. `register --control`은 9행·32B body·4개 page의 36건 대조이며 정식 효과 판단에 쓰지 않는다.
+
+```sh
+make BUILD_DIR=build-regression/conditional-baseline-on BENCHMARK=1 pending-query-driver
+make BUILD_DIR=build-regression pending-query-fault-driver
+build/check-env/bin/python bench/pending_query.py register --control --prefix build/pending-control
+build/check-env/bin/python bench/pending_query.py collect --prefix build/pending-control
+build/check-env/bin/python bench/pending_query.py verify --prefix build/pending-control
+build/check-env/bin/python bench/pending_query.py analyze --prefix build/pending-control
+```
+
+정식 수집은 계획·수집기를 함께 담은 commit 뒤의 clean 작업본에서 실행한다. `PLAN_COMMIT`에는 그 전체 SHA를 지정한다. 등록 후 수집 전에는 source·binary·환경을 바꾸지 않는다. 등록·실패 접두사가 이미 있으면 새 접두사를 사용하며 기존 파일을 덮어쓰지 않는다.
+
+```sh
+build/check-env/bin/python bench/pending_query.py register --plan-commit "$PLAN_COMMIT" --prefix build/pending-formal
+build/check-env/bin/python bench/pending_query.py collect --prefix build/pending-formal
+build/check-env/bin/python bench/pending_query.py verify --prefix build/pending-formal
+build/check-env/bin/python bench/pending_query.py analyze --prefix build/pending-formal
+```
+
+`<prefix>.registration.json`은 source·설정·일정·binary·환경, `.fixtures.json`은 첫 조회 전 데이터 hash, `.raw.jsonl`은 case별 관측, `.manifest.json`은 완료·실패·미실행·파일 hash·시간을 담는다. 같은 접두사의 fixture 디렉터리와 stdout/stderr도 유일한 실행 증거이므로 보존한다. analyzer는 원자료에서 처리한 통계를 stdout으로 내며, 저장한 JSON을 고쳐 수치를 맞추지 않는다. 등록한 수집 코드가 바뀌면 기존 실행을 새 코드의 표본으로 읽지 않고 원래 코드에서 재현한다.
+
+[수집기 회귀](../tests/test_pending_query.py)는 정상 결과·손상 digest·행 수·계측 혼입·변경된 입력·시간 초과·실패 보존, 혼합 상태·page 전환·수명·변환/serializer 오류를 검사한다. [native 실패 대조](../tests/test_pending_query_native.c)는 같은 합성 fixture를 인자로 받아 payload malloc·session reserve 실패 뒤 부분 결과·누수와 다음 조회를 확인한다. 제품 코드·현재 파일·기본 backend와 소비 프로젝트는 이 명령으로 교체하지 않는다.

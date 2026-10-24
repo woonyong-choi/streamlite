@@ -377,6 +377,32 @@ steady 구간의 cleanup·checkpoint·GC는 실제 실행한 CPU·I/O·지연에
 
 G5에는 조회별 필요한 필드·상태·결과 수명, backlog/page/payload 축과 전체 메모리 예산·허용 증가폭을 수집 전에 고정한다. 같은 Q1/Q2 결과와 page를 유지한 채 backlog만 늘렸을 때 엔진·binding·소비자 전체 비용이 어떻게 변하는지가 bounded 조회 가설의 반증 자료다. Q3의 전체 읽기 시간과 Q4의 전체 결과 보관 비용까지 backlog와 무관하다고 요구하지 않는다. 고정한 예산을 넘거나 호출자가 전체 본문을 축적하면 그 경로는 원래 메모리 문제를 해결했다고 판정하지 않는다. 실제 persist-queue와의 비교는 고정 버전의 공개 API·serializer·같은 조회 과제를 별도 기준군으로 검사한다. 현재 호환 계층의 정적 분석을 그 라이브러리의 실측이나 원 소비 프로젝트의 교체 효과로 바꾸지 않는다. 실제 소비 API의 변경·실측은 별도 후속 검증이다.
 
+### pending 조회 수집의 사전 계획
+
+[#265](https://github.com/woonyong-choi/totedb/issues/265)의 [수집기](../../bench/pending_query.py)와 [고정 입력·판정 설정](../../bench/pending_query_plan.json)은 현재 COW 제품 코드 `9d70c9b4`를 대상으로 한다. 수집기·설정을 함께 담은 commit을 먼저 고정하고 정식 수집에서 그 조상을 검사한다. 작은 정상·실패 대조는 수집기 검증이며 메모리 절감 효과나 원 소비 프로젝트 교체의 근거가 아니다.
+
+Q1–Q4는 ID·상태·초 단위 timestamp, 본문 과제에서는 복원한 `data`까지 같은 ID 오름차순 digest를 요구한다. READY 합성 입력의 ID는 1부터 backlog까지, timestamp는 1초다. 본문 값은 `{"id": 정수, "body": "x" 반복}`이고 세 경로 모두 기본 `json.dumps`의 UTF-8 bytes와 같은 `json.loads`를 쓴다. 256B·4,096B는 body 문자열 길이이며 JSON 전체 크기가 아니다. 실제 persist-queue 1.1.0의 공개 `queue()`, 현재 호환 `queue()`, native 목록 API를 별도 조건으로 둔다. vendor fixture는 공개 `put()`으로 만들고 합성 SQLite 파일의 timestamp만 정규화한다. vendor의 `SELECT *`에는 ORDER BY 보장이 없으므로 기대 순서와 다르면 비교 실패로 남긴다.
+
+128·1,024·10,000 backlog, 두 본문 크기, 16·100 page의 12개 입력에 네 조회 과제를 적용한다. 각 cell에서 세 조건의 fresh worker를 10개 대응 block, 사전 1개, 진단 1개씩 실행한다. 총 1,728건 중 정식은 1,440건, 사전·진단은 각각 144건이다. seed 26518의 인접 두 block 순서를 반대로 배치해 각 기준군과 native의 앞뒤 순서를 5회씩 맞춘다. fixture 12개는 조회 worker 전에 생성하며 세대별 원본을 그대로 보존한다. 같은 fixture를 순차 재사용하므로 OS cache를 비운 실험으로 부르지 않는다. 생성·조회·검증·원자료 보존 모두 campaign 한도에 포함한다.
+
+| 가설·보호 조건 | 고정한 연구 판정 |
+|---|---|
+| Q1·Q2·Q3의 유한 입력 메모리 증가 | 같은 body/page에서 backlog 128 대비 각 큰 입력의 native 요청 query peak·Python peak 증가 각각 1MiB 이하, 관측 RSS 증가 16MiB 이하 |
+| Q1·Q2의 큰 backlog 대체 효과 | 10,000개에서 각 기준군 대비 native RSS 비의 조정 구간 상한 0.75 이하, query wall 비의 상한 1.05 이하 |
+| Q4의 결과 축적 | 일정 메모리를 요구하지 않음, 전체 복원 list 유지·해제와 payload 축적 비용을 반례로 보고 |
+| 절대 자원 한도 | worker RSS 256MiB, 진단 Python peak 128MiB; 별도 native driver의 ledger shared/query 128/32MiB |
+| 수집 중단 | worker 120초·전체 1,800초·원자료 8GiB·디스크 여유 2GiB, 첫 오류·불일치·한도 초과에서 중단하고 실패·미실행 수 보존 |
+
+RSS·Python peak 한도는 관측 뒤 표본을 수용할지 판단하는 기준이며 OS의 강제 할당 상한은 아니다. 초과·OOM·프로세스 종료는 성공 표본으로 분석하지 않는다. 25% RSS 차이는 불필요한 전체 본문 복원을 대체할 실질적 차이를 확인하려는 연구 가정이다. 5% 시간 보호 폭과 메모리 증가 허용값도 고객이 승인한 SLO가 아니다. 대응 비 중앙값에 seed가 고정된 percentile bootstrap 20,000회와 95%·192개 family의 Bonferroni 보정을 쓴다. 96개 대응 cell에서 시간·RSS 두 지표의 구간을 계산한다. 메모리 증가의 유한 격자 진단에는 별도 신뢰구간을 붙이지 않는다. 표본 10쌍의 극단 분위수는 불안정할 수 있으며 이는 정확한 동시 coverage나 검정력 보장이 아니다. 퇴화·비유한 구간은 보류한다. 필수 결과가 빠지면 비교 불가, 위 보호 조건 중 하나라도 미충족이면 채택을 보류한다. 유한 격자의 진단 상한은 점근적 boundedness의 증명이 아니다. Q3 총 읽기 시간과 Q4 축적 비용을 backlog와 무관하다고 요구하지 않는다.
+
+[Python worker](../../bench/pending_query_worker.py)는 열린 조회 직전, 반환 결과 유지 중, 참조 해제·GC 뒤, close 뒤의 RSS snapshot·프로세스 RSS 고수위를 기록한다. 진단에서만 open 전부터 tracemalloc을 켜고 query 직전에 peak를 재설정해 baseline·peak·증가분·보유·해제 bytes와 GC 추적 객체 수를 구분한다. tracer 시작 이전의 Python 할당과 GC가 추적하지 않는 객체는 포함하지 않는다. query peak는 유지 결과 감사 전에 읽으며, 전체 프로세스 wall/CPU와 query wall/CPU를 함께 보존한다. RSS snapshot은 순간 peak를 놓칠 수 있고 고수위는 startup·감사·close도 포함한다. 상속 고수위가 남는 플랫폼에서는 query 증가가 그 아래에 가려질 수 있다. RSS가 내려가지 않았다는 사실만으로 ledger 누수를 판정하지 않는다.
+
+같은 진단은 역직렬화 횟수·입력 bytes, 실제 C 목록 호출/해제 행 수, 반환 payload bytes·동시 보유량, `ctypes.string_at`의 논리 복사 bytes와 page 전환 때 살아 있는 ItemInfo 수를 기록한다. 사전 OFF와 진단 ON의 시간·RSS 차이는 한 쌍의 설명 자료로만 낸다. 전체 Python 할당 횟수나 물리 장치 I/O로 환산하지 않는다. [native driver](../../bench/pending_query_driver.c)는 같은 파일에서 독립적으로 ledger query/shared peak·해제, scan/index·성공 pread bytes를 확인한다. 이 ledger에는 열기의 임시 할당, 큐의 별도 payload malloc, 내부 metadata 배열, C API·Python 결과 배열 전체가 들어 있지 않는다. caller metadata와 반환 payload는 별도로 세며, driver는 page를 해제하므로 Q4의 caller 축적은 Python worker가 측정한다. 128/32MiB는 driver의 ledger 한도이며 현재 무제한 C API에 전체 native 또는 프로세스 byte cap을 구현했다는 뜻이 아니다.
+
+Q5 대조는 빈 결과, page 0·음수·1,024 초과, payload 상한, metadata·본문 소유권, 중도 중단, 혼합 상태, 다음 page 전 변경·append, 두 번째 page 변환 실패와 serializer MemoryError를 검사한다. native 실패 주입은 payload malloc과 session reserve 경계를 훑어 부분 page 성공·남은 결과 소유권을 거절한다. 이미 소비한 앞 page를 뒤의 오류가 되돌린다고 가정하지 않는다. native 목록은 여전히 상태 필터가 없으며 페이지 전환 중 변경을 볼 수 있다. SQLite의 `-shm`과 잠금 파일 같은 임시 상태는 동결한 데이터 파일 hash에서 제외하고 실행 산출물로 보존한다. 오류를 성공 표본으로 바꾸거나 실패한 입력을 정리하지 않는다. 원 소비 프로젝트의 실제 pending 정의·누적 수명은 후속 읽기 전용 감사에서 확인한다.
+
+등록은 설정·정확한 일정·수집 코드·runtime Git 내용·interpreter/vendor source·SQLite 모듈·플랫폼·기존 OFF/ON 라이브러리와 새 driver의 hash를 남긴다. 데이터 파일 hash는 첫 조회 전에 fixture 등록에 기록하고 매 worker 뒤 다시 확인한다. 원자료를 fsync한 case는 완료로 세고 이후 deadline 초과의 campaign 실패와 실패 case 수를 구분한다. raw·stdout/stderr·fixture·manifest를 원본 그대로 보존하고 `verify`와 `analyze`가 동일 자료를 다시 읽는다. 재현 명령은 [pending 조회 수집](../build-and-test.md#pending-조회-수집)에 있다. 기존 main·YCSB·실패 자료·다른 작업본과 WAL/buffer/MVCC/early-locking 권고는 이 수집기 작업으로 바꾸지 않는다.
+
 ### 동등한 보장과 관측값
 
 SQLite는 WAL/FULL·실제 연결 수·cache·checkpoint 설정을 기록하고 같은 상태기계와 원자성·fence·보존 계약을 검증한다. 일반 WAL의 writer 직렬화는 제품 대안의 제약으로 남기며 E5의 실제 병렬 writer 충족으로 세지 않는다. 새 다중 연결 실험은 [공식 WAL 문서](https://www.sqlite.org/wal.html#the_wal_reset_bug)가 명시한 WAL-reset 수정 포함 버전의 binary·source hash를 고정한다. 과거 버전의 결과와 새 비교를 합쳐 전후 개선으로 해석하지 않는다.

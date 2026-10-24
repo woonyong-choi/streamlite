@@ -414,6 +414,23 @@ counter-driver: $(BUILD_DIR)/counter_driver
 .PHONY: common-cost-driver
 common-cost-driver: $(BUILD_DIR)/common_cost_driver
 
+.PHONY: pending-query-driver
+pending-query-driver: $(BUILD_DIR)/pending_query_driver
+
+.PHONY: pending-query-fault-driver
+pending-query-fault-driver: $(BUILD_DIR)/test_pending_query_native
+
+$(BUILD_DIR)/pending_query_session.o: src/sql/session.c $(BUILD_FINGERPRINT)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -DSESSION_TEST_HOOK -c -o $@ $<
+
+$(BUILD_DIR)/test_pending_query_native: $(BUILD_DIR)/tests/test_pending_query_native.o $(BUILD_DIR)/queue/ack_queue_probe.o $(BUILD_DIR)/pending_query_session.o $(DATABASE_OBJS) $(BUILD_DIR)/queue/ack_queue_sql.o $(BUILD_DIR)/queue/ack_queue_conditional.o
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+-include $(BUILD_DIR)/pending_query_session.d $(BUILD_DIR)/tests/test_pending_query_native.d
+
+$(BUILD_DIR)/pending_query_driver: bench/pending_query_driver.c include/queue/ack_queue.h include/sql/session.h $(TOTEDB_SHARED_LIB) $(BUILD_FINGERPRINT)
+	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(TOTEDB_SHARED_LIB)) -ltotedb -Wl,-rpath,$(abspath $(dir $(TOTEDB_SHARED_LIB)))
+
 $(BUILD_DIR)/common_cost_driver: bench/common_cost_driver.c src/benchmark.h src/sql/database_cache.h src/sql/database_workspace.h $(TOTEDB_SHARED_LIB) $(BUILD_FINGERPRINT)
 	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(TOTEDB_SHARED_LIB)) -ltotedb -Wl,-rpath,$(abspath $(dir $(TOTEDB_SHARED_LIB)))
 
