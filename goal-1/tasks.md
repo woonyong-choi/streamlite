@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete boundary is the additional checkpoint after Task 23b; original Task23 and all later requirements/checkpoints remain, with completed prerequisites23a/23b.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete boundary is Task23c, the file-identity repair inserted by the completed additional checkpoint after23b; original Task23 and all later requirements/checkpoints remain, with completed prerequisites23a/23b.
 
 ## Initialization only — 2026-10-24
 
@@ -598,12 +598,26 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Additional checkpoint after Task 23b
 
+- Status: complete (22/23a/23b 검토와 실제 결함 재현 완료; CP23b-1 수리를 다음 과업으로 추가)
+- Work performed: 직전 turn은 progress다. clean4bb7fc47의23b marker·dbdf21d8 parent·설정된 작성자·9파일 범위를 확인했다. goal-current와 세 goal 파일을 전부 읽고 형식/transport/의미 분석·실패/소유권/자원·근거·문서·복원 경계를 대조했다. Task6의994원본/관련 DB 대화 복구와 최신 권고를 보존하고 원 handoff/export의 두 hash를 재확인했다. 완료된 전체 대화 분석·성능 수집을 반복하지 않았다. UI는 이 내부 파일 모듈에 해당 없음이다.
+- CP23b-1: candidate_wal이 상대 prefix/directory를 그대로 저장하고 force에서 경로를 다시 열어 동기화한다. build의 A에 append한 뒤 build-regression으로 chdir하고 같은 basename·다른 UUID의 B를 만들고 닫으면 A의 force가 B를 fsync하고도 OK·durable LSN64→168을 반환한다. 실제 fsync wrapper의 fstat는 A inode278327360의 동기화0회·B inode278327361의 동기화1회를 기록했다. 바뀌지 않은 cwd의 상대 경로와 cwd가 바뀐 절대 경로 대조는 각각 원 inode1회·다른 inode0회다. 계약에 chdir 금지가 없으며 append fd와 barrier 대상의 불일치다. 배타 flock·NOFOLLOW만으로 이 소유권을 보장하지 못한다.
+- Reproduction evidence: 새 `build/checkpoint23b-cwd-force.c`를 기존 세 object에만 연결한 -Wall/-Wextra/-Werror/UBSan 빌드와 세 합성 case가 exit0·빈stderr로 위 반례/대조를 확인했다(`build/checkpoint23b-cwd-force-command.json`, `checkpoint23b-cwd-force-1.stdout`). source/binary·5합성 segment·stdout/stderr를 보존하고 UUID/길이/본문/inode를 별도 byte 대조했다. 성공 exit는 결함 재현의 성공이며 제품 correctness 통과가 아니다. 실제 물리 데이터 손실·전원 장애·거래 APPLIED를 시험하거나 관측했다고 쓰지 않는다. 이번 checkpoint에서 제품/후보 코드는 수리하지 않았다.
+- Reused/independent evidence: `build/checkpoint23b-independent.json`은 기존10237-check report의17frame·3terminal·2group·18prefix·34외부CRC를 다시 대조했다. golden10720B/SHA2561fc8dd499257fdb3bf39054d4241689a08656f559be8c99fc46ea11a2569ba4a와 당시 네 입력 archive의 각5개 hash가 같다. 이전 native/정적 분석은 입력·object·로그가 같은 범위로 재사용했으며 새 전체 suite/build 실행으로 합치지 않는다. 문서3개 check_doc·local file220/anchor65·main 대비 whitespace와 기본 make -n의 후보 제외가 통과했다(`checkpoint23b-checks.json`).
+- Preservation/remote: `build/checkpoint23b-before.json`과 최종 `checkpoint23b-verification.json`은 기존25166artifact항목·seal14·보호 추적9047파일·기존 Continuity prefix·원 실패/YCSB/raw를 대조한다. fetch 성공 뒤 main/origin-main은6bb8b2e8이며 다른 네 worktree HEAD도 같다. 최신 #238/#257/#263/#266은OPEN·미체크3/2/4/5이고 본문은 `checkpoint23b-issues.json`에 보존했다. 원격 issue/dependency/board를 변경하거나 완료로 올리지 않았다. input/plan/goal-current·Task6·원래23–39/모든 후속 checkpoint는 그대로다. tracked 변경은 tasks.md뿐이며 Vault/consumer 쓰기·새checkout/agent·push/PR/merge/배포/전환은 없다.
+- Remaining risk: CP23b-1은 barrier의 실제 파일과 내구 watermark를 불일치시키므로 다음 복구 구현 전에 수리한다. transport의 단일 append owner와 COMMIT witness는 독립 writer·APPLIED·본문 복원·일반 복구가 아니다. 원래23의 영속ID/result page·조회/복구 조정자, buffer/MVCC/조기 잠금·실제writer·동등COW와 회수/checkpoint/복구 총비용·SQL/ACK/stream 제품 요구를 미완료로 유지한다. 현재 WAL/buffer/MVCC/early-locking 권고와 현행COW 보존은 바뀌지 않았고 실측 승리·goal완료를 주장하지 않는다.
+- AAR: 경로 문자열은 이미 연 파일의 소유권이 아니다. 기록의 CRC/UUID가 맞아도 force가 그 파일을 열지 않으면 barrier 증거가 성립하지 않는다. 원 inode를 보는 fsync 양성/음성 대조를 수리에 추가한다. 첫 검토 helper는 실제 출력의 PASS 접두사를 무시하고 startswith(checks=10237;)를 가정해 실패했다. 원 report/stdout을 확인해 포함 검사로 고쳤고 `checkpoint23b-review-harness-failure.json`을 남겼다. 원자료 변경·새 native campaign으로 검사를 맞추지 않았다.
+- Next step: 이 tracking-only checkpoint commit에서 멈춘다. 다음 continuation은 새Task23c만 수행하고 원래23 전에 경로/파일 소유권·force를 수리한다. plan/설명 동반 수리도 일반 과업에서 수행하며 이 checkpoint에서 수정하지 않는다. 원래23/after23/24와 이후 모든 요구·경계를 유지하고 goal은active다.
+- Commit record: subject `docs(docs): WAL 후보 검토와 파일 소유권 수리 과업 추가`; body marker `Goal-mode boundary: goal-1 checkpoint after task 23b: complete`. 이 기록을 담은 tracking-only commit의 설정된 작성자·marker와 clean 상태를 경계에서 확인한다.
+
+## Task 23c — Bind WAL operations to the owned files
+
 - Status: incomplete
+- Scope: CP23b-1의 상대 경로/cwd 변경 뒤 잘못된 file barrier를 수리한다. create/open에서 획득한 디렉터리·segment 소유권과 이후 inventory/scan/append/force/rotation/명시 tail repair가 같은 대상을 사용하거나 안전하게 거절하도록 한다. 고정 directory fd·정규 경로 등의 선택과 파일 교체 경계를 실제 계약에 명시하고 대상 확인 없이 내구 watermark를 올리지 않는다. Issue #266, 기존 checkout/branch와 원자료 보존.
 - Work performed: not started.
-- Verification evidence: required — Task22/23a/23b의 형식·실제 transport/semantic 분석·근거/보존·본문 미검증 경계와 원래23의 잔여 의무 대조, tracking-only checkpoint.
-- Remaining risk: 모형·frame·commit witness를 영속 결과·실제writer·전원 손실 증거로 확대하지 않는다.
-- Next step: 23b task-boundary 뒤 별도 continuation에서 수행하고 원래23으로 진행한다.
-- Commit status: no checkpoint commit attempted.
+- Verification evidence: required — 보존된 CP23b-1을 같은 basename·다른 UUID의 두 파일로 회귀화한다. 상대/절대·cwd 유지/변경·create/reopen·회전/scan/tail repair의 실제 fd/inode·본문·barrier/오류 뒤 watermark와 poison·기존 lock/fork/OOM/descriptor 수명을 검증한다. 대상 파일을 동기화하지 않았는데 OK/내구 LSN이 올라가는 음성 대조를 거부하고 실제 파일 양성 대조를 유지한다. 기존23a/23b 필수 시험은 별도 prefix/report로 보존하며 기본SQL/ACK·기존 형식과 기본 backend를 바꾸지 않는다.
+- Remaining risk: 소유 디렉터리 고정과 segment 파일 교체 감지는 별도 조건이다. chdir 금지를 뒤늦게 붙여 반례를 제외하거나 scan의 UUID 검사로 이미 반환한 force 성공을 정당화하지 않는다. 실제 장치 손실·복구 배타 소유권·거래 결과를 이 수리의 증거로 확대하지 않는다.
+- Next step: 다음 일반 task-boundary에서 수리·검증·기존 문서/plan/Continuity 반영·커밋 후 멈춘다. 이후 원래23의 영속 본문/ID 복구와 모든 후속 과업·checkpoint를 그대로 진행한다.
+- Commit status: no task commit attempted.
 
 ## Task 23 — Implement WAL records and durable commit recovery
 
