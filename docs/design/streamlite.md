@@ -427,7 +427,7 @@ WAL을 새 엔진의 기본 방향으로 권고하더라도 제품 채택은 이
 | 거래 | commit당 1/32문장, 마지막 부분 batch 없음. 같은 UPDATE 한 번을 rollback하는 handle 예열은 별도 기록하며 실제 작업에서 제거하지 않음. 새 handle이 OS cold cache를 뜻하지 않는 조건 |
 | E1/E2 표본 | 3종 준비 경로×2종 본문×2종 batch의 12cell. cell마다 사전 1block·정식 10block·진단 1block, block마다 `00/10/11/01` 네 조건 모두 실행. 첫 숫자는 cache, 둘째는 workspace |
 | 순서 | 정식 block 2개씩 시작 조건을 순환하고 두 번째는 첫 번째의 역순. 각 대비에서 후보 먼저 5회·기준 먼저 5회. 사전·진단은 각각 block -1/-2이며 정식 효과에서 제외 |
-| 선택형 수명 | SQL 단독 본문 축 없음, 큐 사용 256/4,096B의 3cell. worker마다 DB 32개를 차례로 열어 CRUD·commit·결과 소비·close·reopen. 큐 사용은 각 DB에 put/get/ack/purge 한 번 포함 |
+| 선택형 수명 | SQL 단독 본문 축 없음, 큐 사용 256/4,096B의 3cell. worker마다 DB 32개를 차례로 열어 CREATE·INSERT·UPDATE·SELECT·commit·결과 소비·close·reopen. 큐 사용은 각 DB에 put/get/ack/purge 한 번 포함 |
 | 수명 기준군 | `54b43509`의 Python Database class를 메모리에서 읽은 eager 경로와 현재 lazy 경로. native 라이브러리와 Queue 구현은 같게 고정. import·비교용 source 적재는 API 시간 밖이며 별도 process wall과 RSS에 포함 |
 | E3 | 현재 경로와 다른 후보의 OFF/ON 라이브러리, 소스 commit·hash·최소 ID·lease/fence·중복/stale/FAILED·cancel/OOM·failure readback·reopen 근거를 먼저 등록. 없으면 비교 불가로 거절하며 현행 경로 두 개를 후보로 위장하지 않는 조건 |
 | E3 입력 | 256/4,096B의 2cell, worker당 put/get/ack/purge 1,024회. 첫 작업에서 중복 ACK·stale ACK·ACKED readback을 추가 검사. 정상 작업 지연과 guard 시간을 구분하고 whole-worker 비용에는 둘 다 포함 |
@@ -452,7 +452,11 @@ RSS는 새 worker의 process high-water이며 baseline과 최종 최고치를 by
 | 수명·E3 가설 | SQL 단독 수명·E3 256B를 각 주 부하로 처리량 하한 1.05 이상, 다른 cell은 0.95 이상. 동일 tail/CPU/RSS/공간 보호 기준 적용 |
 | 채택의 의미 | 위 수치는 5% 미만의 작은 국소 개선을 기본값 변경 근거로 쓰지 않기 위한 가역적 연구 기준. 통과는 검토 후보이며 자동 기본값 변경·제품 통합이 아님. 부적합·불확실은 이유와 반례를 보존하고 기존 기본값 유지 |
 
-이 계획을 담은 commit을 정식 수집의 조상으로 지정한다. `register`는 고정한 수집 코드·설정이 그 commit과 같은지 확인하고 현재 모든 제품 소스·Python·compiler·환경·fixture 입력과 양쪽 binary hash를 수집 전에 기록한다. E3는 구현 뒤 같은 기준으로 후보·실패 검증 근거를 추가 고정하며 그 결과를 보고 기준을 바꾸지 않는다. `verify`는 원자료 hash·대응 순서·정확성·전체 완료를 검사하고 `analyze`는 원자료에서 같은 JSON을 재생성한다. 실행 명령은 [공통 비용 수집](../build-and-test.md#공통-비용-수집)에 있다. 비교 수집기가 준비됐다는 사실은 정식 실측·개선 효과·새 backend 완료를 뜻하지 않는다.
+campaign의 1,800초는 수집 시작부터 fixture 생성·복제, worker, 결과 검증, 압축·역해시, raw fsync와 보존 자료 hash·manifest 기록까지 적용한다. 각 worker에는 120초와 campaign의 남은 시간 중 작은 값을 전달한다. 복사·압축·검증은 chunk마다 한도를 확인하고, 마지막 case와 manifest 기록 뒤에도 다시 검사한다. 동기 파일 I/O나 OS 스케줄링을 정확히 그 시각에 강제 중단한다는 보장은 없으며, 반환 뒤 한도 초과를 발견하면 전체 비교를 실패로 남긴다. 이미 생성한 자료의 실패 기록·hash 보존은 한도 뒤에도 마무리할 수 있지만 새 표본을 시작하거나 성공 분석으로 넘기지 않는다. manifest의 `elapsed_seconds`는 자료 hash 완료 뒤 기록 직전의 경과이며, manifest 기록에서 한도를 넘기면 초과 경과와 실패를 다시 기록한다.
+
+`completed`는 검증·보존 뒤 raw에 기록한 case 수이고 `failed`는 시작했으나 완료하지 못한 case 수다. `unexecuted`는 시작하지 않은 case 수이며 세 수의 합은 `planned`와 같다. 완료된 마지막 case 뒤 한도를 넘으면 그 raw는 남기되 campaign 실패를 별도로 기록한다. 실패 기록 수를 실패 case 수로 대신하지 않는다. 보존 중 한도를 넘긴 DB는 전개본과 부분 압축본을 유지하며, 역해시 확인과 한도 확인 전에는 전개본을 제거하지 않는다.
+
+현재 수집 코드와 이 계획을 함께 담은 commit을 정식 수집의 조상으로 지정한다. 수집기를 고친 뒤에는 이전 계획 commit을 그대로 재사용하지 않는다. `register`는 고정한 수집 코드·설정이 그 commit과 같은지 확인하고 현재 모든 제품 소스·Python·compiler·환경·fixture 입력과 양쪽 binary hash를 수집 전에 기록한다. E3는 구현 뒤 같은 기준으로 후보·실패 검증 근거를 추가 고정하며 그 결과를 보고 기준을 바꾸지 않는다. `verify`는 원자료 hash·대응 순서·정확성·전체 완료와 등록한 경과 한도를 검사하고 `analyze`는 원자료에서 같은 JSON을 재생성한다. 실행 명령은 [공통 비용 수집](../build-and-test.md#공통-비용-수집)에 있다. 비교 수집기가 준비됐다는 사실은 정식 실측·개선 효과·새 backend 완료를 뜻하지 않는다.
 
 ### 후속 구현과 검증
 

@@ -86,7 +86,9 @@ python3 bench/common_cost.py analyze --registration "$PREFIX.registration.json" 
 
 eligibility JSON의 `minimum_id`, `lease_fence`, `duplicate_stale_failed`, `cancel_oom`, `failure_readback`, `reopen`은 통과했을 때만 true로 기록한다. `source_commit`은 후보 검증 commit이고 `build_source_commits`와 `library_hashes`는 각각 `off`, `on`, `candidate`, `candidate_on`의 commit과 SHA-256을 담는다. `artifacts`는 실제 검증 파일 경로와 SHA-256의 대응이다. 등록은 실제 파일·binary hash와 commit 존재를 확인하고, 수집 직전 다시 검사한다. 이 표시는 필요한 실패 검증을 새로 수행하거나 미구현 후보를 통과시킨다는 뜻이 아니다.
 
-`--control` 등록은 16행·8작업·작은 본문의 수집기 검증용이며 효과 판단에 쓰지 않는다. [수집기 시험](../tests/test_common_cost.py)은 정상 결과·잘못된 변경·누락 지표·자료 변조·실패 뒤 중단/DB 보존·binary 변경·순서/대응·분석 재생성과 Python 수명을 검사한다. 별도 실패 주입 시험을 대신하지 않는다. 정식 수집은 clean 작업본과 계획 commit의 조상을 요구한다. 결과 보고는 원자료의 전체 완료와 동일한 분석 JSON을 확인한 뒤 수행한다.
+`--control` 등록은 16행·8작업·작은 본문의 수집기 검증용이며 효과 판단에 쓰지 않는다. [수집기 시험](../tests/test_common_cost.py)은 정상 결과·잘못된 변경·누락 지표·자료 변조·실패 뒤 중단/DB 보존·binary 변경·순서/대응·분석 재생성과 Python 수명을 검사한다. 시작 전·fixture·worker·최종 case·검증·보존·manifest의 시간 초과와 남은 worker 시간도 대조한다. 별도 DB 장애 주입 시험을 대신하지 않는다. 한도 초과는 완성된 raw가 있어도 campaign 실패이며 `verify`와 `analyze`가 거절한다. 실패한 접두사는 재사용하지 않고 부분 DB·로그·manifest를 보존한다.
+
+정식 수집은 clean 작업본과 현재 수집기·계획을 함께 담은 `PLAN_COMMIT`의 조상을 요구한다. 수집기를 수리했으면 그 변경을 포함한 commit으로 새 등록을 만들고, 과거 등록·raw를 덮어쓰지 않는다. 수집 시간·완료/실패/미실행의 경계는 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 있다. 결과 보고는 원자료의 전체 완료와 동일한 분석 JSON을 확인한 뒤 수행한다.
 
 ### 요청 단위 내부 계측
 

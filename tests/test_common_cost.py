@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "bench"))
 
 from common_cost import cases, collect, register, verify  # noqa: E402
 from common_cost_analysis import analyze, validate_native  # noqa: E402
+import common_cost  # noqa: E402
 
 
 @pytest.fixture
@@ -229,3 +230,186 @@ def test_formal_registration_refuses_dirty_source_and_conditional_without_candid
     args.candidate_build, args.eligibility = None, None
     with pytest.raises(ValueError, match="conditional path unsupported"):
         register(args)
+
+
+def test_collection_final_case_overrun_fails_with_complete_raw_retained(
+    tmp_path: Path, registration: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registration["cases"] = registration["cases"][:1]
+    registration["plan"]["campaign_timeout_seconds"] = 1
+    registration["input_sha256"] = common_cost._registration_digest(registration["plan"])
+    clock = [0.0]
+    monkeypatch.setattr(common_cost.time, "monotonic", lambda: clock[0])
+    original = common_cost._collect_case
+
+    def delayed_case(*args: Any) -> dict[str, Any]:
+        result = original(*args)
+        clock[0] = 1.1
+        return result
+
+    monkeypatch.setattr(common_cost, "_collect_case", delayed_case)
+    prefix = tmp_path / "last-case"
+
+    with pytest.raises(ValueError, match="stopped"):
+        collect(registration, prefix)
+
+    manifest = json.loads(Path(f"{prefix}.manifest.json").read_text())
+    assert manifest["completed"] == 1
+    assert manifest["unexecuted"] == 0
+    assert manifest["failures"]
+    assert len(Path(f"{prefix}.raw.jsonl").read_text().splitlines()) == 1
+    with pytest.raises(ValueError, match="campaign"):
+        verify(registration, prefix)
+
+
+@pytest.mark.parametrize("elapsed", [1801, -1, float("inf"), float("nan")])
+def test_verify_invalid_campaign_elapsed_rejects_even_correct_complete_rows(
+    tmp_path: Path, registration: dict[str, Any], elapsed: float
+) -> None:
+    registration["cases"] = registration["cases"][:1]
+    prefix = tmp_path / "over-budget"
+    collect(registration, prefix)
+    assert len(verify(registration, prefix)) == 1
+    path = Path(f"{prefix}.manifest.json")
+    manifest = json.loads(path.read_text())
+    manifest["elapsed_seconds"] = elapsed
+    path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="campaign"):
+        verify(registration, prefix)
+
+
+@pytest.mark.parametrize("field", ["planned", "attempted", "completed", "failed", "unexecuted"])
+def test_verify_inconsistent_counts_rejects_complete_rows(
+    tmp_path: Path, registration: dict[str, Any], field: str
+) -> None:
+    registration["cases"] = registration["cases"][:1]
+    prefix = tmp_path / "counts"
+    collect(registration, prefix)
+    path = Path(f"{prefix}.manifest.json")
+    manifest = json.loads(path.read_text())
+    manifest[field] += 1
+    path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="campaign accounting"):
+        verify(registration, prefix)
+
+
+@pytest.mark.parametrize(
+    "stage", ["start", "fixture", "copy", "worker", "validation", "archive", "raw", "hash", "manifest"]
+)
+def test_collection_deadline_boundaries_preserve_partial_evidence(
+    tmp_path: Path, registration: dict[str, Any], monkeypatch: pytest.MonkeyPatch, stage: str
+) -> None:
+    registration["cases"] = registration["cases"][:2]
+    registration["plan"]["campaign_timeout_seconds"] = 1
+    registration["input_sha256"] = common_cost._registration_digest(registration["plan"])
+    prefix = tmp_path / stage
+    clock = [0.0]
+    monkeypatch.setattr(common_cost.time, "monotonic", lambda: clock[0])
+    names = {
+        "start": "_CampaignDeadline",
+        "fixture": "_execute",
+        "copy": "_copy_chunks",
+        "worker": "_execute",
+        "validation": "_validate_sample",
+        "archive": "_copy_chunks",
+        "raw": "fsync",
+        "hash": "_digest",
+        "manifest": "_write_new",
+    }
+    owner = common_cost.os if stage == "raw" else common_cost
+    original = getattr(owner, names[stage])
+
+    def advance(*args: Any, **kwargs: Any) -> Any:
+        result = original(*args, **kwargs)
+        should_advance = True
+        if stage in ("fixture", "worker"):
+            should_advance = args[0][1] == ("fixture" if stage == "fixture" else "run")
+        elif stage in ("copy", "archive"):
+            should_advance = isinstance(args[1], common_cost.gzip.GzipFile) == (stage == "archive")
+        elif stage == "hash":
+            should_advance = str(args[0]).startswith(str(prefix)) and kwargs.get("deadline") is None
+        if should_advance:
+            clock[0] = 1.1
+        return result
+
+    monkeypatch.setattr(owner, names[stage], advance)
+
+    with pytest.raises(ValueError, match="stopped"):
+        collect(registration, prefix)
+
+    manifest = json.loads(Path(f"{prefix}.manifest.json").read_text())
+    expected_completed = 1 if stage in ("raw", "hash", "manifest") else 0
+    expected_attempted = 0 if stage == "start" else (2 if stage in ("hash", "manifest") else 1)
+    if stage in ("hash", "manifest"):
+        expected_completed = 2
+    assert manifest["completed"] == expected_completed
+    assert manifest["attempted"] == expected_attempted
+    assert manifest["failed"] == expected_attempted - expected_completed
+    assert manifest["unexecuted"] == 2 - expected_attempted
+    assert any("campaign timeout" in failure["error"] for failure in manifest["failures"])
+    assert all(common_cost._digest(Path(path)) == digest for path, digest in manifest["hashes"].items())
+    if stage == "start":
+        assert not list(tmp_path.glob("*.db*"))
+    else:
+        assert list(tmp_path.glob("*.db*"))
+    if stage == "archive":
+        assert Path(f"{prefix}-0000.db").exists()
+        assert Path(f"{prefix}-0000.db.gz").exists()
+    with pytest.raises(ValueError, match="campaign"):
+        verify(registration, prefix)
+
+
+def test_collection_workers_share_remaining_campaign_time(
+    tmp_path: Path, registration: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registration["cases"] = registration["cases"][:1]
+    registration["plan"]["campaign_timeout_seconds"] = 1
+    registration["input_sha256"] = common_cost._registration_digest(registration["plan"])
+    clock = [0.0]
+    monkeypatch.setattr(common_cost.time, "monotonic", lambda: clock[0])
+    timeouts = []
+    original = common_cost._execute
+
+    def execute(command: list[str], prefix: Path, timeout: float) -> dict[str, Any]:
+        timeouts.append(timeout)
+        result = original(command, prefix, timeout)
+        clock[0] += 0.4
+        return result
+
+    monkeypatch.setattr(common_cost, "_execute", execute)
+    prefix = tmp_path / "remaining"
+
+    collect(registration, prefix)
+
+    assert timeouts == pytest.approx([1, 0.6])
+    assert len(verify(registration, prefix)) == 1
+
+
+def test_collection_worker_timeout_keeps_database_and_output(
+    tmp_path: Path, registration: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registration["cases"] = registration["cases"][:2]
+    original = common_cost._execute
+
+    def timeout_worker(command: list[str], prefix: Path, timeout: float) -> dict[str, Any]:
+        if command[1] == "run":
+            command = [sys.executable, "-c", "import time; print('worker started', flush=True); time.sleep(5)"]
+            timeout = 0.05
+        return original(command, prefix, timeout)
+
+    monkeypatch.setattr(common_cost, "_execute", timeout_worker)
+    prefix = tmp_path / "worker-timeout"
+
+    with pytest.raises(ValueError, match="stopped"):
+        collect(registration, prefix)
+
+    manifest = json.loads(Path(f"{prefix}.manifest.json").read_text())
+    assert (manifest["completed"], manifest["failed"], manifest["unexecuted"]) == (0, 1, 1)
+    assert Path(f"{prefix}-0000.db").is_file()
+    assert not Path(f"{prefix}-0000.db.gz").exists()
+    assert Path(f"{prefix}-0000.stdout").is_file()
+    assert Path(f"{prefix}-0000.stderr").is_file()
+    with pytest.raises(ValueError, match="incomplete campaign"):
+        verify(registration, prefix)

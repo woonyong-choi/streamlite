@@ -5,6 +5,7 @@ import gzip
 import hashlib
 import itertools
 import json
+import math
 import os
 import platform
 import plistlib
@@ -14,7 +15,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
 from common_cost_analysis import analyze, analyze_python, python_dimensions, validate_diagnostics, validate_native
 
@@ -37,6 +38,27 @@ PHASES = [
     "fsync",
     "flock_syscall",
 ]
+
+
+class _CampaignDeadline:
+    def __init__(self, seconds: float) -> None:
+        if not math.isfinite(seconds) or seconds <= 0:
+            raise ValueError("campaign timeout must be finite and positive")
+        self.started = time.monotonic()
+        self.seconds = seconds
+
+    @property
+    def elapsed_seconds(self) -> float:
+        return time.monotonic() - self.started
+
+    def remaining_seconds(self, stage: str) -> float:
+        remaining = self.seconds - self.elapsed_seconds
+        if remaining <= 0:
+            raise TimeoutError(f"campaign timeout during {stage}")
+        return remaining
+
+    def worker_timeout(self, seconds: float) -> float:
+        return min(seconds, self.remaining_seconds("worker start"))
 
 
 def cases(plan: dict[str, Any], phase: str) -> list[dict[str, Any]]:
@@ -194,30 +216,28 @@ def collect(registration: dict[str, Any], prefix: Path) -> None:
     allowed = {prefix.name + ".registration.json", prefix.name + ".collect.log"}
     if any(path.name not in allowed for path in prefix.parent.glob(prefix.name + "*")):
         raise ValueError("collection prefix overlaps existing artifacts")
-    start = time.monotonic()
     plan = registration["plan"]
+    deadline = _CampaignDeadline(plan["campaign_timeout_seconds"])
     fixtures: dict[int, Path] = {}
     failures = []
     completed = 0
-    completed_ids = set()
+    attempted_ids = set()
     with raw.open("x") as output:
         for case in registration["cases"]:
-            if time.monotonic() - start > plan["campaign_timeout_seconds"]:
-                failures.append({"case": case, "error": "campaign timeout"})
-                break
             try:
-                result = _collect_case(registration, case, prefix, fixtures)
+                deadline.remaining_seconds("case start")
+                attempted_ids.add(case["id"])
+                result = _collect_case(registration, case, prefix, fixtures, deadline)
+                output.write(json.dumps(result, sort_keys=True) + "\n")
+                output.flush()
+                os.fsync(output.fileno())
+                completed += 1
+                print(json.dumps({"case": case["id"], "completed": result["sample"]["completed"]}), flush=True)
+                if _storage(prefix) > plan["campaign_storage_bytes"]:
+                    raise ValueError("campaign storage budget")
+                deadline.remaining_seconds("case completion")
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
                 failures.append({"case": case, "error": str(error)})
-                break
-            output.write(json.dumps(result, sort_keys=True) + "\n")
-            completed += 1
-            completed_ids.add(case["id"])
-            output.flush()
-            os.fsync(output.fileno())
-            print(json.dumps({"case": case["id"], "completed": result["sample"]["completed"]}), flush=True)
-            if _storage(prefix) > plan["campaign_storage_bytes"]:
-                failures.append({"case": case, "error": "campaign storage budget"})
                 break
     files = sorted(
         path
@@ -226,19 +246,18 @@ def collect(registration: dict[str, Any], prefix: Path) -> None:
         or path.name == prefix.name + ".registration.json"
     )
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "control": registration["control"],
         "planned": len(registration["cases"]),
+        "attempted": len(attempted_ids),
         "completed": completed,
-        "unexecuted": len(registration["cases"])
-        - completed
-        - sum(failure["case"]["id"] not in completed_ids for failure in failures),
+        "failed": len(attempted_ids) - completed,
+        "unexecuted": len(registration["cases"]) - len(attempted_ids),
         "registration_sha256": _registration_digest(registration),
         "failures": failures,
-        "elapsed_seconds": time.monotonic() - start,
         "hashes": {str(path.resolve()): _digest(path) for path in files if path.is_file()},
     }
-    _write_new(Path(f"{prefix}.manifest.json"), manifest)
+    _finish_manifest(Path(f"{prefix}.manifest.json"), manifest, deadline)
     if failures:
         raise ValueError("collection stopped; failed stdout/stderr/database and partial raw data retained")
 
@@ -250,6 +269,12 @@ def verify(registration: dict[str, Any], prefix: Path) -> list[dict[str, Any]]:
     manifest = json.loads(Path(f"{prefix}.manifest.json").read_text())
     if manifest["registration_sha256"] != _registration_digest(registration):
         raise ValueError("registration differs from collection")
+    elapsed = manifest["elapsed_seconds"]
+    limit = registration["plan"]["campaign_timeout_seconds"]
+    is_valid_limit = math.isfinite(limit) and limit > 0
+    is_valid_elapsed = math.isfinite(elapsed) and 0 <= elapsed < limit
+    if not is_valid_limit or not is_valid_elapsed:
+        raise ValueError("campaign elapsed time violates registered limit")
     for name, expected in manifest["hashes"].items():
         if _digest(Path(name)) != expected:
             raise ValueError(f"raw artifact changed: {name}")
@@ -258,6 +283,11 @@ def verify(registration: dict[str, Any], prefix: Path) -> list[dict[str, Any]]:
         raise ValueError("case order, pairing or unique identity mismatch")
     for record in records:
         _validate_sample(record["sample"], record["case"], registration)
+    counts = {"planned": len(registration["cases"]), "completed": len(records), "unexecuted": 0}
+    if manifest["schema"] >= 2:
+        counts.update(attempted=len(records), failed=0)
+    if any(manifest[name] != value for name, value in counts.items()):
+        raise ValueError("incomplete campaign accounting")
     if manifest["failures"] or len(records) != len(registration["cases"]):
         raise ValueError("incomplete campaign; no successful-only analysis")
     return records
@@ -269,11 +299,15 @@ def _condition_order(conditions: list[str], block: int) -> list[str]:
     return rotated if block % 2 == 0 else rotated[::-1]
 
 
-def _digest(path: Path) -> str:
+def _digest(path: Path, *, deadline: _CampaignDeadline | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1048576), b""):
+            if deadline is not None:
+                deadline.remaining_seconds("artifact verification")
             digest.update(chunk)
+    if deadline is not None:
+        deadline.remaining_seconds("artifact verification")
     return digest.hexdigest()
 
 
@@ -289,6 +323,24 @@ def _write_new(path: Path, value: Any) -> None:
     with path.open("x") as stream:
         json.dump(value, stream, sort_keys=True, indent=2, allow_nan=False)
         stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _finish_manifest(path: Path, manifest: dict[str, Any], deadline: _CampaignDeadline) -> None:
+    manifest["elapsed_seconds"] = deadline.elapsed_seconds
+    if manifest["elapsed_seconds"] >= deadline.seconds and not manifest["failures"]:
+        manifest["failures"].append({"case": None, "error": "campaign timeout during artifact preservation"})
+    _write_new(path, manifest)
+    if deadline.elapsed_seconds >= deadline.seconds and not manifest["failures"]:
+        manifest["elapsed_seconds"] = deadline.elapsed_seconds
+        manifest["failures"].append({"case": None, "error": "campaign timeout during manifest persistence"})
+        with path.open("r+") as stream:
+            json.dump(manifest, stream, sort_keys=True, indent=2, allow_nan=False)
+            stream.write("\n")
+            stream.truncate()
+            stream.flush()
+            os.fsync(stream.fileno())
 
 
 def _registration_sources() -> list[str]:
@@ -493,7 +545,11 @@ def _execute(command: list[str], prefix: Path, timeout: float, env: dict[str, st
 
 
 def _collect_case(
-    registration: dict[str, Any], case: dict[str, Any], prefix: Path, fixtures: dict[int, Path]
+    registration: dict[str, Any],
+    case: dict[str, Any],
+    prefix: Path,
+    fixtures: dict[int, Path],
+    deadline: _CampaignDeadline,
 ) -> dict[str, Any]:
     destination = Path(f"{prefix}-{case['id']}")
     if shutil.disk_usage(prefix.parent).free < 1024**3:
@@ -503,49 +559,70 @@ def _collect_case(
         if payload not in fixtures:
             fixture = Path(f"{prefix}-fixture-{payload}.db")
             command = _native_command(registration, case, fixture, "fixture")
-            _execute(command, Path(f"{prefix}-fixture-{payload}"), registration["plan"]["worker_timeout_seconds"])
+            _execute(
+                command,
+                Path(f"{prefix}-fixture-{payload}"),
+                deadline.worker_timeout(registration["plan"]["worker_timeout_seconds"]),
+            )
+            deadline.remaining_seconds("fixture completion")
             fixtures[payload] = fixture
         database = Path(f"{destination}.db")
         if database.exists():
             raise ValueError("database destination exists")
         with database.open("xb") as output, fixtures[payload].open("rb") as source:
-            shutil.copyfileobj(source, output)
+            _copy_chunks(source, output, deadline)
         command = _native_command(registration, case, database, "run")
-        sample = _execute(command, destination, registration["plan"]["worker_timeout_seconds"])
+        sample = _execute(command, destination, deadline.worker_timeout(registration["plan"]["worker_timeout_seconds"]))
     else:
         command, env = _worker_command(registration, case, destination)
-        sample = _execute(command, destination, registration["plan"]["worker_timeout_seconds"], env)
+        sample = _execute(
+            command, destination, deadline.worker_timeout(registration["plan"]["worker_timeout_seconds"]), env
+        )
+    deadline.remaining_seconds("worker completion")
     _validate_sample(sample, case, registration)
+    deadline.remaining_seconds("sample verification")
     if registration["phase"] == "cache":
         databases = [database]
     else:
         instances = 1 if case["scenario"] == "conditional" else registration["plan"]["lifecycle_instances"]
         databases = [Path(f"{destination}-{index}.db") for index in range(instances)]
     storage_bytes = sum(path.stat().st_size for path in databases)
-    archives = [_archive_database(path) for path in databases]
+    archives = [_archive_database(path, deadline) for path in databases]
     return {
         "case": case,
         "sample": sample,
         "command": command,
         "storage_bytes": storage_bytes,
         "archives": archives,
-        "fixture_sha256": _digest(fixtures[case["payload"]]) if registration["phase"] == "cache" else None,
+        "fixture_sha256": _digest(fixtures[case["payload"]], deadline=deadline)
+        if registration["phase"] == "cache"
+        else None,
     }
 
 
-def _archive_database(path: Path) -> dict[str, Any]:
-    expected = _digest(path)
+def _copy_chunks(source: BinaryIO, output: BinaryIO | gzip.GzipFile, deadline: _CampaignDeadline) -> None:
+    deadline.remaining_seconds("artifact copy")
+    for chunk in iter(lambda: source.read(1048576), b""):
+        deadline.remaining_seconds("artifact copy")
+        output.write(chunk)
+    deadline.remaining_seconds("artifact copy")
+
+
+def _archive_database(path: Path, deadline: _CampaignDeadline) -> dict[str, Any]:
+    expected = _digest(path, deadline=deadline)
     destination = Path(f"{path}.gz")
     with destination.open("xb") as output, path.open("rb") as source:
         with gzip.GzipFile(filename="", mode="wb", fileobj=output, mtime=0) as archive:
-            shutil.copyfileobj(source, archive)
+            _copy_chunks(source, archive, deadline)
     digest = hashlib.sha256()
     with gzip.open(destination, "rb") as stream:
         for chunk in iter(lambda: stream.read(1048576), b""):
+            deadline.remaining_seconds("archive verification")
             digest.update(chunk)
     if digest.hexdigest() != expected:
         raise ValueError("lossless artifact archive verification failed; original retained")
     size = path.stat().st_size
+    deadline.remaining_seconds("archive completion")
     path.unlink()
     return {
         "path": str(destination.resolve()),
