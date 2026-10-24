@@ -323,3 +323,17 @@ build/check-env/bin/python bench/pending_query.py analyze --prefix build/pending
 [수집기 회귀](../tests/test_pending_query.py)는 정상 결과·손상 digest·행 수·계측 혼입·변경된 입력·시간 초과·실패 보존, 혼합 상태·page 전환·수명·변환/serializer 오류를 검사한다. [native 실패 대조](../tests/test_pending_query_native.c)는 같은 합성 fixture를 인자로 받아 payload malloc·session reserve 실패 뒤 부분 결과·누수와 다음 조회를 확인한다. 제품 코드·현재 파일·기본 backend와 소비 프로젝트는 이 명령으로 교체하지 않는다.
 
 [첫 판정](design/streamlite.md#pending-조회-수집의-첫-판정)은 계획/source `c0cb4216`에서 등록한 전체 1,728건(정식 1,440건)을 사용한다. 보존 자료가 있는 이 로컬 작업본에서는 위 `verify`·`analyze`의 접두사에 `build/task19-pending-formal`을 지정하면 같은 분석을 재생성한다. 새 효과를 수집할 때는 기존 접두사를 재사용하지 않는다. 한 page의 표본 내 메모리·지연 지지, 전체 순차 소비의 시간 비용, caller 전체 축적과 실제 소비자 미교체를 함께 읽는다.
+
+## 기본키 규모 실측
+
+[#158 재개 조건](design/streamlite.md#기본키-규모-실측의-재개-조건)은 기존 seed137 입력·120초 적재 제한과 세 규모의3회 반복을 유지한다. [수집기](../bench/primary_key_scale.py)는 현재 작업본의 고정된 OFF 라이브러리와 build fingerprint가 필요하다. 새 driver가 없을 때만 첫 명령으로 빌드하며, 이미 있는 실행 파일은 덮지 않는다. 등록·수집은 계획을 담은 clean commit 다음에 실행하고 새 prefix를 사용한다.
+
+```sh
+build/check-env/bin/python bench/primary_key_scale.py build
+build/check-env/bin/python bench/primary_key_scale.py register --prefix build/primary-key-formal --plan-commit HEAD
+build/check-env/bin/python bench/primary_key_scale.py collect --prefix build/primary-key-formal
+build/check-env/bin/python bench/primary_key_scale.py verify --prefix build/primary-key-formal
+build/check-env/bin/python bench/primary_key_scale.py analyze --prefix build/primary-key-formal > build/primary-key-analysis.json
+```
+
+`register --control`은24행의 수집기 대조만 등록한다. 정식 결과로 합치지 않는다. `verify`는 등록 일정에서 필수 자료를 도출하고 hash·행 수·조회 순서·독립 기본키 기대값·스캔 양성 대조·재열기를 검사한다. timeout의 부분 입력도 실제 행 수로 보존하지만 요청 규모 완료는 아니다. SQLite의 직접 스캔 행 수는 기록하지 않는다. 기존 `sqlite_workload.py`의 전체 혼합·복구 캠페인과 다른 경계이며, 그 과거 raw나 실패 표본을 교체하지 않는다.

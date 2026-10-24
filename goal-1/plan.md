@@ -182,3 +182,11 @@ Observe baseline, query peak, held, released and closed memory separately: RSS c
 두 수리를 포함한 c0cb4216을 그대로 계획/source 조상으로 새 등록하고, 같은 checkout의 기존 #265 branch를 fast-forward해 전체1728건(정식1440건)을 수행한다. 기준·표본·backend·binary를 바꾸지 않는다. 기존 Q5 소규모 실패/수명 회귀는 입력/hash가 같은 근거로 재사용하고 큰 입력의 새 실패 시험으로 확대하지 않는다. 정식 분석은 두 번 재생성하고 모든 결과 digest·주 판정16개·증가 기준12개·앞뒤5회 교대를 별도 raw 계산으로 대조한다.
 
 소비자는 현재 보관된 checkout의 runtime source를 읽기만 한다. 그 파일은 HEAD와 같지만 다른8개 dirty 파일과 보관 상태를 유지한다. 실제 서비스나 소비자 프로젝트를 실행하지 않고, 원 복구 loop의 AST만 별도 합성 row producer에 적용한8개 대조로 참조 유지 의미를 확인한다. 이 대조는 RSS·속도나 정식 표본이 아니다. 기본256건·논리 payload64MiB admission과 복구·프로세스 메모리 한도를 구분한다. 원 소비자의 전체 request 사전 축적은 page API만으로 없어지지 않으며 변경은 승인하지 않는다. Q1/Q2와 Q1–Q3 메모리 기준의 표본 내 지지는 Q4 축적·전체 순차 소비 비용·새 backend/실제 writer 우위와 구분한다. WAL 권고와 동등 buffered-COW 비교를 유지한다.
+
+## Task 20 기본키 실측 재개 선택
+
+#158의 원래 미충족 조건은 seed137 입력의1천/1만/10만 행·3회·120초다. #179의180초 성공과 후속 Linux120초 부분 완료를 별도로 유지한다. 원래 입력/설정 모듈은 변경하지 않고 새 수집기가 재사용한다. 예열·반복의 여섯 조회 순서도 유지하며 기본키 통계와 지연을 주 결과로 분리한다. 현재 source는9d70c9b4 내용과 같은 기존 OFF 라이브러리다. 새 driver는 그 파일에 직접 연결해 기존 build/benchmark/regression binary를 덮지 않는다. 제품 source·YCSB·현재 기본값은 바꾸지 않는다.
+
+공유 적재120초·문장30초·worker RSS2GiB·결과 인코딩512MiB는 원래 조건이다. 전체1800초/8GiB/디스크여유2GiB는 준비 전에 정한 수집 가정이며 고객 SLO가 아니다. 같은 완료 행까지 두 엔진을 실행하고, 경계 뒤 마지막 쌍이 끝나도120초 이상은 요청 규모 완료로 세지 않는다. native getter는 SQL 시간 밖에서 읽고 비기본키 full scan으로0의 계측 유효성을 대조한다. SQLite 직접 스캔 행은 미측정으로 둔다. 같은 잘못된 point 결과를 두 엔진이 반환해도 독립 기대값으로 거절하고, 부분 입력·한쪽 완료/다른 쪽 timeout·manifest/등록 누락을 보존·검사한다.
+
+원래 old archive checkout과 현재 build/bench·build/sqlite-performance는 없고 확인한 정리 장부/보존 tar 목록에서 과거 성능 raw를 찾지 못했다. 이것은 확인한 위치의 한계이며 파일 전체 부재·복구·재해시 성공을 주장하지 않는다. 공개 이슈/PR의 원 실패 기록과 현존 보존 자료를 유지하고 새 표본과 섞지 않는다. 작은 대조24행만 수행하며 Task21이 이 계획을 담은 commit에서 새 정식 등록·수집한다. 원래 후속 Task21–39와 모든 checkpoint, WAL 권고와 동등 COW 비교는 유지한다.

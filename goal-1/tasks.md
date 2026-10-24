@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 20; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the completed additional after19 checkpoint.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 21; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the completed additional after19 checkpoint.
 
 ## Initialization only — 2026-10-24
 
@@ -517,13 +517,16 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Task 20 — Prepare the missing primary-key scale validation
 
-- Status: incomplete
-- Scope: Audit existing #158/#137 raw inputs and collector compatibility; reuse valid evidence and prepare the same-input 1k/10k/100k three-repeat scale/scan/latency collector without replacing old failures. Issues: #158.
-- Work performed: not started.
-- Verification evidence: required — Exact fixture and input/binary/environment/stop-rule registration, current PK path/scan counter checks, positive/negative controls; no unrelated campaign rerun.
-- Remaining risk: Changing fixture loading or stop limits silently would no longer complete the original criterion.
-- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
-- Commit status: no task commit attempted.
+- Status: complete (수집기·고정 계획·작은 대조 검증만 완료; Task21의 정식 규모 수집은 미완료)
+- Scope/work: 직전29a54723의 checkpoint19 marker·설정된 작성자·clean 상태를 확인한 progress다. #158 OPEN·사용자 소유·실측1미체크와 같은 이슈 branch/열린 PR 부재를 확인하고, 같은 checkout의 feat/158-repo-primary-key-scale로 bind했다. 기존 입력 모듈/설정은 그대로 두고 새 수집기·계획·회귀와 driver의 내부 @scan 명령을 추가했다. 기존 최적화 OFF 라이브러리에 새 driver만 직접 연결했으며 제품 source·기본값·ABI·원 binary를 바꾸지 않았다. 기존 설계/빌드 문서·plan/Continuity를 갱신했다.
+- Input/source audit: build/task20-source-issue-audit.json은 원 #137의120초/문장30초/seed137·세 규모3회, #178의 부분 적재, #179의180초 별도 성공, #158 재개 이유를 보존한다. 확인한 옛 checkout·build/bench·build/sqlite-performance와 보존 tar 목록에서 당시 성능 raw를 찾지 못했다. 전수 부재·삭제·복구·재해시 성공을 주장하지 않는다. 현재 native 기본키 경로/기존 scan 회귀를 소스로 대조했으며 새 제품 native suite 실행으로 세지 않는다. 전체 혼합·복구/YCSB 캠페인은 반복하지 않았다.
+- Preregistration: 원 items/groups·NULL/한글/BLOB/9000B 본문·autocommit INSERT·여섯 조회의 예열1/반복20·정순/역순/정순을 유지한다. 요청1천/1만/10만×3의9case, 공유 적재120초·문장30초·worker 관측RSS2GiB/인코딩512MiB를 유지하고 전체1800초/자료8GiB/여유2GiB를 수집 가정으로 고정했다. 정식 등록은 이 계획을 담은 clean 조상 commit·source6·runtime9d70c9b4의C/H/Python78·driver/library/fingerprint/interpreter4identity·SQLite/플랫폼을 고정한다. runtime78은 queue.mk를 제외한 코드 목록이며 이전79개 전체와100identity도 별도로 보존 검사했다. driver 빌드는 이 경계의 C source 내용과 일치하지만 아직 없는 containing commit에서 clean build했다고 쓰지 않는다.
+- Verification evidence: `build/check-env/bin/python -W error -m pytest -q -s tests/test_primary_key_scale.py`의 최종24검사가37.22초에 통과하고 stderr가 비었다(build/task20-pytest-closure.log/stderr). 누락 hash6유형·source/runtime/binary/일정/120→180변경·같은 잘못된 point 결과·조회/종료 누락·sync변경·꺼진 scan 반례를 거절한다. 한쪽 응답 timeout과 worker 경고는 DB·진행 중 응답·case/manifest를 보존한다. 가상 적재 clock의3/24행 부분 완료는 검증되지만 요청 규모 완료는 아니다. 이들은 실패 모델이며 실제 OS 응답 손실·전원 복구 시험이 아니다.
+- CLI/evidence: build/task20-cli.json은 새 current-source24행 control의 register/collect/verify와 analyze2회 byte 동일 SHA25680b7c3b7bbd963532fc6915793235330fe08447996cf70a82f9c4ae24b3df512를 기록한다. 원자료에서 조회순서·독립 point/missing·재열기·INSERT/기본키scan0·비기본키24행 양성 대조와 nearest-rank를 별도로 계산했다. dirty 정식 등록은 파일 생성 전에 거절됐다. SQLite3.51.0/CPython3.9.6/macOS26.5.2 arm64이며 SQLite 직접 scan 행은 측정하지 않는다. Ruff/format120/mypy·문서2개·상대 파일106개·whitespace를 통과했다. build/task20-verification.json은 새133artifact와 실제 -O2/-Wall/-Wextra/-Werror build를 고정한다.
+- Preservation/AAR: build/task20-preservation.json은 기존20277artifact항목·seal6개·원 입력/보존 tar·main/origin-main6bb8b2e8·다른 네 worktree HEAD를 대조했다. 초기/중간 control·timeout/경고 주입 자료도 유지한다. worker stderr 예외가 case 저장을 건너뛰던 경로를 고쳐 반례로 검증했다. 독립 감사의 p50_ns 기대를 실제 원 형식 p50_ms로 고쳤고, Makefile 비교 기준을 오래된 Task16이 아닌 실제 부모29a54723으로 고쳤다. 원자료/제품을 바꿔 감사를 통과시키거나 재수집하지 않았다. 원격/Vault/consumer 쓰기·새 checkout/agent·push/PR/merge/배포/전환은 없다.
+- Remaining risk: 정식 세 규모3회는 아직 실행하지 않았다. 작은 대조·3회의 설명 통계·현재 source를 과거 대비 #158 인과 효과나 속도 채택으로 확대하지 않는다. SQLite/COW의 물리 전원 손실 동등성·OS cold·실제 writer·전체 allocator 상한은 입증하지 않는다. 과거 raw 발견 한계와 첫 실패 driver/legacy 등록 재현 공백, caller 전체 보유·WAL/buffer/MVCC/early locking·동등 buffered-COW의 회수/checkpoint/복구 총비용·stream·제품 통합은 남는다. 현재 WAL 권고를 유지하며 goal은 active다.
+- Next step: 이 task-boundary commit에서 멈춘다. 다음 continuation은 원래 Task21만 수행하며 이 수집기/계획을 담은 실제 commit으로 새 정식 등록 후 원래 조건을 수집한다. partial/timeout은 요청 규모 완료가 아니며 실패하면 원인을 진단하고 필요한 수리를 추가한다. 이후 원래 checkpoint21과 모든 Task22–39/경계를 보존한다.
+- Commit record: subject `feat(repo): 기본키 규모 수집기와 원래 입력 검증 추가`; body marker `Goal-mode boundary: goal-1 task 20: Prepare the missing primary-key scale validation`. 이 기록을 담은 커밋의 설정된 작성자·marker와 clean 상태를 경계에서 확인한다. 최종 추적/자료 seal은 build/task20-closure.json에 고정한다.
 
 ## Task 21 — Execute the retained primary-key scale validation
 

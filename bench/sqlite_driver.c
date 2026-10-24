@@ -199,6 +199,25 @@ static int close_engine(engine_t *engine)
     return engine->is_sqlite ? sqlite3_close(engine->sqlite) : database_close(engine->mini);
 }
 
+static void read_scan_stats(engine_t *engine, response_t *response)
+{
+    if (engine->is_sqlite) {
+        response->error = -1;
+        snprintf(response->message, sizeof(response->message), "native scan counters unavailable for sqlite");
+        return;
+    }
+    database_scan_stats_t stats;
+    database_scan_stats(engine->mini, &stats);
+    char row[128];
+    int count = snprintf(row, sizeof(row), "I%" PRIu64 ";I%" PRIu64 ";I%" PRIu64 ";",
+                         stats.rows_scanned, stats.index_lookups, stats.index_pages_read);
+    if (count < 0 || (size_t)count >= sizeof(row)) exit(2);
+    char *copy = resize(NULL, (size_t)count + 1);
+    memcpy(copy, row, (size_t)count + 1);
+    response->columns = 3;
+    append_row(response, copy);
+}
+
 static uint64_t now_ns(void)
 {
     struct timespec time;
@@ -269,7 +288,9 @@ int main(int argc, char **argv)
         if (size > 0 && line[size - 1] == '\n') line[size - 1] = '\0';
         response_t response = {0};
         uint64_t start = now_ns();
-        if (strcmp(line, "@reopen") == 0) {
+        if (strcmp(line, "@scan") == 0) {
+            read_scan_stats(&engine, &response);
+        } else if (strcmp(line, "@reopen") == 0) {
             response.error = close_engine(&engine);
             if (response.error == 0) response.error = open_engine(&engine, 0);
         } else if (engine.is_sqlite) execute_sqlite(&engine, line, &response);

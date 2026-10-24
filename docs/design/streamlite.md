@@ -462,6 +462,27 @@ Q1·Q2·Q3의 12개 native 증가 비교도 모두 통과했다. backlog 128 대
 
 큰 backlog에서 한 page가 필요한 호출에는 현재 native 목록 API의 표본 내 근거가 생겼다. 전체 request를 계속 보유하는 원 caller의 메모리 문제는 이 API로만 해결됐다고 판정하지 않는다. 기존 Q5 소규모 혼합 상태·중단·변환/serializer 오류·native 할당 실패·해제 회귀는 동일 소스와 고정 binary의 근거로 재사용했고, 큰 입력이나 실제 소비자 전체에 대한 새 장애 시험으로 확대하지 않았다. 현재 파일·ABI·기본 backend와 WAL/buffer/MVCC/early-locking 권고는 유지한다. 실제 writer와 정리·복구를 포함한 동등 buffered-COW 비교는 별도 미완료 과업이다.
 
+### 기본키 규모 실측의 재개 조건
+
+[#158](https://github.com/woonyong-choi/totedb/issues/158)의 기본키 구현·기능 검사는 보존하지만 1천·1만·10만 행의 같은 조건 3회 실측은 미완료다. [원래 120초 계획](https://github.com/woonyong-choi/totedb/issues/137#issuecomment-6175778370), [기본키 구현 당시의 부분 완료](https://github.com/woonyong-choi/totedb/pull/178), [180초로 바꾼 결합 실측](https://github.com/woonyong-choi/totedb/pull/179), [다시 연 이유](https://github.com/woonyong-choi/totedb/issues/158#issuecomment-6233945394)를 구분한다. 180초의 성공을 원래 120초 조건의 완료로 바꾸지 않는다. 현재 작업본과 보존된 정리 장부에서 당시 성능 raw를 찾지 못했으므로 그 파일을 재해시하거나 복구했다고 표시하지 않는다. 공개 원기록의 실패·부분 완료 수치는 새 결과로 덮지 않는다.
+
+[재개 수집기](../../bench/primary_key_scale.py)는 [기존 입력 생성기](../../bench/sqlite_workload.py)와 [기존 설정](../../bench/sqlite_workload.json)을 그대로 읽는다. seed137·크기 1천/1만/10만·반복3회, 같은 items/groups 스키마와 자동 commit INSERT를 유지한다. NULL·한글·BLOB, 매 1천 번째 9,000B 본문도 같은 식으로 생성한다. point·missing·range·bucket·null·full_scan의 예열1회와 반복20회의 순서를 모두 보존해, 기본키 두 조회만 남겨 캐시 상태까지 바꾸는 일을 피한다. 세 반복의 엔진 순서는 원래대로 정순·역순·정순이다. 혼합 변경·복구 전체 캠페인은 이 기본키 측정에 다시 포함하지 않는다.
+
+[추가 계획](../../bench/primary_key_scale_plan.json)은 runtime `9d70c9b4`와 기존 계측 OFF·cache/workspace/conditional OFF 라이브러리 hash를 고정한다. 기존 driver에 `@scan`을 추가하고 같은 공개 database API·SQLite C API를 호출하는 별도 실행 파일을 만든다. driver의 준비·실행·typed 행 인코딩·결과 해제 시간을 유지하고 통계 조회는 SQL 시간 밖에서 한다. 추가 통계 왕복은 전체 수집 시간에 남으며, 과거 대비 지연 변화의 원인별 기여로 사용하지 않는다. native heap의 스캔 행·색인 조회·색인 페이지를 기록하고 비기본키 조건으로 스캔 계수기의 양성 대조를 둔다. SQLite의 직접 스캔 행 수는 측정하지 않으며 native 계수기를 SQLite의 0회 스캔으로 옮기지 않는다.
+
+| 항목 | 고정 조건과 판정 |
+|---|---|
+| 적재 | 두 엔진의 같은 SQL·응답 대조를 포함한120초, 각 문장30초, 같은 완료 행에서 중단 |
+| 요청 규모 완료 | 해당 크기의3회가 모두 요청 행 수와120초 조건 충족, partial은 별도 실제 행 수로 보고 |
+| 정확도 | 모든 SQL의 typed 행·열·변경 수 대조, point/missing의 독립 기대값, 재열기 뒤 행 수, native INSERT·기본키 조회 스캔0과 계수기 양성 대조 |
+| 지연 | 반복별 nearest-rank p50/p95/p99의 설명 통계. 조회별20표본의 p99는 최대값이며3회는 일반적인 속도 우위 검정의 근거로 부족 |
+| 수집 자원 | 전체1,800초·자료8GiB·여유2GiB, 기존 worker 관측 RSS2GiB·인코딩 결과512MiB의 사후/반환 한계 유지 |
+| 보존·실패 | 새 prefix만 허용, 등록·각 case·DB·stderr·존재하는 lock hash 검증, 실패 시 완료 쌍과 진행 중 한쪽 응답·DB·오류 보존 |
+
+전체 시간·저장 한도는 수집을 제한하는 연구 가정이며 고객 SLO가 아니다. 문장 한 쌍이 경계를 넘겨 끝날 수 있으나 최종 적재 시간이120초 이상이면 요청 행 수에 닿아도 완료로 세지 않는다. 정식 등록은 이 수집기와 계획을 담은 clean commit·Git 조상, runtime·driver·라이브러리·build fingerprint·interpreter·SQLite·플랫폼을 고정한다. small control의 입력은24행·반복1회·조회2회이며 정식 효과가 아니다. 원자료의 누락·변조, 계획·source·binary 변경과 잘못된 partial 완료 표시는 분석 전에 거절한다. 두 엔진이 같은 잘못된 point 결과를 반환해도 독립 기대값과 다르면 실패다.
+
+SQLite DELETE/FULL/fullfsync OFF와 현행 COW/fsync의 전원 손실 보장 동등성, OS cold·할당자 최고치·실제 다중 writer는 이 실험으로 입증하지 않는다. 새 runtime에는 기본키 외의 여러 변경이 있으므로 옛 결과와의 차이를 #158 하나의 효과로 귀속하지 않는다. 정식 크기 수집은 이 계획을 커밋한 다음 별도 경계에서 수행한다. 실제 writer·WAL/buffer/MVCC·buffered-COW·stream 검증을 대신하지 않는다.
+
 ### 동등한 보장과 관측값
 
 SQLite는 WAL/FULL·실제 연결 수·cache·checkpoint 설정을 기록하고 같은 상태기계와 원자성·fence·보존 계약을 검증한다. 일반 WAL의 writer 직렬화는 제품 대안의 제약으로 남기며 E5의 실제 병렬 writer 충족으로 세지 않는다. 새 다중 연결 실험은 [공식 WAL 문서](https://www.sqlite.org/wal.html#the_wal_reset_bug)가 명시한 WAL-reset 수정 포함 버전의 binary·source hash를 고정한다. 과거 버전의 결과와 새 비교를 합쳐 전후 개선으로 해석하지 않는다.
