@@ -316,4 +316,6 @@ build/check-env/bin/python bench/pending_query.py analyze --prefix build/pending
 
 `<prefix>.registration.json`은 source·설정·일정·binary·환경, `.fixtures.json`은 첫 조회 전 데이터 hash, `.raw.jsonl`은 case별 관측, `.manifest.json`은 완료·실패·미실행·파일 hash·시간을 담는다. 같은 접두사의 fixture 디렉터리와 stdout/stderr도 유일한 실행 증거이므로 보존한다. analyzer는 원자료에서 처리한 통계를 stdout으로 내며, 저장한 JSON을 고쳐 수치를 맞추지 않는다. 등록한 수집 코드가 바뀌면 기존 실행을 새 코드의 표본으로 읽지 않고 원래 코드에서 재현한다.
 
+`verify`는 등록 계획·일정에서 필수 raw·등록 JSON·fixture 데이터·생성 로그·각 worker와 native 진단 로그를 계산해 hash 목록의 누락부터 거부한다. 기재한 파일은 허용된 절대 정규 경로여야 하며 alias·symlink·중복 JSON key와 잘못된 digest를 거부한다. fixture 등록 두 사본의 경로·데이터 hash도 일치해야 한다. 수집 때 남은 SQLite WAL/SHM과 native lock은 별도로 hash를 확인한다. 수집 뒤 저장한 분석 출력은 필수 수집 자료로 추가하지 않는다. 이 검사는 자료의 완전성과 변경을 확인하며, 전체 장부를 교체하는 행위에 대한 인증은 제공하지 않는다.
+
 [수집기 회귀](../tests/test_pending_query.py)는 정상 결과·손상 digest·행 수·계측 혼입·변경된 입력·시간 초과·실패 보존, 혼합 상태·page 전환·수명·변환/serializer 오류를 검사한다. [native 실패 대조](../tests/test_pending_query_native.c)는 같은 합성 fixture를 인자로 받아 payload malloc·session reserve 실패 뒤 부분 결과·누수와 다음 조회를 확인한다. 제품 코드·현재 파일·기본 backend와 소비 프로젝트는 이 명령으로 교체하지 않는다.

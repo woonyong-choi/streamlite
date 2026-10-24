@@ -12,6 +12,7 @@ import logging
 import math
 import os
 import random
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -153,8 +154,9 @@ def collect(registration: dict[str, Any], prefix: Path) -> None:
 
 
 def verify(registration: dict[str, Any], prefix: Path) -> list[dict[str, Any]]:
+    prefix = prefix.resolve()
     _validate_registration(registration)
-    manifest = json.loads(Path(f"{prefix}.manifest.json").read_text())
+    manifest = _read_unique_json(Path(f"{prefix}.manifest.json"))
     if manifest["registration_sha256"] != _registration_digest(registration):
         raise ValueError("registration identity mismatch")
     plan = registration["plan"]
@@ -173,9 +175,7 @@ def verify(registration: dict[str, Any], prefix: Path) -> list[dict[str, Any]]:
         != (expected, expected, 0)
     ):
         raise ValueError("campaign is incomplete")
-    for path, digest in manifest["artifacts"].items():
-        if _digest(Path(path)) != digest:
-            raise ValueError(f"artifact changed: {path}")
+    _validate_artifacts(registration, prefix, manifest)
     records = [json.loads(line) for line in Path(f"{prefix}.raw.jsonl").read_text().splitlines()]
     if len(records) != expected:
         raise ValueError("raw record count mismatch")
@@ -185,6 +185,69 @@ def verify(registration: dict[str, Any], prefix: Path) -> list[dict[str, Any]]:
         validate_sample(record, plan)
     _check_storage(prefix, plan)
     return records
+
+
+def _read_unique_json(path: Path) -> Any:
+    return json.loads(path.read_text(), object_pairs_hook=_unique_object)
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _artifact_layout(registration: dict[str, Any], prefix: Path) -> tuple[set[str], set[str], dict[str, Path]]:
+    required = {f"{prefix}{suffix}" for suffix in (".registration.json", ".fixtures.json", ".raw.jsonl")}
+    optional: set[str] = set()
+    fixtures: dict[str, Path] = {}
+    plan = registration["plan"]
+    for backlog, body, engine in itertools.product(plan["backlogs"], plan["body_bytes"], ("vendor", "native")):
+        key = f"{backlog}-{body}-{engine}"
+        directory = Path(f"{prefix}-fixture-{key}")
+        database = directory / ("data.db" if engine == "vendor" else "data.totedb")
+        fixtures[key] = database
+        required.update((str(database), f"{directory}.stdout", f"{directory}.stderr"))
+        suffixes = ("-shm", "-wal") if engine == "vendor" else ("-lock",)
+        optional.update(f"{database}{suffix}" for suffix in suffixes)
+    for index, case in enumerate(registration["schedule"]):
+        output = f"{prefix}-{index:04d}"
+        required.update((f"{output}.stdout", f"{output}.stderr"))
+        if case["condition"] == "native" and case["diagnostic"]:
+            required.update((f"{output}-native.stdout", f"{output}-native.stderr"))
+    return required, optional, fixtures
+
+
+def _validate_artifacts(registration: dict[str, Any], prefix: Path, manifest: dict[str, Any]) -> None:
+    required, optional, fixtures = _artifact_layout(registration, prefix)
+    hashes = manifest.get("artifacts")
+    if not isinstance(hashes, dict):
+        raise ValueError("artifact hashes must be an object")
+    present_auxiliary = {path for path in optional if Path(path).exists() or Path(path).is_symlink()}
+    missing = (required | present_auxiliary) - hashes.keys()
+    if missing:
+        raise ValueError(f"missing artifact hashes: {sorted(missing)}")
+    allowed = required | optional
+    for name, digest in hashes.items():
+        if name not in allowed or name != str(Path(name).resolve()):
+            raise ValueError(f"invalid artifact path: {name}")
+        if not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
+            raise ValueError(f"invalid artifact hash: {name}")
+        if not Path(name).is_file() or _digest(Path(name)) != digest:
+            raise ValueError(f"artifact changed or missing: {name}")
+    if _read_unique_json(Path(f"{prefix}.registration.json")) != registration:
+        raise ValueError("registration file differs from supplied registration")
+    expected_fixtures = {
+        key: {"path": str(database.parent), "hashes": {str(database): hashes[str(database)]}}
+        for key, database in fixtures.items()
+    }
+    if manifest.get("fixtures") != expected_fixtures:
+        raise ValueError("manifest fixture layout or hashes mismatch")
+    if _read_unique_json(Path(f"{prefix}.fixtures.json")) != expected_fixtures:
+        raise ValueError("fixture registration layout or hashes mismatch")
 
 
 def _git(arguments: list[str]) -> str:

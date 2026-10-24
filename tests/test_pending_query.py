@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -155,6 +156,161 @@ def test_verify_rejects_changed_inputs(collected: tuple[Any, ...], kind: str, mo
         monkeypatch.setattr(Path, "read_text", read)
     with pytest.raises((ValueError, json.JSONDecodeError)):
         campaign.verify(registration, prefix)
+
+
+@pytest.mark.parametrize("kind", ["raw", "stdout", "stderr", "database", "all", "raw_altered"])
+def test_verify_rejects_incomplete_artifact_coverage(
+    collected: tuple[Any, ...], kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix, registration, _ = collected
+    original_read = Path.read_text
+    suffixes = {
+        "raw": ".raw.jsonl",
+        "stdout": "-0000.stdout",
+        "stderr": "-0000.stderr",
+        "database": "-fixture-9-32-native/data.totedb",
+        "raw_altered": ".raw.jsonl",
+    }
+
+    def read(path: Path, *args: Any, **kwargs: Any) -> str:
+        value = original_read(path, *args, **kwargs)
+        if str(path) == f"{prefix}.manifest.json":
+            manifest = json.loads(value)
+            if kind == "all":
+                manifest["artifacts"] = {}
+            else:
+                del manifest["artifacts"][f"{prefix}{suffixes[kind]}"]
+            return json.dumps(manifest)
+        if kind == "raw_altered" and str(path) == f"{prefix}.raw.jsonl":
+            records = [json.loads(line) for line in value.splitlines()]
+            records[0]["sample"]["wall_ns"] *= 2
+            return "\n".join(json.dumps(record) for record in records)
+        return value
+
+    monkeypatch.setattr(Path, "read_text", read)
+    with pytest.raises(ValueError, match="missing artifact hashes"):
+        campaign.verify(registration, prefix)
+
+
+def _patch_json_read(monkeypatch: pytest.MonkeyPatch, path: Path, transform: Callable[[dict[str, Any]], None]) -> None:
+    original_read = Path.read_text
+
+    def read(file: Path, *args: Any, **kwargs: Any) -> str:
+        value = original_read(file, *args, **kwargs)
+        if file == path:
+            data = json.loads(value)
+            transform(data)
+            return json.dumps(data)
+        return value
+
+    monkeypatch.setattr(Path, "read_text", read)
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        ".registration.json",
+        ".fixtures.json",
+        "-fixture-9-32-vendor/data.db",
+        "-fixture-9-32-native.stdout",
+        "-fixture-9-32-vendor.stderr",
+        "-fixture-9-32-vendor/data.db-wal",
+        "-fixture-9-32-vendor/data.db-shm",
+        "-fixture-9-32-native/data.totedb-lock",
+        "-0007-native.stdout",
+        "-0007-native.stderr",
+        "-0035.stdout",
+    ],
+)
+def test_verify_requires_fixture_probe_and_auxiliary_hashes(
+    collected: tuple[Any, ...], suffix: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix, registration, _ = collected
+    path = f"{prefix}{suffix}"
+    assert Path(path).exists()
+    _patch_json_read(monkeypatch, Path(f"{prefix}.manifest.json"), lambda data: data["artifacts"].pop(path))
+
+    with pytest.raises(ValueError, match="missing artifact hashes"):
+        campaign.verify(registration, prefix)
+
+
+@pytest.mark.parametrize("kind", ["outside", "relative", "dot", "parent", "neighbor", "manifest"])
+def test_verify_rejects_wrong_paths_and_duplicate_aliases(
+    collected: tuple[Any, ...], kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix, registration, _ = collected
+    raw = Path(f"{prefix}.raw.jsonl")
+    names = {
+        "outside": str(ROOT / "README.md"),
+        "relative": str(raw.relative_to(ROOT)),
+        "dot": f"{raw.parent}/./{raw.name}",
+        "parent": f"{raw.parent}/ignored/../{raw.name}",
+        "neighbor": f"{prefix}-neighbor.raw.jsonl",
+        "manifest": f"{prefix}.manifest.json",
+    }
+
+    def edit(data: dict[str, Any]) -> None:
+        data["artifacts"][names[kind]] = data["artifacts"][str(raw)]
+
+    _patch_json_read(monkeypatch, Path(f"{prefix}.manifest.json"), edit)
+    with pytest.raises(ValueError, match="invalid artifact path"):
+        campaign.verify(registration, prefix)
+
+
+@pytest.mark.parametrize("digest", ["", "0" * 63, "G" * 64, "A" * 64, None, 42, "0" * 64])
+def test_verify_rejects_invalid_or_changed_artifact_hashes(
+    collected: tuple[Any, ...], digest: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix, registration, _ = collected
+
+    def edit(data: dict[str, Any]) -> None:
+        data["artifacts"][f"{prefix}.raw.jsonl"] = digest
+
+    _patch_json_read(monkeypatch, Path(f"{prefix}.manifest.json"), edit)
+    with pytest.raises(ValueError, match="artifact (hash|changed)"):
+        campaign.verify(registration, prefix)
+
+
+@pytest.mark.parametrize(
+    "kind", ["manifest_fixtures", "fixture_file", "registration_file", "duplicate_json", "symlink"]
+)
+def test_verify_rejects_inconsistent_artifact_registration(
+    collected: tuple[Any, ...], kind: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prefix, registration, _ = collected
+    manifest_path = Path(f"{prefix}.manifest.json")
+    if kind == "manifest_fixtures":
+        _patch_json_read(monkeypatch, manifest_path, lambda data: data["fixtures"].clear())
+    elif kind == "fixture_file":
+        _patch_json_read(monkeypatch, Path(f"{prefix}.fixtures.json"), lambda data: data.clear())
+    elif kind == "registration_file":
+        _patch_json_read(monkeypatch, Path(f"{prefix}.registration.json"), lambda data: data.update(schema=2))
+    elif kind == "duplicate_json":
+        original_read = Path.read_text
+
+        def read(path: Path, *args: Any, **kwargs: Any) -> str:
+            value = original_read(path, *args, **kwargs)
+            return value[:-2] + ', "artifacts": {}}' if path == manifest_path else value
+
+        monkeypatch.setattr(Path, "read_text", read)
+    else:
+        original_resolve = Path.resolve
+
+        def resolve(path: Path, *args: Any, **kwargs: Any) -> Path:
+            return ROOT / "README.md" if str(path) == f"{prefix}.raw.jsonl" else original_resolve(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "resolve", resolve)
+
+    with pytest.raises(ValueError, match="fixture|registration file|duplicate JSON|invalid artifact path"):
+        campaign.verify(registration, prefix)
+
+
+def test_verify_ignores_later_analysis_output(collected: tuple[Any, ...]) -> None:
+    prefix, registration, records = collected
+    output = Path(f"{prefix}.analysis-{uuid.uuid4().hex[:8]}.json")
+    output.write_text(json.dumps(analyze(records, registration)))
+
+    assert campaign.verify(registration, prefix) == records
 
 
 def test_timeout_retains_failure_evidence(monkeypatch: pytest.MonkeyPatch) -> None:

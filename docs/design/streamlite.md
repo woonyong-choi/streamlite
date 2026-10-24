@@ -403,6 +403,8 @@ Q5 대조는 빈 결과, page 0·음수·1,024 초과, payload 상한, metadata�
 
 등록은 설정·정확한 일정·수집 코드·runtime Git 내용·interpreter/vendor source·SQLite 모듈·플랫폼·기존 OFF/ON 라이브러리와 새 driver의 hash를 남긴다. 데이터 파일 hash는 첫 조회 전에 fixture 등록에 기록하고 매 worker 뒤 다시 확인한다. 원자료를 fsync한 case는 완료로 세고 이후 deadline 초과의 campaign 실패와 실패 case 수를 구분한다. raw·stdout/stderr·fixture·manifest를 원본 그대로 보존하고 `verify`와 `analyze`가 동일 자료를 다시 읽는다. 재현 명령은 [pending 조회 수집](../build-and-test.md#pending-조회-수집)에 있다. 기존 main·YCSB·실패 자료·다른 작업본과 WAL/buffer/MVCC/early-locking 권고는 이 수집기 작업으로 바꾸지 않는다.
 
+검증기는 manifest에 적힌 hash만 검사하지 않고, 등록 일정·fixture 조합에서 필요한 파일을 도출해 누락을 먼저 거부한다. raw·fixture 등록·필수 데이터·worker/native 진단 로그가 대상이며, 존재하는 SQLite WAL/SHM·native lock은 부속 자료로 검사한다. 필수 목록·경로·hash와 fixture 등록을 대조한 뒤 원자료를 분석한다. 수집 뒤 생성한 분석 출력은 이 필수 집합에 넣지 않는다. 잘못된 경로·alias·symlink·중복 JSON key·digest도 거부하지만 전체 장부 교체에 대한 인증을 뜻하지 않는다.
+
 ### 동등한 보장과 관측값
 
 SQLite는 WAL/FULL·실제 연결 수·cache·checkpoint 설정을 기록하고 같은 상태기계와 원자성·fence·보존 계약을 검증한다. 일반 WAL의 writer 직렬화는 제품 대안의 제약으로 남기며 E5의 실제 병렬 writer 충족으로 세지 않는다. 새 다중 연결 실험은 [공식 WAL 문서](https://www.sqlite.org/wal.html#the_wal_reset_bug)가 명시한 WAL-reset 수정 포함 버전의 binary·source hash를 고정한다. 과거 버전의 결과와 새 비교를 합쳐 전후 개선으로 해석하지 않는다.

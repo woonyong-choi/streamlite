@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 18a; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the additional after19 checkpoint.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 18b; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the additional after19 checkpoint.
 
 ## Initialization only — 2026-10-24
 
@@ -459,13 +459,16 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Task 18a — Require complete pending-query artifact coverage
 
-- Status: incomplete
+- Status: complete (로컬 pending 자료 coverage 수리와 회귀만 완료; 공통 수리·정식 효과·제품 전환 미완료)
 - Scope: CP18-1의 pending manifest 검증 누락을 수리한다. 실제 등록 일정·fixture 구조에서 raw/fixture 등록·필수 DB·각 worker와 native probe stdout/stderr의 요구 집합을 도출하고, 누락·잘못된 경로·중복 alias·잘못된 hash를 결과 분석 전에 거절한다. 합법적인 보존 부속 파일은 별도로 검증하며 늦게 만든 분석 출력까지 무작정 같은 필수 집합으로 삼지 않는다. Issue: #265, 기존 checkout/branch 재사용.
-- Work performed: not started.
-- Verification evidence: required — CP18-1의 여섯 반례가 거절로 바뀌고 정상 control36건·동일 결과·분석 재생성·실패 자료 보존이 통과해야 한다. current-source/plan-ancestor·완료/실패·deadline·예산·고정 binary 검사도 유지한다. 원본 b9cfef4a 자료·실패/미커밋 control을 덮거나 새 효과로 해석하지 않는다.
-- Remaining risk: 정상 자료의 실제 목록과 필수 증거를 잘못 섞으면 온전한 자료를 거절하거나 누락을 다시 놓칠 수 있다. checksum coverage는 악의적인 전체 장부 교체에 대한 인증이 아니다. 기존 연구 가정·숫자·제품 source는 바꾸지 않는다.
-- Next step: checkpoint after18 다음 첫 작업으로 실행하고 검증·기록·task-boundary commit 뒤 멈춘다. Task18b/19를 같은 경계에서 수행하지 않는다.
-- Commit status: no task commit attempted.
+- Work performed: clean f31457fd·#265 소유권과 기존 branch에서 시작했다. 등록 계획·일정으로 필수 파일을 도출하고 manifest의 누락부터 거절한다. control은 필수89/부속3/fixture2, 정식 일정은 필수3591/부속18/fixture12다. SQLite WAL/SHM·native lock은 존재하면 hash가 필요하고 기재한 부속 파일은 실제 bytes를 대조한다. 허용 집합 밖 경로·상대/비정규 경로·symlink·중복 JSON key·잘못된 SHA256과 fixture 두 등록의 경로/hash 불일치를 거절한다. 늦게 생성한 분석 출력은 필수 집합으로 삼지 않는다. 기존 수집기 안에서 국소 수리해 source pin 목록·숫자 계획·통계·제품 source를 보존했다. 기존 설계/빌드 문서와 Continuity만 갱신했다.
+- Regression evidence: build/task18a-before-pytest.log는 같은 public verify 반례 여섯 개가 수정 전 모두 수용되어 예상대로 실패한 기록이다. 수정 후 `PYTHONPATH=python:bench:.local/runs/local-db-comparison/deps-queue TOTEDB_LIB=$PWD/build-regression/conditional-baseline-on/lib/libtotedb.dylib build/check-env/bin/python -W error -m pytest -q -s tests/test_pending_query.py`가65검사를 통과했다(build/task18a-pytest.log). 기존29개와 새 coverage36개를 포함하며, fixture/native 로그·부속 hash·alias/digest·등록 불일치·분석 출력 공존과 기존 실패/중단/소유권 대조를 확인했다. 경로/symlink/JSON 변형 검사는 읽기·resolve의 메모리 대조이며 원본을 손상시키지 않았다. native 실패 sweep도 고정된 기존 binary로 재실행했고 stderr가 비었다. 새 C 빌드나 정식 효과 실행으로 세지 않는다.
+- Verification evidence: build/task18a-controls.json에서 새 current-source 정상36건은 통과하고 CP18-1 여섯 반례는 raw JSON 읽기0회에서 거절했다. build/task18a-historical-coverage.json은 b9cfef4a 원자료의 새 자료 검사 component만 정상/여섯 누락 거절을 확인한다. 과거 등록의 default verify는 여전히 source 변경으로 거절하므로 과거 자료를 현재 표본으로 바꾸지 않았다. CLI verify36/control=true와 analyze 두 번이 통과하고 byte 동일 SHA256 c32c02cb90cb0abe33add8548c84890bff261e095e14fbd5110a306d6871ea00이다(build/task18a-cli.json). Ruff/format120/mypy·두 문서·whitespace 검사 모두 통과했다.
+- Preservation evidence: build/task18a-verification.json은 기존14601 artifact 항목(기존14594+checkpoint18의7개), 새 실행·실패 자료, current source10/runtime79·고정 binary를 확인한다. 원본 raw/manifest hash3f23975b/fbe6a990와 실패 DB·중간 control·원자료를 유지했다. main/origin-main6bb8b2e8와 다른 네 worktree HEAD는 같다. 공통 수집기·제품/runtime·고정 계획·분석/worker/Cdriver·Makefile은 f31457fd와 차이 없다. current-source/plan-ancestor·완료/실패·deadline·자원 gate는 원래 구현을 유지한다. #265 OPEN·4미체크·사용자 소유를 확인했고 원격 변경·consumer/Vault 쓰기·push/PR/merge/배포·데이터 전환은 없다.
+- Remaining risk: Task18b의 공통 검증기 누락은 아직 미완료다. 그 source도 pending 등록에 포함되므로 Task19는 두 수리를 담은 commit으로 새 등록해야 한다. checksum coverage는 전체 장부 교체에 대한 인증이 아니다. 예전 첫 driver 실패 binary 미고정 한계와 원 pending 소비자·정식 전체 격자·scale·실제 writer·COW/WAL 정리/복구 비용·stream·제품 검증은 그대로 남고 goal은 active다. WAL/buffer/MVCC/early-locking 권고와 동등 buffered-COW 비교를 유지한다.
+- AAR: hash-loop의 성공과 요구 자료 집합의 완전성은 별도 조건이다. 필수 집합을 manifest 자체나 현재 glob에서 추론하면 누락 또는 늦은 분석 파일 때문에 잘못 판정한다. 계획·일정에서 도출하고 합법적인 부속 파일은 별도 취급한다. 수정 전 실패/수정 후 거절과 과거 component 검사/default source 거절을 나눠 기록했다.
+- Next step: 이 task-boundary commit에서 멈춘다. 다음 continuation은 Task18b만 수행하며 공통 과거 source 재분석과 새 pending 통합 guard를 검증한다. 이후 원래19와 추가 checkpoint19이며 후속 모든 원래 과업/경계를 보존한다.
+- Commit record: subject `fix(repo): 목록 조회 자료 해시 누락 검증 수정`; body marker `Goal-mode boundary: goal-1 task 18a: Require complete pending-query artifact coverage`. 이 기록을 포함하는 커밋의 작성자·marker와 clean 상태를 경계에서 확인한다.
 
 ## Task 18b — Require complete common-cost artifact coverage
 
