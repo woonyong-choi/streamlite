@@ -496,6 +496,8 @@ FFI에도 SQL result에서 native payload로, ctypes에서 Python bytes로 복�
 
 [비교 후보의 저장·복구 계약](design/streamlite.md#비교-후보의-저장복구-계약)은 불변 행 version·논리 abort·초기 NO-STEAL과 영속 요청 ID·결과 조회를 선택한다. redo만으로 미확정 제자리 변경을 취소하는 안은 이전 값을 보존하지 못하므로 제외한다. NO-STEAL의 frame 압력, 결과 본문·ID 보존, owner fencing과 checkpoint/GC 비용은 새 부담으로 남긴다. 같은 결과·보존 계약을 buffered COW에도 적용하며, 이 선택의 구현·중단 복구·실측은 아직 완료하지 않았다.
 
+로컬 후속 구현은 [분할 WAL transport](../include/storage/candidate_wal.h)의 codec·파일 append/force·재시작 scan까지 진행했다. [실파일 시험](../tests/test_candidate_wal.c)의 tail 절단·손상·짧은 I/O·실패·process 종료 검사는 이 계층의 근거다. 거래 commit witness·영속 결과 조회와 version·buffer/checkpoint·실제 writer는 여전히 미완료이며, 기존 COW 제품의 변경이나 WAL 성능 우위로 쓰지 않는다.
+
 예를 들어 같은 leaf의 서로 다른 두 행을 두 transaction이 바꾸더라도, 나중 transaction이 옛 root를 그대로 게시하면 먼저 확정한 변경을 잃을 수 있다. 쓰기 잠금만 없애는 변경으로는 이 문제를 풀지 못한다. 현재 `database_work_begin`은 작업 종료까지 배타 잠금을 유지한다. 따라서 현재의 단일 writer COW와, 검증·병합을 추가할 다중 writer COW는 같은 구현이 아니다. 이 설명은 현재 코드와 제안의 대조이며 동시 갱신 실험 결과가 아니다. ([현재 잠금](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1163-L1172), [작업 종료](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1229-L1251), [리뉴얼 구조](design/streamlite.md#다중-writer의-검증병합게시))
 
 2026-10-23의 StreamLite 리뉴얼은 SQL·영속 재생 스트림·ACK를 각각 사용하거나 같은 transaction으로 결합하는 제품 가설을 더했다. 채택하려면 필요한 로컬 JetStream 전달 의미를 충족하고, 같은 보장에서 전체 자원·배포·연동 부담을 줄이며, SQLite 조합 대비 자체 엔진의 이익을 보여야 한다. 실제 동시 writer의 안전성과 작업당 비용 절감도 함께 요구한다. 완료된 수요 분석과 표시명 변경은 이 조건의 구현·실측 완료가 아니다. ([구조 결정 #257](https://github.com/woonyong-choi/totedb/issues/257), [표시명·구조 제안 PR259](https://github.com/woonyong-choi/totedb/pull/259), [제품 가설과 대안](design/streamlite.md#해결하는-문제))

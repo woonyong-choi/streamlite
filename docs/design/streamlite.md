@@ -378,6 +378,8 @@ page 번호가 재사용되면 디스크 page가 재생 중인 record보다 새 
 
 ### checkpoint와 회수 순서
 
+[비교용 WAL 파일](../build-and-test.md#비교용-wal-파일)의 로컬 transport는 위 record/segment 형식과 순차 append·force·재시작 scan을 구현한다. 이 계층은 16개 record 종류의 본문을 opaque bytes로 취급하며 transaction chain·physical group 완료·CSN·요청 결과를 판정하지 않는다. 마지막의 불완전 길이는 명시적 tail 수리 대상으로, 완전 길이의 checksum 손상은 보수적으로 CORRUPT로 처리한다. 유효 prefix visitor는 전체 scan 성공 전에 외부 효과를 확정하지 않는다. 이 부분 구현과 아래 checkpoint·가시성·결과 복구의 미완료 범위를 구분한다.
+
 writeback은 latch 아래 frame의 bytes·pageLSN·변경 세대를 사본으로 잡고 latch를 놓는다. 미확정 의존성이 없고 WAL의 durable LSN이 해당 physical group 끝 이상인 것을 확인한 뒤 data에 쓴다. 쓰기 중 frame이 바뀌면 이전 사본의 I/O 완료로 최신 dirty 표시를 지우지 않는다. page가 디스크에 도달한 것과 transaction commit은 다른 상태다. NO-STEAL은 확정 data의 매 commit 강제 쓰기인 FORCE를 뜻하지 않는다.
 
 checkpoint는 begin 시점의 dirty page별 최초 미반영 physical group 시작 LSN, 활성 transaction의 첫 LSN·상태, frozen CSN이 없는 잔존 version이 참조하는 terminal transaction 상태를 수집한다. catalog·heap/index·결과 조회 표·할당 표의 root PageRef, 요청 epoch/floor, 할당 highwater와 version GC horizon도 포함한다. root의 변경은 그 root를 담는 metadata page의 physical group으로 보호한다. 제어 gate 아래 일관된 begin 기준을 잡고 사본의 bytes도 예약한다. 대상 dirty page를 가능한 범위에서 쓰되 활성 거래 때문에 못 쓴 page는 dirty 표에 남기고 redo 시작을 그 이전으로 유지한다. checkpoint 전후 처음 바뀐 page의 image 필요 상태를 latch/epoch로 동기화한다. checkpoint가 시작됐다는 이유로 기존 dirty page를 clean으로 표시하지 않는다.
@@ -919,6 +921,6 @@ H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 bar
 - G3 자원·보존: payload·메모리·pin·spill·in-flight·ACK holes·로그·실패/결과 기록의 bytes와 개수 한도, 유한 대기 시간, replay·멱등 보존 기간의 확정. 한도 도달 시 publish 거절 권고와 명시적 consumer expiry·데이터 손실 정책 비교 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G4 프로세스·이관: membership·lease·내구 owner epoch와 배타 복구 계약의 실제 프로세스 간 구현·사망/정지/fork 검증, 이관·역이관은 미완료다. 별도 시험 형식 선택을 기존 DB 전환으로 적용하지 않는다 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G5 비교 실행: E0–E7·조회 Q1–Q5의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·조회 결과 수명·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G6 WAL·version 형식: 내부 형식·NO-STEAL·논리 abort·checkpoint/GC 계약은 위 절을 따른다. record codec·복구·가시성·구조 변경·공유 frame의 실제 구현과 R01–R18 실패 증명, 양쪽 후보의 비용 수집은 미완료다 ([#263](https://github.com/woonyong-choi/totedb/issues/263), [#266](https://github.com/woonyong-choi/totedb/issues/266))
+- G6 WAL·version 형식: 내부 형식·NO-STEAL·논리 abort·checkpoint/GC 계약은 위 절을 따른다. 로컬 record/segment transport와 별도로 transaction/group/결과 복구·가시성·구조 변경·공유 frame의 실제 구현과 R01–R18 전체 실패 증명, 양쪽 후보의 비용 수집은 미완료다 ([#263](https://github.com/woonyong-choi/totedb/issues/263), [#266](https://github.com/woonyong-choi/totedb/issues/266))
 - 느린 소비자·보존 한도 충돌, 지원 subject·replay·DLQ/redrive의 정확한 API 계약 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - 표시명 이후 패키지·import·ABI·경로·파일 형식의 별도 호환 전환과 상표 등 권리 확인 ([#258](https://github.com/woonyong-choi/totedb/issues/258))

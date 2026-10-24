@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 23; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the completed checkpoints after19/21.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 23; original requirements/checkpoints remain, with evidence-driven Task18a/18b, completed checkpoints after19/21 and prerequisite23a.
 
 ## Initialization only — 2026-10-24
 
@@ -569,6 +569,19 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Next step: 이 task-boundary commit에서 멈춘다. 다음 continuation은 원래 Task23만 수행하고 구현 착수의 실제 phase readiness를 확인한다. 계약 단계 완료를 #257 공개 통합·#263 제품 완료로 승격하지 않는다. 원래 Task23–39/모든 checkpoint를 보존하며 Task24/checkpoint를 이 경계에서 실행하지 않는다. goal은 active다.
 - Commit record: subject `docs(docs): WAL 버전 복구와 영속 결과 조회 계약 추가`; body marker `Goal-mode boundary: goal-1 task 22: Specify WAL and version recovery contracts`. 이 기록을 담은 커밋의 설정된 작성자·marker와 clean 상태를 경계에서 확인한다.
 
+## Task 23a — Implement segmented WAL framing and restart scan
+
+- Status: complete (격리된 WAL transport 구현·실파일/byte 검증만 완료; 원래23의 거래/영속 결과 복구·제품 미완료)
+- Scope: 원래 Task23을 두 독립 검증 경계로 나눈 첫 선행 구현이다. 고정 format1 record/segment codec·CRC/길이/LSN/UUID/owner 순서, 배타 파일 transport·append/force·재시작 scan·명시적 불완전 tail 수리와 격리된 실제 파일 실패 시험을 구현한다. Issue: #266. 거래 chain/physical group 완료·commit/outcome·영속 결과 page/ID 조회는 원래 Task23에 그대로 남긴다.
+- Work performed: clean4647f1f5의 Task22 marker/사용자·현재branch·이슈266 담당/열린PR 부재를 확인하고 기존branch/bind를 재사용했다. 새 candidate_wal.h·codec·파일 모듈·전용 C시험을 추가했다. 4MiB segment·최대1MiB record·256MiB quota, 고정 buffer/allocator, O_EXCL·NOFOLLOW·배타 flock, 짧은 I/O/EINTR·poison/fork guard, 순차 scan/owner 역행·길이로 숨긴 중간 record 검사와 명시적 tail 수리를 구현했다. body는 opaque이며 기본 object/공유 라이브러리·SQL/ACK에는 연결하지 않았다. 기존 세 문서와 Continuity만 동반 갱신했다.
+- Verification evidence: 실제 `make BUILD_DIR=build-regression test-candidate-wal TEST_TIMEOUT=120`이12필수 batch·21893 check를 통과했다(`build/task23a-batched-command.json`, build-regression/fault/test_candidate_wal-0.json부터11.json). 모두 exit0/빈stderr이며 -Wall/-Wextra/-Werror·UBSan 빌드다. 절단0–359를 각1회·원본360/수리360으로 검사하고 re-signed 필드/순서·segment 정확 경계/gap/부분 header·quota/allocator/짧은 I/O/EINTR/0byte/ENOSPC/sync 실패·visitor 중단/poison·symlink·fork를 확인했다. 실제 자식은 force 직전83·직후84종료, 성공 통지 뒤SIGKILL을 구분했다. 장치 전원 손실이나 거래 APPLIED 증거가 아니다.
+- Independent/static evidence: C helper를 쓰지 않은 `build/task23a-batched-oracle.py`가360개 원본 prefix/수리 stream·12golden·세 segment의7frame을 byte/CRC로 대조했다. golden536B SHA256은3cce7b3586a3984fd849fb26b5f7a139775e5d401212f14968c09f6d73ceb027이다. batch별 범위·서로 다른12prefix·보고된21893 check도 대조했다(`task23a-batched-oracle.json`). 앞선 full360 직접 실행21541 check와 독립 대조는 task23a-closure-report/independent-closure.json에 별도로 보존하며 합산한 단일 실행으로 쓰지 않는다. 현재 core source와 같은 두 clang --analyze는 경고0/빈stderr이고 기본make -n에 candidate module이 없다(`task23a-verified-build.json`).
+- Failure/AAR: 최초 정적 검사 두 번의 potential-leak 경고는 exit0이어도 거절했다. invalid option 검사를 할당 전에 하고 buffer 할당 실패는 원 allocator로 직접 해제해 경고와 실제 할당 실패 수명 검사를 모두 해결했다. 실제 누수를 관측했다고 쓰지 않는다. 첫 문서 Make 명령은113번째 절단 fixture에서 native90초 SIGALRM으로 실패했다. 당시6입력 archive와227실패 artifact hash·report를 보존했다(`task23a-standard-failure.json`, task23a-pre-batch-inputs.tar.gz). 360입력/native90초/runner120초를 유지한30×12분할 뒤 모든 batch가 통과했다. 직접 실행의 성공이 문서 명령의 실패를 대신하지 않으며 시간 한도를 올리거나 입력을 빼지 않는다.
+- Preservation/scope: `build/task23a-preservation.json`은 기존20506artifact항목·seal12·보호 추적9035파일·main/origin-main6bb8b2e8·다른 네worktree HEAD를 대조했다. 실패227artifact와 모든 batch 파일도 그대로다. 문서3개 check_doc·상대파일213/anchor64·whitespace가 통과했다. 실제 #263/#266은OPEN·4/5미체크이고 #266의제품/정식비교 blocker는 유지한다(`task23a-issues.json`, task23a-reviewed-build-0.stdout). 계약/프로토타입의 단계 착수와 전체 issue 완료를 구분한다. 기존 runtime/src/include/python·SNAPSHOT·형식3·YCSB/원자료·소비자/Vault를 보존하며 원격변경·새checkout/agent·push/PR/merge/배포/전환은 없다. 최종 source/실행자료/추적 hash는 `build/task23a-verification.json`에 고정한다.
+- Remaining risk: typed frame·force·숫자 owner epoch는 transaction commit/원자성/가시성·사망 복구 소유권이 아니다. WAL transport의 단일 배타 append owner는 실제 독립 writer 구현이 아니다. 원래23의 chain/group/CSN/commit witness·영속ID/result page/조회, buffer/checkpoint24·version/abort25·잠금26·동일/별도process27/28·동등COW29·실패30·정리/복구 총비용31/32와 제품/stream은 미완료다. 전체 앱RSS·128MiB 공유상한도 이 allocator 검사로 입증하지 않는다. 현재 WAL/buffer/MVCC/early locking 권고와 현행COW 보존·동등비교를 유지하며 실측 승리나 goal완료로 쓰지 않는다.
+- Next step: 이 task-boundary commit에서 멈춘다. 다음은 원래Task23만 수행하고23a의 transport 위 거래·영속 결과 복구를 완성한다. 22/23a/23 세 경계 뒤 추가checkpoint23을 별도 continuation으로 수행한다. 원래Task23–39/after24와 모든 기존checkpoint·Task6복구는 보존한다. 이번 경계에 원래23·24나 checkpoint를 실행하지 않았으며 goal은active다.
+- Commit record: subject `feat(repo): 분할 WAL 파일과 재시작 스캔 추가`; body marker `Goal-mode boundary: goal-1 task 23a: Implement segmented WAL framing and restart scan`. 이 기록을 담은 커밋의 설정된 작성자·marker와 clean 상태를 경계에서 확인한다.
+
 ## Task 23 — Implement WAL records and durable commit recovery
 
 - Status: incomplete
@@ -578,6 +591,15 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Remaining risk: A successful append is not a durable commit; keep old backend and files intact.
 - Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
 - Commit status: no task commit attempted.
+
+## Additional checkpoint after Task 23
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — Task22/23a/23의 계약·실제 framing/거래/영속ID·결과 복구·내구성·자원/소유권·오류/재시작·자료 보존·문서/이슈 상태를 대조한다. tracking-only checkpoint이며 원래after24는 보존한다.
+- Remaining risk: transport scan·모형·같은열기 ring을 transaction recovery나실제writer 증명으로 승격하지 않는다. 필요한 수리는 독립 과업으로 추가한다.
+- Next step: 원래Task23의 task-boundary 뒤 별도continuation에서 수행하고 그 뒤24로 진행한다.
+- Commit status: no checkpoint commit attempted.
 
 ## Task 24 — Implement bounded buffering and checkpoint ordering
 

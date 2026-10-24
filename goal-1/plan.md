@@ -206,3 +206,9 @@ G2는 선언한 operation manifest와 영속 요청 ID/result를 선택한다. �
 8192B page·80B WAL header/16B footer·72B version header, physical-group 완료/가시성 순서, terminal 상태와 root를 포함한 fuzzy checkpoint·두 control slot의 로그 보존, 세대 이력 검증과 membership 배타 복구를 기존 StreamLite 설계에 둔다. 128MiB 전체 요청 bytes/8MiB 작업·64MiB frame·8MiB WAL staging·4MiB lock, 64거래/16process, 1MiB 결과/64KiB chunk·1024 ID×4epoch/64MiB 결과 공간, 256MiB WAL/정리 예약8MiB와 key wait1000ms는 가역적인 내부 검증 설정이다. 고객 SLO·현재 CAPI/RSS 보장으로 적용하지 않는다. data/replay 전체 quota·제품 보존 기간·공개 API와 G5 정식 수집 수치는 이후 계약/사전 계획에 남는다.
 
 Task22의 상태/형식·18개 실패 oracle과 제한 상태 모형은 계약 검증이다. record codec·실제 fsync/중단 복구·checkpoint·MVCC/잠금·실제 writer·동등 비용의 실행 증명이 아니다. 다음은 Task23만 수행하며 이슈266의 계약 단계와 제품263의 비교 후 통합 gate를 구분한다. 모든 Task23–39와 checkpoint를 보존하고 실제 구현에서 계약 충돌을 발견하면 가장 작은 수리/분할을 기록한다. main/YCSB·원 실패/원자료·다른 작업본·Vault와 소비자 프로젝트를 보존한다. 이번 경계는 원격 issue/board 변경·발행·파일 전환을 수행하지 않는다.
+
+## Task 23 prerequisite split
+
+새 WAL 파일 모듈이 없고 G2 본문/ID 복구는 ordinary version/overflow page와 transaction witness를 요구한다. 원래23을 없애거나 완료로 줄이지 않고 선행23a로 segmented transport/codec/scan/명시적 tail repair를 먼저 구현한다. 원래23은 실제 transaction/group/commit/영속 결과 저장·조회와 모든 응답/재시작 oracle을 그대로 맡는다. 원래24/checkpoint와 이후 요구를 보존한다. 23a의 record scan·fsync 성공은 APPLIED/DURABLE 거래의 증거가 아니며 SQL/기존 COW 제품에 연결하지 않는다. 기존 이슈266 branch/bind를 재사용하며 formal 비교/제품263의 blocker는 보존한다.
+
+23a의 실제 Make 시험은 같은360개 절단을30개씩12개 필수 실행으로 나눈다. 한 process에 모은 최초 문서 명령은113번째 fixture에서 native90초 한도에 걸렸으며 실패 report·원본/수리 파일과 당시 source/binary를 보존한다. native90초/runner120초와 모든 입력을 유지하고 실행 단위만 줄인다. 두 모듈의 정적 검사·현재12실행·독립 byte/CRC 대조를 통과한 사실은 거래 복구·전원 차단·성능 승리와 다르다. 22/23a/23의 세 경계 뒤 추가 checkpoint after23을 두고 원래 after24와 이후 경계를 유지한다.

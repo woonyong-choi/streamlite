@@ -82,6 +82,22 @@ make ACKQ_CONDITIONAL=0 test-ack-queue-conditional
 
 E3 비교의 baseline·candidate와 각 계측 ON은 같은 소스와 cache/workspace 설정으로 별도 빌드한다. 조건부 사전 등록은 정확한 `TOTE_ACKQ_CONDITIONAL=0`과 `=1`, 계측 플래그만 정규화하며 다른 차이는 거절한다. 원 cache/workspace 비교의 `validated_builds`와 수집·채택 기준은 유지한다. 실제 통과한 시험·소스·바이너리 해시를 담은 eligibility를 구현 commit에 연결해 등록한 뒤 별도 수집한다. 이 내부 구현이나 회귀만으로 채택하지 않는다.
 
+### 비교용 WAL 파일
+
+[candidate WAL](../include/storage/candidate_wal.h)은 내부 비교용 format1 transport다. 기본 라이브러리·SQL·ACK의 object 목록에는 넣지 않는다. [codec](../src/storage/candidate_wal_format.c)은 record의 길이·padding·CRC32C·UUID·LSN을 검사하고 [파일 모듈](../src/storage/candidate_wal.c)은 4MiB segment와 명시적 force·재시작 scan·tail 수리를 제공한다. record 본문과 transaction/group/commit의 의미 판정·영속 요청 결과 조회는 별도 구현 대상이다.
+
+```sh
+make BUILD_DIR=build-regression test-candidate-wal TEST_TIMEOUT=120
+```
+
+[전용 시험](../tests/test_candidate_wal.c)은 작은 두 번째 frame의 360개 절단 지점과 원본을 남긴 별도 수리 파일, checksum을 다시 맞춘 잘못된 필드·기록 순서, segment 경계·누락·owner 역행, 짧은 I/O·EINTR·0바이트·동기화/할당 실패를 검사한다. 실제 자식 process는 force 직전·직후 종료와 성공 확인 뒤 SIGKILL을 구분한다. 합성 fixture를 지우지 않으며 기본 prefix에 process ID를 넣어 기존 파일 덮어쓰기를 피한다. 목표 작업의 반복 검증은 별도 prefix·report로 보존한다.
+
+Make target은 절단 지점을 30개씩 12개 실행으로 나누며 모두 성공해야 통과한다. 첫 실행에는 나머지 경계·실패·process 시험도 포함한다. 각 native 실행은 90초, runner는 위 명령에서 120초로 제한한다. 파일 수리에 필요한 fsync가 느린 호스트에서 360개를 한 process에 몰아 실패하는 경우에도 입력을 빼거나 한도를 늘려 통과시키지 않는다. 각 report와 부분 fixture를 남긴다.
+
+open은 파일을 바꾸지 않는다. 마지막 불완전 tail이 있으면 append/force를 거절하고 호출자가 원본을 보존한 뒤 명시적으로 수리해야 한다. 완전 길이의 checksum 손상과 중간 손상은 CORRUPT로 차단한다. 실패한 append/force 또는 scan 오류 뒤 handle은 poison이며 close/reopen이 필요하다. scan visitor가 중간에 멈춘 경우는 poison과 구분한다.
+
+이 계층의 durable LSN은 확인한 파일 barrier 범위다. COMMIT 종류의 frame이 있다는 사실만으로 APPLIED를 반환하지 않는다. owner epoch 검사는 숫자의 역행을 막으며 새 소유권 인수·사망 복구를 제공하지 않는다. SQL·callback 재실행, page writeback·checkpoint·MVCC·실제 writer·장치 전원 차단과 lost-write 보장은 이 시험 범위가 아니다. 고정 record buffer와 callback allocator의 계상도 전체 앱 RSS·프로세스 간 128MiB 상한 구현으로 확대하지 않는다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.
