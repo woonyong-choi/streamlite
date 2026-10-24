@@ -201,6 +201,10 @@ SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈
 
 정상 claim은 최소 eligible ID를 고른 조건부 UPDATE와 RETURNING으로 합치는 안을 먼저 구현한다. ACK도 ID·상태·fence를 조건으로 갱신하고, 영향 행이 없을 때만 필요한 상태를 다시 읽는 안을 우선한다. 이는 [일반 SQL](../../include/sql/sql_statement.h)의 기존 갱신·서브쿼리·RETURNING 의미를 활용하는 구현 방향이며 실제 지원·접근 경로는 구현에서 검증한다. 최소 후보를 임의로 건너뛰거나 fence·만료 검사를 제거하지 않는다. 같은 fence의 ACKED만 중복 성공으로 판정하고 FAILED를 완료로 바꾸지 않는다. 실패 경로의 추가 SQL·scan·복사·반환 소유권도 비교하며 SQL 수만으로 성능을 채택하지 않는다.
 
+조건부 갱신에 앞선 로컬 SQL 구현에서 [일반 동등 조건의 탐침 추출](../../src/sql/database_expr.c)은 이미 계산한 비상관 scalar subquery의 한 행·한 열 값을 재사용한다. 값이 NULL이 아니고 열과 같은 타입일 때 기존 색인 탐침을 만들며 전체 WHERE 조건도 다시 검사한다. 탐침 값은 query 소유로 복제하고 문장 끝에 해제한다. 서브쿼리를 다시 실행하거나 큐 전용 hook을 넣지 않는다. NULL·빈 결과·다른 타입·상관 서브쿼리는 기존 평가 경로를 유지하며 형태 오류도 그대로 반환한다. 이 보수적 범위에서는 빈 후보의 전체 scan 비용이 남을 수 있으므로 큐 통합 때 별도로 다룬다.
+
+[SQL 회귀](../../tests/test_database.c)는 두 상태 색인에서 각각 최소 ID를 구한 뒤 합친 최소 후보의 UPDATE·DELETE, 현재 binding과 닫기 뒤 반환 값의 수명을 검사한다. 6행 합성 입력의 변경 전 UPDATE·DELETE는 각각 전체 scan 6행·색인 조회 2회였고, 탐침을 추가한 경로는 각각 전체 scan 0행·색인 조회 3회다. 이는 특정 접근 경로의 관측이며 처리량 개선율이 아니다. [SQLite 대조](../../tests/test_database_sqlite.c)와 [할당·I/O 실패 시험](../../tests/test_database_fault.c)을 함께 적용한다. 이 선행 SQL 구현을 claim/ACK의 통합·lease/fence 회귀·실측 완료로 해석하지 않는다.
+
 ### 공통 계약의 검증 입력
 
 이 표는 각 구현이 확인할 기대 결과다. cache·workspace와 Python 큐 수명의 회귀·실패 검증은 앞의 시험 파일에 연결하며, stream 수명·조건부 SQL의 새 경로는 검증 전이다. 비계측 업무 결과와 성능 채택은 별도 수집으로 판정한다.

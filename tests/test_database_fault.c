@@ -396,6 +396,9 @@ static const statement_case_t CASES[] = {
     {"update text range", "UPDATE text_keys SET v = 'range' WHERE k >= 'a' AND k < 'c'", false},
     {"delete text range", "DELETE FROM text_keys WHERE k > '' AND k <= 'b'", false},
     {"update returning", "UPDATE users SET bio = ? WHERE id <= 3 RETURNING id, bio", true},
+    {"update scalar key", "UPDATE users SET bio = ? WHERE id = (SELECT id FROM users WHERE id = 3) RETURNING id, bio", true},
+    {"update scalar text", "UPDATE text_keys SET v = 'scalar' WHERE k = (SELECT k FROM text_keys WHERE k = 'a') RETURNING k, v", false},
+    {"delete scalar key", "DELETE FROM users WHERE id = (SELECT id FROM users WHERE id = 2) RETURNING id", false},
     {"delete returning", "DELETE FROM users WHERE id = 2 RETURNING *", false},
     {"insert returning", "INSERT INTO users (name, bio) VALUES ('ret', ?) RETURNING id, name", true},
     /* #47 완료 조건 3: 문장 중간 오류와 rollback 뒤 원래 행·색인 보존 */

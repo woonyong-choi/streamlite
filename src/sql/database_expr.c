@@ -244,6 +244,20 @@ database_exec_status_t narrow_text_range(database_t *db, where_t *where, size_t 
     return DATABASE_EXEC_OK;
 }
 
+static const value_view_t *probe_constant(const database_t *db, const sqlexpr_t *expr, value_type_t type)
+{
+    if (expr->kind == SQLEXPR_LITERAL) return &expr->value.view;
+    if (expr->kind != SQLEXPR_SUBQUERY) return NULL;
+    for (const relation_t *rel = db->relations; rel != NULL; rel = rel->next) {
+        if (rel->key != expr) continue;
+        if (rel->column_count != 1 || rel->row_count != 1) return NULL;
+        const value_view_t *value = &rel->cells[0].view;
+        if (value->type == VALUE_NULL) return NULL;
+        return value->type == type ? value : NULL;
+    }
+    return NULL;
+}
+
 static bool collect_probes(database_t *db, const sqlexpr_t *expr, const resolver_t *resolver, where_t *where,
                            database_exec_status_t *status)
 {
@@ -261,17 +275,19 @@ static bool collect_probes(database_t *db, const sqlexpr_t *expr, const resolver
         column = expr->args[1];
         constant = expr->args[0];
     }
-    if (column->kind != SQLEXPR_COLUMN || constant->kind != SQLEXPR_LITERAL) return true;
+    if (column->kind != SQLEXPR_COLUMN) return true;
     value_type_t type;
     size_t index = resolve_column((void *)resolver, &column->qualifier, &column->name, &type);
     if (index == SQLEVAL_NO_COLUMN || index == SQLEVAL_AMBIGUOUS) return true;
-    if (constant->value.view.type == VALUE_NULL) {
+    const value_view_t *value = probe_constant(db, constant, type);
+    if (value == NULL) return true;
+    if (value->type == VALUE_NULL) {
         where->never = true;
         return true;
     }
     if (where->probe_count == WHERE_MAX_PROBES) return true;
     probe_t *probe = &where->probes[where->probe_count];
-    value_status_t cast = q_cast(db, &constant->value.view, type, &probe->literal);
+    value_status_t cast = q_cast(db, value, type, &probe->literal);
     if (cast == VALUE_NOMEM) {
         *status = DATABASE_EXEC_NOMEM;
         return false;

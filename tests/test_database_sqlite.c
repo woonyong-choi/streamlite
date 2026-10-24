@@ -442,6 +442,28 @@ static void add_boundary_steps(void)
  */
 static void add_secondary_steps(void)
 {
+    add_step(STEP_OK, "CREATE TABLE scalar_keys (id INTEGER PRIMARY KEY, state INTEGER, tag TEXT)");
+    add_step(STEP_OK, "CREATE INDEX scalar_state ON scalar_keys (state)");
+    add_step(STEP_OK, "CREATE INDEX scalar_tag ON scalar_keys (tag)");
+    add_step(STEP_OK, "INSERT INTO scalar_keys VALUES (1, 0, 'a'), (2, 1, 'b'), (3, 0, 'a'), (4, 1, NULL)");
+    add_step(STEP_SELECT, "SELECT id FROM scalar_keys WHERE id = (SELECT 2)");
+    add_step(STEP_SELECT, "SELECT id FROM scalar_keys WHERE (SELECT 2) = id");
+    add_step(STEP_SELECT, "SELECT id FROM scalar_keys WHERE id = (SELECT 2.0)");
+    add_step(STEP_SELECT, "SELECT id FROM scalar_keys WHERE id = (SELECT 2.5)");
+    add_step(STEP_SELECT, "SELECT id FROM scalar_keys WHERE id = (SELECT NULL)");
+    add_step(STEP_SELECT, "SELECT id FROM scalar_keys WHERE id = (SELECT id FROM scalar_keys WHERE id = 99)");
+    add_step(STEP_SELECT, "SELECT id FROM scalar_keys a WHERE id = (SELECT a.id)");
+    add_step(STEP_SELECT, "UPDATE scalar_keys SET state = 2 WHERE id = (SELECT id FROM "
+             "(SELECT id FROM (SELECT id FROM scalar_keys WHERE state = 0 ORDER BY id LIMIT 1) r "
+             "UNION ALL SELECT id FROM (SELECT id FROM scalar_keys WHERE state = 1 ORDER BY id LIMIT 1) l) c "
+             "ORDER BY id LIMIT 1) RETURNING id, state");
+    add_step(STEP_SELECT, "UPDATE scalar_keys SET state = 7 WHERE id = (SELECT 2) AND state = 0 RETURNING id");
+    add_step(STEP_SELECT, "UPDATE scalar_keys SET tag = 'new' WHERE tag = (SELECT 'a') RETURNING id, tag");
+    add_step(STEP_REOPEN, NULL);
+    add_step(STEP_SELECT, "DELETE FROM scalar_keys WHERE id = (SELECT id FROM scalar_keys WHERE state = 1 ORDER BY id LIMIT 1) RETURNING id");
+    add_step(STEP_SELECT, "UPDATE scalar_keys SET state = state + 1 WHERE id = (SELECT scalar_keys.id) RETURNING id, state");
+    add_step(STEP_REOPEN, NULL);
+    add_step(STEP_SELECT, "SELECT * FROM scalar_keys");
     add_step(STEP_OK, "CREATE TABLE si (id INTEGER PRIMARY KEY, tag TEXT, u TEXT, body TEXT)");
     add_step(STEP_OK, "CREATE TABLE sn (tag TEXT, u TEXT, body TEXT)");
     add_step(STEP_OK, "CREATE INDEX si_tag ON si (tag)");

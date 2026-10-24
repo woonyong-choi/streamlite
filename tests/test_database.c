@@ -637,6 +637,120 @@ static void check_primary_key_ranges(database_t *db)
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) expect_same_as_scan(db, cases[i][0], cases[i][1]);
 }
 
+static void test_scalar_subquery_probes(void)
+{
+    printf("\n[test_scalar_subquery_probes]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (id INTEGER PRIMARY KEY, state INTEGER, tag TEXT)");
+    exec_ok(db, "CREATE INDEX by_state ON t (state)");
+    for (int i = 1; i <= 64; i++) {
+        char sql[128];
+        snprintf(sql, sizeof(sql), "INSERT INTO t VALUES (%d, %d, 'key%d')", i, i % 2, i);
+        exec_ok(db, sql);
+    }
+    static const char *const cases[] = {
+        "SELECT id FROM t WHERE id = (SELECT 17)",
+        "SELECT id FROM t WHERE (SELECT 17) = id",
+        "SELECT id FROM t WHERE id = (SELECT id FROM t WHERE id = 17)",
+        "SELECT id FROM t WHERE tag = (SELECT 'key17')",
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        expect_text(db, cases[i], "[1] 17");
+    }
+    static const char *const indexed[] = {
+        "SELECT id FROM t WHERE id = (SELECT 17)",
+        "SELECT id FROM t WHERE (SELECT 17) = id",
+        "SELECT id FROM t WHERE id = (SELECT id FROM t WHERE id = 17)",
+    };
+    for (size_t i = 0; i < sizeof(indexed) / sizeof(indexed[0]); i++) {
+        database_scan_stats_t before, after;
+        database_scan_stats(db, &before);
+        expect_text(db, indexed[i], "[1] 17");
+        database_scan_stats(db, &after);
+        CHECK(after.rows_scanned == before.rows_scanned, "scalar key equality avoids full scan: %s", indexed[i]);
+        CHECK(after.index_lookups > before.index_lookups, "scalar key equality uses index: %s", indexed[i]);
+    }
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT 1000)", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT NULL)", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT id FROM t WHERE id = 1000)", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT 17.0)", "[1] 17");
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT 17.5)", "[0]");
+    expect_text(db, "SELECT count(*) FROM t a WHERE id = (SELECT a.id)", "[1] 64");
+    expect_class(db, "SELECT id FROM t WHERE id = (SELECT id FROM t)", RESULT_E_SEMANTIC);
+    expect_class(db, "UPDATE t SET state = 9 WHERE id = (SELECT id, state FROM t LIMIT 1)", RESULT_E_SEMANTIC);
+    expect_text(db, "SELECT count(*) FROM t WHERE state = 9", "[1] 0");
+    assert(database_close(db) == DATABASE_OK);
+    clean_dir();
+}
+
+static void test_conditional_minimum_subquery(void)
+{
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (id INTEGER PRIMARY KEY, state INTEGER)");
+    exec_ok(db, "CREATE INDEX by_state ON t (state)");
+    exec_ok(db, "INSERT INTO t VALUES (1, 2), (2, 0), (3, 2), (4, 0), (17, 1), (18, 1)");
+    const char *candidate =
+        "(SELECT id FROM (SELECT id FROM (SELECT id FROM t WHERE state = 0 ORDER BY id LIMIT 1) r "
+        "UNION ALL SELECT id FROM (SELECT id FROM t WHERE state = 1 ORDER BY id LIMIT 1) l) c "
+        "ORDER BY id LIMIT 1)";
+    char sql[768];
+    snprintf(sql, sizeof(sql), "UPDATE t SET state = 2 WHERE id = %s RETURNING id, state", candidate);
+    database_scan_stats_t before, after;
+    database_scan_stats(db, &before);
+    expect_text(db, sql, "[1] 2|2");
+    database_scan_stats(db, &after);
+    printf("minimum UPDATE: scanned=%llu lookups=%llu\n",
+           (unsigned long long)(after.rows_scanned - before.rows_scanned),
+           (unsigned long long)(after.index_lookups - before.index_lookups));
+    CHECK(after.rows_scanned == before.rows_scanned, "minimum from two indexed states avoids outer full scan");
+    CHECK(after.index_lookups >= before.index_lookups + 3, "two candidate indexes and final key probe");
+    db = reopen(db, true);
+    snprintf(sql, sizeof(sql), "DELETE FROM t WHERE id = %s RETURNING id", candidate);
+    database_scan_stats(db, &before);
+    expect_text(db, sql, "[1] 4");
+    database_scan_stats(db, &after);
+    printf("minimum DELETE: scanned=%llu lookups=%llu\n",
+           (unsigned long long)(after.rows_scanned - before.rows_scanned),
+           (unsigned long long)(after.index_lookups - before.index_lookups));
+    CHECK(after.rows_scanned == before.rows_scanned, "reopened conditional delete avoids outer full scan");
+    expect_text(db, "SELECT id, state FROM t ORDER BY id", "[5] 1|2/ 2|2/ 3|2/ 17|1/ 18|1");
+    assert(database_close(db) == DATABASE_OK);
+    clean_dir();
+}
+
+static void test_bound_scalar_probe_results_own_values(void)
+{
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE scalar_text (k TEXT PRIMARY KEY, v TEXT)");
+    exec_ok(db, "INSERT INTO scalar_text VALUES ('one', 'a'), ('two', 'b')");
+    const char *sql = "UPDATE scalar_text SET v = ? WHERE k = (SELECT ?) RETURNING k, v";
+    char key[] = "one";
+    value_view_t params[2] = {{VALUE_TEXT, 0, 0, (const uint8_t *)"first", 5},
+                              {VALUE_TEXT, 0, 0, (const uint8_t *)key, 3}};
+    database_scan_stats_t before, after;
+    database_scan_stats(db, &before);
+    result_t *first = run_bound(db, sql, params, 2);
+    memcpy(key, "two", 3);
+    params[0].bytes = (const uint8_t *)"second";
+    params[0].size_bytes = 6;
+    result_t *second = run_bound(db, sql, params, 2);
+    memset(key, 'x', 3);
+    database_scan_stats(db, &after);
+    CHECK(after.rows_scanned == before.rows_scanned, "bound text scalar updates use key indexes");
+    CHECK(after.index_lookups == before.index_lookups + 2, "each bound scalar update probes its current key");
+    assert(database_close(db) == DATABASE_OK);
+
+    char *text = dump(first, false);
+    CHECK(strcmp(text, "[1] 'one'|'first'") == 0, "first result owns original binding after close: %s", text);
+    free(text);
+    text = dump(second, false);
+    CHECK(strcmp(text, "[1] 'two'|'second'") == 0, "second result owns current binding after close: %s", text);
+    free(text);
+    result_release(&first);
+    result_release(&second);
+    clean_dir();
+}
+
 static void test_primary_key_range(void)
 {
     printf("\n[test_primary_key_range]\n");
@@ -1446,6 +1560,9 @@ static void test_defaults_survive_reopen(void)
 
 int main(void)
 {
+    test_scalar_subquery_probes();
+    test_conditional_minimum_subquery();
+    test_bound_scalar_probe_results_own_values();
     test_defaults_survive_reopen();
     test_two_schemas_crud_and_reopen();
     test_values_round_trip_across_page_sizes();
