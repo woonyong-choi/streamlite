@@ -196,3 +196,13 @@ Observe baseline, query peak, held, released and closed memory separately: RSS c
 Task20을 담은 clean ff3af84d에서 source6·runtime 코드78·실제4identity와 원래9case를 새 등록하고 수집했다. 1천/1만/10만 행이 각각3회 모두120초 안에 완료됐고, SQLite와 typed 결과·재열기·native 기본키 스캔0/비기본키 양성 대조를 통과했다. 기준·입력·제품·binary를 바꾸거나 실패를 제외한 재수집은 하지 않았다. 분석 두 번의 byte 동일성과 원자료의 독립 기대 결과·분위수를 확인했다. 원120초 실패·180초 별도 성공과 현재 환경의 새 관측을 분리한다.
 
 이번 판정은 현재 단일 writer COW의 기본키 규모 검증이다. 세 반복/조회별20표본은 설명 통계이며 속도 채택·과거 대비 인과 효과·실제 writer·새 WAL backend의 근거가 아니다. WAL/buffer/MVCC/early locking 권고와 동등 buffered-COW의 회수/checkpoint/복구 총비용 비교는 그대로다. 원자료는 기존 build 실행 영역에 보존하고 원격 이슈/제품 통합·발행은 완료로 올리지 않는다. 다음 경계는 원래 checkpoint after21만 수행하며 Task22 이후는 그 뒤에 진행한다.
+
+## Task 22 candidate contract boundary
+
+첫 비교 후보는 불변 행 version·논리 abort·NO-STEAL을 사용한다. 사용자 abort와 완전한 물리 구조 group을 구분하고 이전 확정 payload를 보존한다. redo만으로 제자리 덮어쓰기를 취소하는 안은 제외한다. shared-leaf의 미확정 writer 때문에 frame을 못 쓰더라도 다른 독립 거래의 WAL commit은 가능해야 한다. 이 정책의 메모리·공정성 실패를 숨기거나 증명 전 STEAL로 바꾸지 않는다. 기존 SNAPSHOT·파일 형식3·ABI·기본 backend는 그대로다.
+
+G2는 선언한 operation manifest와 영속 요청 ID/result를 선택한다. 결과 본문은 보통 version/overflow page에, RESULT_CHUNK는 참조·검증 정보로 보존하며 데이터와 같은 commit이다. process owner epoch와 요청 epoch를 구분한다. 없는/만료 ID는 미적용 증거가 아니며 동적 SQL·외부 callback은 자동 재실행 대상이 아니다. 명시적 보존 종료 뒤 단조 floor를 내구화하고 GC한다. 같은 계약·payload/작은 상태 배치·결과 보존 비용을 buffered COW에도 적용한다.
+
+8192B page·80B WAL header/16B footer·72B version header, physical-group 완료/가시성 순서, terminal 상태와 root를 포함한 fuzzy checkpoint·두 control slot의 로그 보존, 세대 이력 검증과 membership 배타 복구를 기존 StreamLite 설계에 둔다. 128MiB 전체 요청 bytes/8MiB 작업·64MiB frame·8MiB WAL staging·4MiB lock, 64거래/16process, 1MiB 결과/64KiB chunk·1024 ID×4epoch/64MiB 결과 공간, 256MiB WAL/정리 예약8MiB와 key wait1000ms는 가역적인 내부 검증 설정이다. 고객 SLO·현재 CAPI/RSS 보장으로 적용하지 않는다. data/replay 전체 quota·제품 보존 기간·공개 API와 G5 정식 수집 수치는 이후 계약/사전 계획에 남는다.
+
+Task22의 상태/형식·18개 실패 oracle과 제한 상태 모형은 계약 검증이다. record codec·실제 fsync/중단 복구·checkpoint·MVCC/잠금·실제 writer·동등 비용의 실행 증명이 아니다. 다음은 Task23만 수행하며 이슈266의 계약 단계와 제품263의 비교 후 통합 gate를 구분한다. 모든 Task23–39와 checkpoint를 보존하고 실제 구현에서 계약 충돌을 발견하면 가장 작은 수리/분할을 기록한다. main/YCSB·원 실패/원자료·다른 작업본·Vault와 소비자 프로젝트를 보존한다. 이번 경계는 원격 issue/board 변경·발행·파일 전환을 수행하지 않는다.

@@ -76,7 +76,7 @@ group commit은 독립 거래의 결과와 순서를 유지한다. 자신의 com
 
 같은 leaf에 있는 행 A와 B를 두 transaction이 각각 변경한다고 가정한다. WAL 권고안에서는 page latch와 version 가시성으로 두 결과를 보존하고, COW 대조군에서는 최신 root에 B의 변경을 합친다. B가 옛 leaf 전체를 게시해 A를 지우면 정확성 실패다. leaf가 같다는 이유만으로 거래 전체를 항상 거절하는 방식도 독립 쓰기의 진행 목표를 충족한 것으로 세지 않는다.
 
-아래 계약은 검토할 제안이다. 반환 이름은 동작을 구분하는 표기이며 새 C ABI·Python 예외·설정 키를 정의하지 않는다. 권고 방향과 별도로 공개 API·기본값·보존·자원 수치와 복구 형식의 구체화는 `미해결`의 G1–G6에 남긴다. 현 코드의 지원 범위를 제안으로 소급해 넓히지 않는다.
+아래 계약은 검토할 제안이다. 반환 이름은 동작을 구분하는 표기이며 새 C ABI·Python 예외·설정 키를 정의하지 않는다. [비교 후보의 저장·복구 계약](#비교-후보의-저장복구-계약)은 내부 형식·결과 조회·소유권과 검증 한도를 구체화한다. 공개 API·기본값·제품 보존 수치와 구현 증명은 `미해결`의 G1–G6에 남긴다. 현 코드의 지원 범위를 제안으로 소급해 넓히지 않는다.
 
 | 경계 | 현재 구현의 근거 | 갱신안에서 확인할 차이 |
 |---|---|---|
@@ -119,7 +119,7 @@ COW의 sync 순서와 manifest 완전성, WAL 안의 WAL-before-data와 commit r
 
 불확정 뒤에는 관련 DB의 게시·회수에 참여하는 writer들을 조정해 추가 쓰기를 차단한다. 어느 root가 유효한지 모르는 페이지·spill을 반환하지 않는다. 다른 프로세스도 차단 상태를 확인하는 방식과 복구 소유권을 검증해야 한다. 검증된 snapshot 읽기조차 보장할 수 없으면 읽기도 거절한다. 다시 열어 구조가 정상이라는 사실만으로 원래 요청이 미적용이었다고 결론 내리지 않는다.
 
-재시작 후 응답 유실을 해결하려면 DB 식별자와 재사용하지 않는 요청 식별자를 데이터 변경·결과 기록과 함께 원자적으로 보존하는 안을 검토한다. 같은 ID·다른 요청 내용은 거절하고, 유효한 기록이 있으면 재실행 대신 기존 결과를 반환한다. 기록·멱등 key·결과 본문의 보존 기간과 bytes 상한도 자원 계약에 포함한다. 보존이 끝나거나 기록을 찾지 못하면 `NOT_APPLIED`를 추론하지 않고 조회 범위 밖임을 반환한다. 이 기능이 없으면 자동 재전송을 보장하지 않고 업무 key로 대조하는 책임을 밝힌다. 현재 메모리 ring은 이 영속 조회의 구현 근거가 아니다.
+비교 후보는 [영속 요청 ID와 결과 조회](#영속-요청-id와-결과-조회)를 선택한다. 같은 ID·다른 요청 내용은 거절하고 유효한 기록에는 기존 결과를 반환한다. 기록이 없거나 보존 밖이면 `NOT_APPLIED`를 추론하지 않는다. 미리 선언할 수 없는 대화형 SQL과 외부 callback은 이 조회 계약의 자동 재전송 대상에서 제외하며 업무 key 대조 책임을 유지한다. 현재 메모리 ring은 이 영속 조회의 구현 근거가 아니다.
 
 ### 소유권과 자원 상한
 
@@ -297,11 +297,184 @@ page 크기를 `P`, 정리까지 포함한 durable group 수를 `G`, group `g`�
 
 redo는 실행된 변경을 복구하며 SQL이나 외부 callback을 다시 실행하지 않는다. 변경 record와 commit record를 checksum·순서로 확인하고, 해당 data page의 LSN까지 WAL이 동기화된 뒤에만 그 page를 파일에 쓴다. commit 성공도 해당 commit record의 durable barrier 뒤에만 반환한다. full-page image와 checksum으로 torn page를 복구하는 안을 우선하며 image 이후 redo와 구조 변경 순서까지 검사한다. [PostgreSQL 18 checkpoint 설명](https://www.postgresql.org/docs/18/wal-configuration.html)은 checkpoint 후 첫 변경의 전체 page image 비용과 회복 시간·쓰기 비용의 교환을 확인할 참고다.
 
-MVCC의 새 행 version은 만든 거래를 식별하고, 다른 거래에는 commit 상태와 가시성 순서가 공개될 때만 보인다. rollback은 논리 변경 전부를 비가시로 만든다. 미확정 version이 data 파일에 나갈 수 있는 경로에서는 redo만 있다는 이유로 rollback이 된다고 가정하지 않는다. 비확정 version의 영구 식별·commit 판정·재시작 후 비가시성과 GC를 함께 증명하는 안을 우선한다. index split·page 할당 같은 구조 변경은 논리 거래의 abort와 구분해 일관되게 복구한다. 이 계약이나 이전 값 보존을 증명할 수 없으면 미확정 page writeback을 허용하지 않는다. 정확한 record·version·복구 형식은 G6에 남긴다.
+MVCC는 이전 행을 보존한 채 새 version을 만들고 commit 상태로 가시성을 판정한다. 첫 비교 후보는 미확정 거래에 의존하는 frame을 파일에 쓰지 않는 NO-STEAL을 선택한다. redo로 미확정 제자리 덮어쓰기를 취소한다고 가정하지 않는다. index split·page 할당은 논리 abort와 별도로 복구한다. [비교 후보의 저장·복구 계약](#비교-후보의-저장복구-계약)은 이 형식과 증명 의무를 정하며 실제 구현·실패 시험은 별도다.
 
 checkpoint는 재개 지점, data writeback 완료와 필요한 transaction 상태를 영속화한 뒤에만 오래된 WAL을 회수한다. 긴 snapshot이 참조하는 옛 행 version은 따로 보존한다. checkpoint를 했다는 이유로 이 version이나 소비자의 replay payload를 지우지 않는다. COW 대조군도 활성 snapshot과 fallback이 참조하는 page를 회수하지 않는다. 양쪽 모두 장기 reader·실패 기록·느린 소비자에 의한 저장 압력과 남은 정리 debt를 측정한다.
 
 WAL의 복구 재생과 checkpoint·version GC는 COW의 root 선택·manifest 확인보다 큰 시작·정리 부담이 될 수 있다. COW의 새 병렬 게시도 기존 두 세대 회수 규칙만으로 안전해지지는 않는다. 양쪽의 성공 응답 보존, UNKNOWN, 프로세스 사망, disk full·OOM·sync 실패와 장기 정리를 같은 조건으로 확인한다. 전원 차단·lost write·network FS는 실제 검증 범위를 넘겨 보장하지 않는다. 새 형식과 다중 프로세스 공유 제어 영역의 비용도 숨기지 않는다.
+
+### 비교 후보의 저장·복구 계약
+
+같은 leaf의 A와 B를 각각 바꾸는 두 writer를 예로 든다. A의 새 version이 미확정이어도 B는 자기 key를 잠그고 version을 추가한 뒤 자기 WAL commit을 동기화할 수 있다. A 때문에 그 frame의 writeback은 기다리지만 B의 durable 성공까지 A의 종료를 기다릴 필요는 없다. 재시작하면 유효한 commit을 가진 B만 새 값으로 보이고 A의 이전 값은 남는다. 이 입력에서 B가 항상 A의 종료까지 막히면 독립 writer 요구를 통과하지 못한다. frame 압력으로 거절되는 경우는 별도 자원·공정성 결과로 남긴다.
+
+이 절은 [#266](https://github.com/woonyong-choi/totedb/issues/266)의 격리된 비교용 형식과 내부 계약이다. 기존 8192B `LRPG`/`TOTEDB` 형식 3, `database_txn_begin`의 SNAPSHOT 기본값, C ABI와 Python API는 바꾸지 않는다. 새 파일 집합은 독립 DB UUID와 backend 식별자를 가지며 기존 파일을 새 decoder로 열거나 자동 변환하지 않는다. 새 후보도 8192B page를 사용해 page 크기 변화의 효과를 분리한다. UUID·version·byte order·길이·backend가 다르면 쓰기 없이 거절한다. 생성은 배타 생성과 부모 directory 동기화를 포함하며 이미 있는 경로를 덮지 않는다.
+
+| 내부 경계 | 입력과 출력 | 소유자·실패 책임 |
+|---|---|---|
+| 실행기 → version 저장소 | transaction ID, row/key, 읽기 기준 → 자기 version 또는 확정 version | 실행기가 논리 잠금을 보유, 저장소는 이전 값과 index 참조 보존 |
+| version 저장소 → WAL | page 변경 묶음 → 완전한 physical group의 끝 LSN | WAL 조정자가 append 순서, buffer는 page latch·pin과 변경 세대 관리 |
+| commit 조정자 → 내구성 계층 | commit LSN까지 force → durable LSN 또는 불확정 | 거래별 commit 포함 여부 확인 후 가시성 공개·잠금 해제 |
+| writeback → WAL | frame 사본과 required LSN → 쓰기 허용 여부 | 미확정 의존성이 없고 WAL 내구 순서가 충족될 때만 data 쓰기 |
+| 복구 → 전체 DB | control·log·page → 단일 복구 세대와 transaction 상태 | 배타 복구 소유자가 검증을 끝내기 전 일반 읽기·쓰기 차단 |
+| 결과 조회 → 호출자 | DB UUID·요청 ID·내용 digest → 상태와 소유 결과 사본 | 조회는 SQL·callback을 실행하지 않으며 반환 메모리는 호출자가 해제 |
+
+물리 group은 page split·할당·root 참조 변경을 한 단위로 복구하기 위한 짧은 묶음이다. SQL transaction과 다르며 논리 abort 뒤에도 구조는 남을 수 있다. 같은 group이 건드리는 page latch는 page ID 순으로 얻고, 완성할 bytes와 WAL 공간을 먼저 예약한다. group 전체의 연속 LSN을 정한 뒤 끝 record까지 append하고 frame에 공개한다. append mutex는 순서 부여와 bytes 복사에만 사용하며 data I/O·내구 barrier 동안 page latch를 잡지 않는다. process 사망으로 중간 공유 상태가 남으면 다른 writer가 추측해 이어 쓰지 않고 복구 차단으로 전환한다.
+
+### version 가시성과 논리 abort
+
+행 version은 `(page ID, page generation, slot, slot generation)`으로 참조한다. 만드는 transaction ID, 이전 version 참조, table/row ID, payload 길이와 tombstone을 보존한다. UPDATE와 DELETE는 이전 확정 payload를 덮지 않고 새 version 또는 tombstone을 추가한다. 여러 번 갱신한 자기 행은 자기 최신 version을 읽는다. 다른 거래는 미확정·aborted version을 건너뛰고 읽기 기준에 맞는 확정 version을 찾는다. unique/key index도 역사적 binding을 가시성 기준으로 판정하며 DELETE 때 이전 snapshot이 쓰는 binding을 즉시 제거하지 않는다.
+
+SNAPSHOT은 시작 시의 확정 순번 `S`를 고정하고 자기 변경 또는 commit 순번이 `S` 이하인 version만 읽는다. 쓰기 잠금을 기다린 뒤 대상이 `S` 이후 바뀌었다면 실패 거래로 전환하며 최신 값을 섞거나 앞선 결과를 재실행하지 않는다. serializable 경로는 key·빈 범위·predicate/table·schema의 호환 잠금을 얻고 확정 version을 읽으며 끝까지 잠금을 보유한다. 두 격리를 같은 snapshot 규칙으로 구현하지 않는다. 기존 API가 지원하지 않는 새 격리는 명시적인 후보 진입점으로만 사용한다.
+
+commit 순번은 로그의 commit 순서로 예약한다. `durable LSN`이 해당 commit record의 끝을 지난 뒤 공유 transaction 표에 한 번 공개하고 잠금을 푼다. reader에 제공할 확정 frontier는 앞선 예약의 commit·abort 판정까지 끝난 연속 구간이다. 조정자는 이 순서로 공개를 마친 뒤 해당 거래의 성공을 응답한다. 최대 예약 번호를 그대로 snapshot 순번으로 쓰지 않는다. commit을 포함한 group의 force 실패는 성공이나 미적용으로 바꾸지 않고 UNKNOWN·DB fencing으로 끝낸다. 이미 성공한 앞 group의 거래까지 실패로 덮지 않는다.
+
+abort는 transaction 표를 비가시 상태로 만드는 논리 동작이다. 새 version과 구조상 남은 slot은 GC 대상이며 이전 확정 값은 계속 읽을 수 있어야 한다. split·할당·root 변경은 완전한 physical group이면 redo하며, 미완성 group은 적용하지 않는다. 사용자 abort를 이유로 옛 page 전체를 복원하면 다른 writer의 변경을 지울 수 있으므로 그렇게 처리하지 않는다. 제약·문장 오류 뒤에는 기존처럼 거래를 실패 상태로 두고 명시적 rollback만 허용한다.
+
+첫 후보의 NO-STEAL은 frame에 미확정 version·구조 변경의 의존 거래가 하나라도 있으면 writeback·dirty eviction을 금지한다. 의존 거래의 COMMIT/ABORT가 내구화된 뒤에만 이 의존성을 해제하며 그 terminal LSN도 writeback의 required LSN에 포함한다. frame 공간이 없으면 거래 전체를 자동 분할하거나 무제한 pin·spill로 우회하지 않고 예약을 거절한다. 독립 거래의 commit은 가능해도 같은 frame의 미확정 writer가 공간을 붙잡는 비용은 남는다. 이 정책이 공정성·메모리 기준을 못 맞추면 후보 결함으로 기록한다. STEAL로 바꾸려면 영속 transaction 판정·이전 값·index/구조 redo·재시작 비가시성·GC 시험을 먼저 통과시키고 계약을 별도로 수정한다. 아직 없는 증명을 조건문 하나로 대신하지 않는다.
+
+| 선택지 | 선택과 이유 | 불리해지는 조건·확인 |
+|---|---|---|
+| 기존 값 제자리 변경 + redo만 저장 | 제외, commit 전 덮은 이전 값을 abort 때 복구할 수 없음 | abort·종료 뒤 이전 값이 사라지는 반례로 거절 |
+| undo/redo와 보상 record | 대안 유지, 제자리 변경의 undo·재중단 복구가 추가됨 | 큰 거래의 NO-STEAL 압력이 지배적이면 재검토, 보상 중 재종료까지 필요 |
+| 불변 version + 논리 abort + NO-STEAL | 첫 후보로 선택, 이전 값 보존과 runtime writeback 규칙을 분리 | 같은 leaf의 미확정 writer·긴 거래에서 공간·대기 악화 측정 |
+| 불변 version + 미확정 writeback | 첫 후보에서 제외, transaction 표·index·GC의 영속 증명 추가 필요 | 안전 게이트와 변경 계약 없이 성능 때문에 활성화 금지 |
+
+### page와 WAL의 형식 불변식
+
+형식 숫자는 압축하지 않은 내부 비교 형식 1의 선택이다. 모든 정수는 little-endian이며 구조체를 그대로 dump하지 않는다. 길이와 offset의 덧셈·곱셈은 overflow를 먼저 검사한다. 알 수 없는 version·record 종류·flag는 무시하지 않고 unsupported로 거절한다. checksum은 손상 탐지이며 인증이나 lost-write 검출 보장이 아니다.
+
+| 단위 | 고정 필드와 길이 | 검사·복구 불변식 |
+|---|---|---|
+| data page, 8192B | header 64B: UUID 16B, magic `SLPG` 4B, version/type 각 u16, page ID/generation/pageLSN 각 u64, body 길이 u32, CRC32C u32, 예약 8B | checksum 필드를 0으로 한 전체 page의 CRC, 예약·본문 뒤 padding 0, UUID·PageRef·종류 일치 |
+| slot과 version | slot 8B: offset/길이 각 u16, slot generation u32. version header 72B: transaction ID/frozen CSN 각 u64, 이전 VersionRef 24B, table/row ID 각 u64, payload 길이 u64, flags/reserved 각 u32 | slot 범위·중첩·generation 검사, frozen CSN 0은 transaction 표 필요. tombstone payload 0, 이전 참조 cycle·잘못된 길이 거절 |
+| 큰 값 | version 본문에 inline 또는 overflow tag와 전체 길이·첫 PageRef, overflow page에 다음 PageRef·chunk 길이·bytes | 원 SQL 값 codec의 NULL·한글·BLOB·9000B 값 보존, chunk 합계·중복/cycle·EOF 검사, 잘라서 성공 금지 |
+| WAL segment | 64B header: magic `SLWAL001` 8B, version/header 길이 각 u16, flags u32, UUID 16B, segment 번호/시작 LSN 각 u64, CRC32C u32, 예약 12B | 4MiB segment, header CRC와 단조 번호·연속 LSN 확인. record는 segment를 넘지 않고 남은 영역은 명시적 padding |
+| WAL record | header 80B: magic `SLWR` 4B, version/type 각 u16, 전체/본문 길이 각 u32, 시작 LSN/transaction ID/이전 transaction LSN 각 u64, UUID 16B, owner epoch u64, flags/CRC32C 각 u32, 예약 8B | 전체 길이는 8B 정렬, 96B 이상 1MiB 이하. header의 CRC를 0으로 하여 header·본문·0 padding·footer 전체를 검사 |
+| record footer, 16B | 전체 길이 u32, magic `SLWE` 4B, 시작 LSN u64 | 앞 길이·LSN과 일치, 다음 record offset은 현재 끝. LSN은 segment header/padding을 포함한 절대 byte 위치이며 wrap 금지 |
+| control slot | 별도 control 파일의 두 8192B slot, magic `SLCT`, version·UUID·backend·control 세대·owner epoch·checkpoint 위치·redo 시작·ID 예약 highwater·요청 epoch/floor·CRC | 세대 큰 유효 slot부터 검증, 해당 checkpoint와 redo 범위를 모두 읽을 수 있어야 사용. data root만 열어 정상으로 추정 금지 |
+
+`PageRef`는 page ID와 generation의 u64 두 개다. `VersionRef`는 여기에 slot과 slot generation의 u32 두 개를 더한다. 0 참조는 없음이며 실제 ID·generation은 1부터 시작한다. transaction ID와 page/slot generation은 재사용하지 않는다. 예약 highwater를 내구화한 뒤 번호를 발급하고 재시작 때 남은 예약 구간은 건너뛴다. counter 소진은 LIMIT이며 wrap하지 않는다. owner epoch는 파일 복구 권한의 세대이고 transaction ID·요청 epoch와 다른 필드다.
+
+segment 끝의 padding은 남은 bytes 전부를 0으로 채우는 별도 영역이다. decoder는 잔여 영역 전체가 0이고 다음 segment의 번호·시작 LSN·header가 연속일 때만 이를 건너뛴다. 잘못된 record 길이를 padding으로 재해석하지 않는다. EOF의 미완료 tail은 다음 segment로 이어지는 정상 padding과 구분해 기록한다.
+
+| record type 번호 | 본문이 담는 값 | 완료 판정 |
+|---|---|---|
+| 1 ADMIT, 2 BEGIN | 요청 ID·operation digest·응답 예약 상한 또는 transaction의 격리·snapshot 순번 | ADMIT은 변경보다 먼저 append하지만 단독 force를 필수로 삼지 않음. commit의 force가 앞선 ADMIT까지 포함 |
+| 3 PHYS_BEGIN, 8 PHYS_END | group ID, page/record 수, 끝에는 전체 group digest | group의 모든 page record가 있고 순서·digest가 맞아야 적용, 불완전 group 무시 |
+| 4 PAGE_IMAGE, 5 PAGE_DELTA | group ID, PageRef, 기대 이전 pageLSN, 완성 page image 또는 offset/길이/bytes 목록 | pageLSN은 PHYS_END의 끝 LSN, 검증된 동일/후속 세대의 이미 반영된 변경만 건너뜀. 증명 없는 generation 불일치·기대 이전 LSN 공백은 손상 |
+| 6 ALLOC, 7 FREE | group ID, PageRef, 이전/새 할당 세대와 참조 해제 증거의 horizon | 할당 표·참조 변경과 같은 physical group, page 번호만으로 재사용 금지 |
+| 9 RESULT_CHUNK | 요청 ID, chunk 순번·전체 bytes·digest, 본문이 있는 VersionRef와 chunk offset/길이 | 본문은 최대 64KiB씩 보통 version/overflow page에 보존하고 physical group이 보호, commit의 참조·count·길이·digest 전부 확인 |
+| 10 COMMIT, 11 ABORT | transaction의 첫/마지막 record LSN·개수·chain digest, COMMIT에는 CSN·의존 physical group ID/끝 LSN 목록·요청 ID·operation/result digest·chunk 수 | commit과 모든 의존 group·결과가 유효해야 APPLIED, ABORT 뒤 COMMIT·중복 CSN·끊긴 chain 거절 |
+| 12 CHECKPOINT_BEGIN, 13 CHECKPOINT_CHUNK, 14 CHECKPOINT_END | checkpoint ID·redo 시작, dirty/active/outcome/할당 상태 chunk, 끝 count·digest | END가 내구화되고 control이 가리킨 완전 묶음만 시작점 |
+| 15 REQUEST_EPOCH, 16 ID_RESERVE | 요청 epoch/floor 변경 또는 transaction/page 번호의 새 highwater | 단조 증가·내구 순서 확인, 활성 요청을 넘는 floor 갱신 거절 |
+
+REQUEST_EPOCH와 ID_RESERVE는 대응 metadata page 변경과 같은 system physical group에 넣는다. 조정자는 그 PHYS_END까지 force한 뒤 floor 회수나 새 번호 발급을 허용한다. 단독 record가 append됐다는 이유로 예약·회수를 진행하지 않는다. 다른 process의 번호 예약도 같은 제어 gate에서 순서를 정한다.
+
+PAGE_IMAGE는 checkpoint 이후 처음 바꾸는 page의 변경 후 전체 사본이며 해당 physical group의 다른 변경과 함께 적용한다. 새 page에도 image가 필요하다. 그 뒤 delta의 순서와 기대 이전 pageLSN을 확인한다. torn page는 유효한 image부터 재생하고 checksum 실패를 무조건 빈 page로 취급하지 않는다. 최소 한 개의 유효 checkpoint와 그 redo 범위를 남겨 image 없는 손상 page를 감추지 않는다. [PostgreSQL 18 WAL 설명](https://www.postgresql.org/docs/18/wal-internals.html)은 LSN·checkpoint·전체 page image의 참고이며 이 자체 형식의 구현 증거는 아니다.
+
+page 번호가 재사용되면 디스크 page가 재생 중인 record보다 새 generation일 수 있다. 복구 분석에서 checkpoint의 할당 표와 완전한 ALLOC/FREE group으로 세대의 연속 이력을 먼저 확인한다. 그 이력이 증명한 후속 generation과 유효 pageLSN이면 옛 generation의 redo를 건너뛴다. 같은 generation의 delta는 기대 이전 LSN을 요구하고 새 generation은 해당 ALLOC와 image부터 시작한다. generation 숫자가 크다는 이유만으로 정상이라 추측하거나, 정상 재사용을 모두 손상으로 거절하지 않는다. 모든 redo가 끝난 뒤 tree·index·version 참조의 도달성과 live/free 분리를 검사한다.
+
+최종 segment의 불완전 record/group은 검증된 끝까지만 보존하며 미완료 거래는 확정하지 않는다. checksum이 틀린 마지막 record도 마지막 물리 tail이고 이후 유효 record·commit 증거가 없음을 확인할 때만 불완전 tail로 분류한다. 중간 checksum 손상, segment 공백, 뒤의 유효 commit, 의존 group 누락, 검증된 로그 끝을 넘는 pageLSN은 CORRUPT로 차단한다. 성공 뒤 장치가 잃은 마지막 쓰기를 항상 탐지할 수 있다는 주장은 하지 않는다.
+
+### checkpoint와 회수 순서
+
+writeback은 latch 아래 frame의 bytes·pageLSN·변경 세대를 사본으로 잡고 latch를 놓는다. 미확정 의존성이 없고 WAL의 durable LSN이 해당 physical group 끝 이상인 것을 확인한 뒤 data에 쓴다. 쓰기 중 frame이 바뀌면 이전 사본의 I/O 완료로 최신 dirty 표시를 지우지 않는다. page가 디스크에 도달한 것과 transaction commit은 다른 상태다. NO-STEAL은 확정 data의 매 commit 강제 쓰기인 FORCE를 뜻하지 않는다.
+
+checkpoint는 begin 시점의 dirty page별 최초 미반영 physical group 시작 LSN, 활성 transaction의 첫 LSN·상태, frozen CSN이 없는 잔존 version이 참조하는 terminal transaction 상태를 수집한다. catalog·heap/index·결과 조회 표·할당 표의 root PageRef, 요청 epoch/floor, 할당 highwater와 version GC horizon도 포함한다. root의 변경은 그 root를 담는 metadata page의 physical group으로 보호한다. 제어 gate 아래 일관된 begin 기준을 잡고 사본의 bytes도 예약한다. 대상 dirty page를 가능한 범위에서 쓰되 활성 거래 때문에 못 쓴 page는 dirty 표에 남기고 redo 시작을 그 이전으로 유지한다. checkpoint 전후 처음 바뀐 page의 image 필요 상태를 latch/epoch로 동기화한다. checkpoint가 시작됐다는 이유로 기존 dirty page를 clean으로 표시하지 않는다.
+
+순서는 필요한 WAL force → 대상 data writeback·data fsync → 상태 chunk와 CHECKPOINT_END append·WAL force → 반대 control slot write·control fsync다. 기록 중 추가 변경은 dirty 표의 recLSN 또는 checkpoint 시작 이후 WAL로 포착한다. CHECKPOINT_END 전에 멈추면 이전 checkpoint를 쓰고, control 쓰기 중 멈추면 유효 slot을 검증해 선택한다. redo 시작은 checkpoint begin과 남아 있는 recLSN·활성 거래 첫 LSN의 최솟값 이전을 유지한다. 이 프로토콜은 fuzzy checkpoint의 의도이며 정확한 실행 순서·I/O 실패 검증이 필요하다.
+
+WAL 회수 하한은 두 유효 control slot 각각의 redo 시작·checkpoint chunk 시작, 활성 transaction의 첫 record, 아직 checkpoint 표로 옮기지 못한 outcome/result와 할당 의존성의 최솟값이다. 새 slot을 내구화해도 이전 fallback이 필요한 segment를 바로 지우지 않는다. 이전 slot도 안전하게 교체한 뒤 해당 segment를 삭제하고 directory fsync를 포함한다. 회수 도중 중단·삭제 실패는 잔여 파일 또는 차단으로 남기며 필요한 segment 부재를 정상으로 열지 않는다.
+
+복구자는 control 후보·segment 연속성·frame/group/transaction chain을 검사하고 완전한 physical group을 redo한다. 유효 COMMIT만 committed로 판정하고 완전한 로그 검사 뒤 나머지 ADMIT/BEGIN은 aborted로 정리한다. 검사 도중 읽기 오류·중간 손상이 있으면 aborted를 추측하지 않는다. 복구에서 정한 ABORT도 append·force한 뒤 terminal 의존성을 해제한다. 복구 판정 표와 새 checkpoint를 내구화한 뒤에만 일반 진입을 허용한다. 재복구도 같은 결과여야 한다. aborted version이 물리 복구로 생겨도 일반 reader에는 비가시이며 복구 완료 전 writeback을 일반 NO-STEAL의 예외로 노출하지 않는다.
+
+version GC는 가장 오래된 snapshot, 실행 중인 탐색 pin, 아직 정리하지 않은 index binding·구조 참조가 필요로 하는 이전 version을 보존한다. commit 표 항목은 모든 잔존 version에 확정 CSN을 기록하거나 참조를 제거한 뒤에만 지운다. payload의 불변성과 별도로 이 freeze metadata 변경도 physical group과 WAL 순서로 보호한다. aborted 판정도 모든 참조 제거 전 보존한다. detach와 FREE를 로그로 보호하고 재사용 generation을 올린다. checkpoint와 version GC, 요청 결과의 만료, stream replay 보존은 다른 작업이다. 긴 reader와 느린 소비자의 bytes를 WAL이 줄었다는 이유로 회수하지 않는다.
+
+### 영속 요청 ID와 결과 조회
+
+같은 DB에서 durable commit 뒤 응답만 사라진 경우를 판별하기 위해 영속 요청 ID·결과 조회를 선택한다. 업무 key만 대조하는 안은 임의 SQL·여러 행의 결과 본문과 원자 commit을 일반적으로 복원하지 못하므로 이 후보의 기본 해결책으로 삼지 않는다. 영속 기록의 쓰기·보존 비용은 양쪽 비교에 포함한다. 이득이 사라지더라도 결과 보장을 한쪽에서만 빼지 않는다.
+
+내부 요청 ID는 `(DB UUID, 요청 epoch u64, 호출자 nonce 128bit)`다. process 재시작·PID·새 owner epoch가 이 ID의 의미를 바꾸지 않는다. operation digest는 미리 선언한 순서 있는 SQL bytes·타입/길이를 포함한 binding bytes·격리·내구 요청과 응답 형식을 SHA-256으로 계산한다. 선언과 다른 문장·binding·순서·응답 범위는 commit 전에 거절한다. hash를 인증 수단으로 사용하지 않는다. 동적 callback, 실행 결과에 따라 새 SQL을 정하는 대화형 거래, 외부 부작용의 자동 재실행은 지원하지 않는다. 이 제한 밖의 기존 SQL은 기존 의미로 실행하며, UNKNOWN은 업무 key와 별도 재조정으로 해결한다.
+
+admission은 현재 epoch의 새 ID를 공유 표에서 원자 예약하고 declared result 상한·작업·WAL·영속 outcome 공간을 확보한다. 같은 ID가 진행 중이면 진행 중 상태만 돌려주며 실행을 하나 더 시작하지 않는다. ADMIT과 실행 중 상태는 commit 전 단독 내구성을 약속하지 않는다. WAL 후보는 ADMIT을 앞서 append하고, COW는 최종 게시에 admission 정보·결과를 함께 싣는다. commit에는 전체 요청 digest와 선택한 최종 응답 본문을 데이터와 원자적으로 보존한다. 미적용 결과를 영속 조회로 약속하려면 ABORT/terminal outcome도 내구화한다. 그 동기화가 불확정이면 UNKNOWN으로 차단한다.
+
+결과 본문은 caller가 선택한 최종 응답 envelope다. 임의 SELECT 전체나 외부 HTTP 응답을 자동 보관하지 않는다. commit 전 반환한 SQL/RETURNING은 잠정 결과이며 응답 envelope와 동일한 수명으로 취급하지 않는다. 결과가 선언한 상한을 넘으면 commit record를 만들기 전에 거래를 실패시킨다. 일부 본문만 보관한 성공, 성공 뒤 결과 예약 실패, digest만 남기고 본문 조회 가능이라고 표시하는 동작은 금지한다. 저장된 본문은 버전·길이·digest가 있는 완전한 bytes다. 본문은 보통 version/overflow page, ID index와 epoch/floor는 metadata page에 보존하며 그 변경도 commit의 physical group에 포함한다. RESULT_CHUNK는 이 본문의 참조와 검증 정보를 담아 본문을 별도로 두 번 로그하지 않는다. checkpoint는 본문 bytes 전체 대신 이 표의 root와 참조·상태를 보존한다. 조회 시 owning copy의 예산을 별도로 검사한다. 조회 OOM은 이미 확정된 거래의 결과를 바꾸지 않는다.
+
+| 조회 입력·상태 | 반환 의미 | 재실행·소유권 경계 |
+|---|---|---|
+| 유효 COMMIT과 전체 결과 | APPLIED, CSN과 원래 응답 bytes | 변경·callback 실행 없이 사본 반환 |
+| 내구 ABORT 또는 완전한 복구로 확인한 admitted 미완료 거래 | NOT_APPLIED, 보존한 terminal 결과 | 자동 재실행 없음, 새 업무 시도는 호출자 선택 |
+| 같은 ID·다른 내용 digest | CONTENT_MISMATCH | 원래 기록 유지, 새 변경 없음 |
+| 활성 ID | IN_PROGRESS | 같은 DB owner 세대 안에서 조회, timeout 뒤 IN_PROGRESS 유지 |
+| 유효 보존 epoch의 없는 ID | NOT_FOUND | 미적용 추론·admission·SQL 실행 금지 |
+| floor보다 작은 epoch | OUTSIDE_RETENTION | APPLIED/NOT_APPLIED 추측 없음, 오래된 ID로 재등록 거절 |
+| 다른 UUID·미래 epoch·형식 불일치 | INVALID_ID 또는 UNSUPPORTED | 다른 DB nonce 조회·실행 금지 |
+| 복구 중·손상·owner 불확정 | UNAVAILABLE/UNKNOWN | 정상 결과처럼 캐시하지 않고 새 쓰기·자동 재전송 차단 |
+
+epoch는 벽시계 TTL로 지우지 않는다. 현재 epoch에서는 항목을 개별 삭제하지 않으며, 닫힌 epoch는 진행 중 거래가 없고 호출자가 조회 보존 종료를 명시적으로 허용한 뒤에만 floor를 올려 회수한다. floor 변경 자체를 원자·내구화한 뒤 본문과 index를 GC한다. crash 사이에는 이전 보존 상태 또는 OUTSIDE_RETENTION 중 하나이며, 같은 ID가 다시 새 요청으로 실행되어서는 안 된다. 시험 harness의 명시적 보존 종료가 제품의 암묵적 만료 승인은 아니다. 공간을 확보할 수 없으면 새 요청 admission을 거절한다. retry 가능한 기간의 제품 값과 사용자 동의 방식은 별도 공개 계약으로 남긴다.
+
+### 후보의 자원·대기 한도
+
+아래 값은 [#266](https://github.com/woonyong-choi/totedb/issues/266)의 가역적인 내부 검증 설정이다. 무제한 예약·본문·복구 log를 막는 출발점이며 고객 SLO·성능 합격선·기존 공개 API의 새 제한이 아니다. 정식 비교는 같은 값과 구현된 회계를 첫 표본 전에 고정한다. overflow·OOM·disk full을 값 상향이나 sample 제외로 처리하지 않는다.
+
+| 대상 | 검증 설정 | 한도에서의 동작·선택 이유 |
+|---|---|---|
+| DB의 계상 대상 요청 bytes | 공유·프로세스별 private 합계 128MiB, 거래별 작업 상한 8MiB | 기존 연구 예산 재사용, shared frame·사본·WAL staging·잠금·cache·결과·제어 상태의 겹친 peak를 모두 포함, 배정 실패는 명시적 거절 |
+| frame·WAL staging·논리 잠금 | 각각 최대 64MiB·8MiB·4MiB, 전체 128MiB 안의 부분 상한 | page header·descriptor도 계상, NO-STEAL frame을 강제 퇴출하거나 잠금 축소 금지 |
+| 활성 거래·참여 프로세스 | DB당 64거래·16프로세스 | 고정 제어 공간과 owner 슬롯 한정, 추가 begin/open은 LIMIT, 모든 거래 작업 상한 합계의 선예약과 구분 |
+| physical group | 64page·2MiB, record는 1MiB | 짧은 latch/staging 상한, 큰 논리 거래는 여러 완전 group으로 구성하되 논리 commit은 한 번 |
+| 요청 결과 | 본문당 1MiB·chunk당 64KiB, epoch당 1024 ID, 현재 포함 최대 4epoch, 전체 영속 표·본문 64MiB | 큰 응답은 선언 때 거절, 실제 저장 bytes와 count 중 먼저 찬 한도에서 새 admission 거절, 중간 결과 LRU 삭제 없음 |
+| 복구 WAL | 4MiB segment·총 256MiB, 그 안에 정리용 8MiB 예약 | 거래의 최악 commit/result·abort 예산을 먼저 확보, checkpoint·GC 예약 공간의 신규 요청 사용 금지 |
+| admission·key 대기 | admission 공간 부족은 즉시 거절, key 대기는 내부 기본 1000ms 또는 더 짧은 caller deadline | monotonic clock, FIFO 호환 대기와 취소. 교착 cycle의 가장 새 transaction ID를 victim으로 선택, 살아 있는 owner 탈취 금지 |
+
+교착 victim의 실행 권한을 중단한 뒤 논리 abort·terminal 내구화와 잠금 해제를 진행한다. 객체는 실패 상태로 남아 명시적 rollback을 요구한다. 내구화가 불확정이면 DB를 fence하며 다른 writer가 그 상태를 이어 쓰지 않는다. 일반 문장 오류의 실패 상태와 명시적 rollback 규칙도 보존한다. 잠금 예산을 넘으면 implicit escalation으로 전체 DB를 잠그지 않고 실패 거래로 전환한다. 색인 없는 predicate는 처음부터 명시적 table 보호를 선택한다. 유지할 cache·query/result와 private 메모리도 위 전체 ledger에 들어가야 새 후보의 cap 검증이다. 현재 Python C API의 unlimited pool에 이 설정이 이미 구현됐다고 주장하지 않는다. allocator overhead·단편화·OS page cache·Python 객체·RSS는 requested bytes와 별도이며 전체 앱 자원 수집에서 확인한다. data·replay·retention의 전체 disk quota와 product 대기 정책은 G3/G5의 별도 사전 계획에 남는다. WAL·결과 상한만으로 전체 저장량 제한을 충족했다고 표시하지 않는다.
+
+### 같은 호스트의 소유권과 복구 차단
+
+owner는 `(DB UUID, 내구 owner epoch, 참여 slot, 재사용하지 않는 process nonce)`로 식별한다. PID는 진단에만 사용한다. 같은 프로세스는 DB별 registry가 lease FD와 handle 참조 수를 관리하고, 다른 프로세스는 동일한 공유 frame·transaction·잠금·할당 표를 사용한다. 공유 mapping은 data 파일이 아닌 임시 제어/버퍼 파일이며 source of truth는 WAL·data·control이다. 닫았다 다시 연 process-local cache로 이 일관성을 대신하지 않는다.
+
+별도 membership 파일의 공유 `flock`을 각 참여 process가 전용 open description으로 보유하고, 짧은 제어 gate와 slot별 liveness lease도 별도로 둔다. inode를 열린 동안 unlink/recreate하지 않는다. FD를 임의 handle close에 넘기지 않고 마지막 registry owner가 닫는다. fork 자식은 상속 FD를 닫고 옛 handle을 거절하며 새로 등록해야 한다. 기존 [page_file의 fork 처리](../../src/storage/page_file.c)처럼 FD 사본이 살아 있으면 사망으로 잠금이 풀렸다고 가정할 수 없다. thread 취소·정지는 process 사망 증거가 아니다.
+
+| 상태 | 허용 동작 | 전이·실패 처리 |
+|---|---|---|
+| 참여 중 | 현재 epoch·공유 상태 검증 뒤 실행, 짧은 gate·page latch 사용 | owner 죽음·불확정 I/O·공유 변경 중단 감지 시 fence 요청 |
+| fence 요청 | 새 begin·게시·회수 차단, 검증 가능한 기존 결과만 반환 | 살아 있는 peer는 실행/I/O를 멈추고 pin·권한을 정리한 뒤 membership 해제 |
+| 배타 복구 대기 | membership의 배타 잠금 획득 시도 | 잠든 live peer가 남으면 BUSY/유한 timeout, epoch 강제 변경·공유 상태 재초기화 금지 |
+| 배타 복구 | 모든 옛 peer 권한 종료 후 WAL 복구, owner epoch 증가·내구화 | 완료 전 일반 진입 차단, 중간 실패는 fenced 유지 |
+| 새 세대 참여 | 새 공유 상태 생성과 재등록 | 옛 epoch descriptor·slot·pin·writeback ticket 거절 |
+
+복구 배타 잠금을 얻지 못한 상태에서 PID 조회·heartbeat 만료만으로 공유 mutex나 frame을 초기화하지 않는다. process-local pthread mutex가 공유 복구를 해결하거나 macOS에 robust mutex가 있다는 가정을 두지 않는다. 공유 상태의 변경 도중 owner가 죽으면 정상 writer는 그 상태를 사용하지 않고 위 배타 복구를 거친다. 공유 상태 변경자는 짧은 OS gate와 owner slot을 연결하며 독자는 gate의 owner lease를 확인한 뒤에만 중간 상태에 접근한다. 죽은 process가 잡은 pthread mutex를 다른 process가 강제 unlock하는 설계는 사용하지 않는다. 살아 있는 비협조 peer 때문에 복구가 지연될 수 있다는 제약을 명시하며 안전을 위해 split brain을 허용하지 않는다. 이 방식의 실제 별도 프로세스·owner death·stale I/O 검증은 후속 구현 조건이다. network FS·다중 호스트 지원을 추론하지 않는다.
+
+### 양쪽 후보의 논리 배치와 비용 경계
+
+E4는 `(event ID, 불변 payload bytes)` 정본과 `(group ID, event ID, 상태, lease, fence, 시도, ACK)`의 작은 version을 분리한다. cursor·ACK hole은 별도 소비자 상태이며 한 그룹의 ACK로 payload를 삭제하지 않는다. WAL과 buffered COW에 같은 key 순서·값 codec·payload 크기·보존 horizon·SQL/ACK 명령과 최종 응답을 사용한다. 한쪽만 payload를 상태 행에 복제하거나 작은 상태 갱신에서 본문을 다시 encode하도록 만들지 않는다. 이 배치 계약은 stream 전달·retry/DLQ API의 완성을 뜻하지 않는다.
+
+COW는 최신 tree에 논리 변경을 병합하고 변경 page·outcome/result·root를 같은 게시로 보호한다. 같은 ID 조회와 floor 원자성, snapshot·fallback 참조 보호도 동일하다. 현재 메모리 ring을 영속 결과 표의 대용으로 쓰지 않는다. WAL은 redo·image·data writeback·checkpoint·version/outcome GC를, COW는 최신 leaf/root 병합·재작성·outcome 게시·pin/fallback 회수를 부담한다. 공통 cache/workspace와 durability group의 최대 크기·대기 정책도 같게 고정한다. 종료 뒤 남은 WAL·version·결과·retire debt를 완료된 비용에서 빼지 않는다.
+
+### 저장 후보의 실패 판정표
+
+각 행은 구현 후 필요한 입력과 독립 oracle이다. 현재 통과한 엔진 시험이 아니며 정적 문서 검사나 상태 모형으로 대체하지 않는다. 양쪽 후보에 해당하는 동일 상태·요청 결과 oracle을 쓰고, WAL framing 전용 행은 COW의 page/control·manifest 손상 지점에 대응시킨다. 기존 15개 시나리오·E0/E5/E6와 함께 실행하며 하나라도 필수 불변식을 위반하면 정식 비용 수집에 진입하지 않는다.
+
+| ID·구현 경계 | 정상·실패 입력과 의도적으로 깨뜨릴 대조 | 독립 기대 결과와 보존할 관측 |
+|---|---|---|
+| R01 로그, 23 | 모든 header/payload/footer 절단, short write, 과대 길이·overflow·잘못된 UUID/type, 중간 checksum 손상 | 마지막 불완전 tail만 제외, 중간 손상은 차단. 파서가 예약한 최대 bytes와 실제 offset, 실패 파일 보존 |
+| R02 내구성, 23 | commit 앞/뒤 force·응답을 각각 중단, append 성공만으로 성공 처리하는 대조 | 성공 응답 거래는 전부 보존, 응답 유실은 기존 결과 조회 또는 UNKNOWN. transaction별 로그·barrier·응답 trace |
+| R03 group, 23/27 | 그룹의 일부 거래 제약 실패·barrier 실패, 앞 group 성공 뒤 다음 실패 | 제외 거래 성공 금지, 앞 성공 취소 금지, 결과 chunk·CSN·실제 최종 상태 대조 |
+| R04 version, 25 | A update/delete·B commit·A abort, read-own/옛 snapshot, 제자리 덮어쓰기 대조 | 이전 A 값과 B 결과 보존, A의 행·색인·연관 상태 비노출. 입력에서 직접 산출한 row/key 집합 |
+| R05 구조, 25 | split·root·overflow·할당 중 abort/종료, incomplete physical group | 완전 구조만 재생, 누락·중복·cycle 없음. tree 도달성·free/live 교집합·재시작 반복 |
+| R06 writeback, 24/25 | WAL force 전 data 쓰기, 미확정 의존 frame 퇴출, 오래된 사본 완료로 dirty 제거하는 대조 | 순서 위반은 실패, NO-STEAL 거절·잔여 dirty 보존. pageLSN/durableLSN·pin·frame 세대 trace |
+| R07 torn page, 24 | image 전후 page sector 손상·reordered I/O, image 제거 대조 | image+연속 redo로 복구하거나 CORRUPT, checksum만 맞춘 빈 page 성공 금지 |
+| R08 checkpoint, 24 | 각 WAL/data/END/control force·GC 지점 종료, fallback 필요 segment 조기 삭제 대조 | 유효 이전/새 checkpoint로 같은 확정 결과, 필요한 로그 누락이면 차단. 두 slot과 실제 파일 보존 |
+| R09 GC, 25/29 | 긴 snapshot·pin 중 반복 갱신/삭제, transaction 표 조기 제거·page/slot ABA 대조 | 옛 읽기 유지·generation 거절·자원 압력 명시, 회수 뒤 재열기와 live/free 참조 검사 |
+| R10 격리, 26 | hot row·unique·빈 범위·집계/write skew·DDL, 기다린 SNAPSHOT에 최신 값 혼합 대조 | 격리별 허용 결과만 반환, 반환 값/ID·callback 재실행 없음, failed 거래 rollback 필요 |
+| R11 독립 진행, 27/29 | 열린 A와 독립 B·같은 leaf 다른 행, 옛 leaf 덮어쓰기 대조 | B 실행·commit 중첩과 두 결과 보존, 전체 거래 mutex로 직렬화한 경우 요구 실패 |
+| R12 잠금 압력, 26 | 역순 key 교착·FIFO 경쟁·취소·1000ms/짧은 deadline·잠금 예산 초과 | 명시 victim/timeout·예약/잠금 반환·추월 제한, 완료량·최대 대기·실패도 보존 |
+| R13 owner, 28 | 실제 두 process의 allocation/publish/checkpoint 중 사망, PID/slot 재사용·fork | 옛 권한 종료 후에만 복구, stale epoch 쓰기 거절, 타 거래/pin 침범 없음 |
+| R14 live peer, 28 | process 정지와 thread 중단, timeout takeover 대조 | live membership이면 복구 BUSY/timeout, 강제 epoch 변경·split brain 없음 |
+| R15 요청 중복, 23/29 | 같은 ID 동시 admission·응답 유실·새 owner·같은 nonce 다른 내용 | 단일 실행·원래 결과 bytes·내용 불일치 거절, 적용된 업무 효과는 한 번 |
+| R16 요청 부재·만료, 23/29 | ADMIT 전 종료·없는 ID·floor 전후 종료·다른 UUID·미래 epoch | NOT_FOUND/OUTSIDE_RETENTION은 미적용 아님, 오래된 ID 재등록/자동 재실행 없음 |
+| R17 자원·결과, 23–29 | 본문 한도·shared/private/dirty/pin·WAL quota·OOM·disk full·조회 사본 OOM | commit 전 실패와 UNKNOWN 구분, 부분 결과 성공·무제한 spill 없음. 원 실패 파일·요청/상주/RSS 구분 |
+| R18 동등 비용, 29–32 | payload/작은 상태 배치·결과 보존·group 정책·cleanup 종료 조건 대조 | 같은 최종 bytes/업무 상태/결과, 양쪽 회수·checkpoint·복구 debt 포함, 다르면 비교 불가 |
 
 ### 권고를 바꾸는 조건과 보존할 것
 
@@ -741,11 +914,11 @@ H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 bar
 
 ## 미해결
 
-- G1 격리·충돌: 권고한 serializable·조기 key/range 잠금의 공개 API·기본값·지원 문장, 교착 victim·대기 상한·잠금 예산·승격 정책의 구체화. 현행 SNAPSHOT 보존과 명시적 snapshot 경로의 실패 의미, 반환 결과·호출자 retry의 경계 검증 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G2 불확정 결과: 영속 요청 ID·결과 조회 권고와 업무 key 대조 방식의 선택, 재시작·만료·동일 ID의 다른 내용·응답 본문 보존 범위의 확정. 기록 비용과 필요한 재전송 기간이 선택 기준 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
+- G1 격리·충돌: 내부 후보는 SNAPSHOT·locking 읽기와 FIFO·교착 victim·대기/잠금 한도를 위 계약으로 구분한다. 공개 API·기본값·전체 지원 문장과 실제 key/range/schema 구현·반환 결과 보존은 검증 전이다 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
+- G2 불확정 결과: 비교 후보는 영속 요청 ID·결과 조회와 epoch/floor 보존을 선택한다. 실제 restart·동일/다른 내용·없는/만료 ID·본문 수명 구현과 제품의 조회 기간·보존 종료 API는 검증 전이다. 동적 SQL/callback의 자동 재실행은 지원 범위에 넣지 않는다 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G3 자원·보존: payload·메모리·pin·spill·in-flight·ACK holes·로그·실패/결과 기록의 bytes와 개수 한도, 유한 대기 시간, replay·멱등 보존 기간의 확정. 한도 도달 시 publish 거절 권고와 명시적 consumer expiry·데이터 손실 정책 비교 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G4 프로세스·이관: 같은 프로세스 실험과 같은 호스트 직접 file writer의 별도 지원 게이트, 복구 소유권·프로세스 간 예약/차단·형식 전환·역이관 검증과 구현 분할. 기존 다중 프로세스의 안전한 단일 writer 지원을 조용히 축소하지 않는 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
+- G4 프로세스·이관: membership·lease·내구 owner epoch와 배타 복구 계약의 실제 프로세스 간 구현·사망/정지/fork 검증, 이관·역이관은 미완료다. 별도 시험 형식 선택을 기존 DB 전환으로 적용하지 않는다 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - G5 비교 실행: E0–E7·조회 Q1–Q5의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·조회 결과 수명·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G6 WAL·version 형식: redo·commit·구조 변경 record, page LSN·full-page image·checksum·복구 시작점과 로그 회수, 비확정 version·abort·transaction 상태 정리, 공유 frame·사망 소유권과 다중 프로세스 fencing의 형식·구현 증명 ([#263](https://github.com/woonyong-choi/totedb/issues/263), [#266](https://github.com/woonyong-choi/totedb/issues/266))
+- G6 WAL·version 형식: 내부 형식·NO-STEAL·논리 abort·checkpoint/GC 계약은 위 절을 따른다. record codec·복구·가시성·구조 변경·공유 frame의 실제 구현과 R01–R18 실패 증명, 양쪽 후보의 비용 수집은 미완료다 ([#263](https://github.com/woonyong-choi/totedb/issues/263), [#266](https://github.com/woonyong-choi/totedb/issues/266))
 - 느린 소비자·보존 한도 충돌, 지원 subject·replay·DLQ/redrive의 정확한 API 계약 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
 - 표시명 이후 패키지·import·ABI·경로·파일 형식의 별도 호환 전환과 상표 등 권리 확인 ([#258](https://github.com/woonyong-choi/totedb/issues/258))
