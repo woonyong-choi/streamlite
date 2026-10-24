@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete boundary is Checkpoint after Task 18; original requirements/checkpoints are unchanged.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 18a; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the additional after19 checkpoint.
 
 ## Initialization only — 2026-10-24
 
@@ -445,12 +445,37 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Checkpoint after Task 18
 
+- Status: complete (원래 범위·구현/실측 근거 검토 완료; CP18-1/2 검증기 수리는 미완료로 추가)
+- Work performed: 이전 turn은 progress다. b9cfef4a의 Task18 marker·18167df8 parent·설정된 사용자·13파일 변경과 시작 시 clean 상태를 확인했다. Tasks16–18의 요구·소스·소유권·실패/자원·빌드/타입/시험·문서·복원 경계를 대조했다. UI는 내부 CLI/자료 검증에 해당 없음이다. 현재 제품 source는9d70c9b4와 같고 조건부 기본OFF·lazy 소유 계약·WAL 권고와 동등 buffered-COW 비교를 유지한다.
+- Verification evidence: build/checkpoint18-verification.json과 build/checkpoint18-preservation.json은 기존13366+Task18의1228=14594 artifact 항목, Task18 기준 source10개와 runtime79개의 실제 Git 내용을 대조했다. b9cfef4a에 source가 고정됐다는 사실은 그 이전에 수행한 build를 clean-build-at-commit으로 바꾸지 않는다. 29 pending/87 공통 회귀·malloc4/reserve366 fatalUBSan 및 빈 stderr는 입력·binary·로그 hash가 같은 범위에서 재사용했고 새 suite나 정식 표본은 만들지 않았다. 문서3개·local link182개·whitespace와 main/origin/live main6bb8b2e8·다른 네 worktree HEAD를 확인했다.
+- Reproduction/source review: 원본 pending control36건은 현재 verify를 통과하고 analyze 재생성은 기존 JSON과 byte 동일하다(build/checkpoint18-pending-reanalysis.json, sha256864bf53cff14dbe1e0270a5b791a8ca425a0e69665f02c734172038e7e2cbceb, stderr 빈값). 등록 일정1728/정식1440·조건 순서5/5·동일 serializer/result·Q1–Q5 수명/오류와 baseline/peak/held/released 범위, ledger와 무제한 Python CAPI/RSS 사후 gate의 차이를 소스에 대조했다. 작은 control과 유한 격자 진단은 원 소비자 해결·전체 allocator cap·실제 writer/새 backend/stream 증명이 아니다.
+- CP18-1: pending verify가 manifest.artifacts의 주어진 항목만 훑고 필수 hash 집합의 완전성을 검사하지 않는다. raw·stdout·stderr·fixture DB hash를 각각 빼거나 map을 비운 다섯 대조 모두36건을 수용했다. raw hash를 뺀 뒤 가상 wall_ns252458→504916으로 바꿔도36건을 수용했다. 실제 기능의 Path.read_text만 메모리에서 바꾼 읽기 전용 대조이며 원본 raw/manifest bytes는 변하지 않았다. build/checkpoint18-artifact-coverage-controls.json이 입력·관측·원본 hash를 보존한다. Task18a로 수리하기 전 새 정식 수집을 시작하지 않는다.
+- CP18-2: 공통 verify에도 같은 선택적 hash-loop가 남아 있다. 기존 Task17 conditional48건과 등록 source df37ea61을 명시한 정상 대조 뒤 raw hash 누락·전체 map 누락·raw hash 누락+가상 wall_ns568756333→1137512666을 각각 수용하는 세 반례를 재현했다(build/checkpoint18-common-coverage-controls.json). 원본 파일은 그대로이며 이 대조는 새 성능 표본이 아니다. 외부 보존 장부의14594개 hash가 일치하므로 기존 관측값·보류 결과를 바꾸거나 재수집하지 않는다. Task18b로 독립 수리하고 과거 source 처리도 강화된 자료 coverage 검사 뒤에만 허용한다.
+- Scope/remote: #257/#265/#268/#269/#239는 OPEN·미체크2/4/3/3/4이며 #265 body는 그대로다. 실제 보드11edge/9child와 상태가 Task18 종료 때와 같다. Task6 복구·기존 Task1–39/수리/원래 checkpoint·input/goal-current를 보존한다. 이 checkpoint는 tasks.md만 추적 변경하며 implementation·plan·기준·remote·Vault·consumer는 수정하지 않았다. push/PR/merge/배포·데이터 전환 없음이다.
+- AAR: 파일 hash가 맞는 항목을 검사하는 것과 필수 파일 모두의 hash가 있다는 것은 다른 조건이다. 잘못된 digest·JSON·개수 거부와 같은 JSON 재생성만으로 자료 완전성을 보장할 수 없었다. 등록 일정과 fixture에서 요구 파일을 도출하고 누락을 먼저 거부하는 반례를 두 검증기에 각각 넣어야 한다. checksum 보강을 악의적인 전체 장부 교체에 대한 인증 보장으로 확대하지 않는다.
+- Remaining risk: CP18-1/2가 남아 있어 정식 수집 적격성은 보완 필요다. 현재 원자료 손상이나 기존 수치 변경은 확인되지 않았다. 기존 driver 첫 실패 binary 미고정 한계는 그대로 명시하며 되살린 것처럼 쓰지 않는다. 원 pending 소비자·규모·실제 writer·정리 포함 COW/WAL·stream·제품 검증은 여전히 미완료이고 goal은 active다.
+- Next step: 이 tracking-only commit에서 멈춘다. 다음은 Task18a pending guard만 수행한다. 이후18b 공통 guard, 원래19와 추가 checkpoint after19 순서다. 두 수리를 함께 담은 실제 source/계획 commit으로 Task19를 새 등록하며 workload·기준·표본 수를 바꾸지 않는다. 원래 after21과 모든 후속 checkpoint는 그대로 둔다.
+- Commit record: subject `docs(docs): 조회 검토와 자료 해시 검증 수리 과업 추가`; body marker `Goal-mode boundary: goal-1 checkpoint after task 18: complete`. 이 기록을 포함하는 tracking-only commit의 marker·작성자와 clean 상태를 경계에서 확인한다.
+
+## Task 18a — Require complete pending-query artifact coverage
+
 - Status: incomplete
+- Scope: CP18-1의 pending manifest 검증 누락을 수리한다. 실제 등록 일정·fixture 구조에서 raw/fixture 등록·필수 DB·각 worker와 native probe stdout/stderr의 요구 집합을 도출하고, 누락·잘못된 경로·중복 alias·잘못된 hash를 결과 분석 전에 거절한다. 합법적인 보존 부속 파일은 별도로 검증하며 늦게 만든 분석 출력까지 무작정 같은 필수 집합으로 삼지 않는다. Issue: #265, 기존 checkout/branch 재사용.
 - Work performed: not started.
-- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 16–18; tracking-only checkpoint.
-- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
-- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
-- Commit status: no checkpoint commit attempted.
+- Verification evidence: required — CP18-1의 여섯 반례가 거절로 바뀌고 정상 control36건·동일 결과·분석 재생성·실패 자료 보존이 통과해야 한다. current-source/plan-ancestor·완료/실패·deadline·예산·고정 binary 검사도 유지한다. 원본 b9cfef4a 자료·실패/미커밋 control을 덮거나 새 효과로 해석하지 않는다.
+- Remaining risk: 정상 자료의 실제 목록과 필수 증거를 잘못 섞으면 온전한 자료를 거절하거나 누락을 다시 놓칠 수 있다. checksum coverage는 악의적인 전체 장부 교체에 대한 인증이 아니다. 기존 연구 가정·숫자·제품 source는 바꾸지 않는다.
+- Next step: checkpoint after18 다음 첫 작업으로 실행하고 검증·기록·task-boundary commit 뒤 멈춘다. Task18b/19를 같은 경계에서 수행하지 않는다.
+- Commit status: no task commit attempted.
+
+## Task 18b — Require complete common-cost artifact coverage
+
+- Status: incomplete
+- Scope: CP18-2의 공통 manifest 검증 누락을 독립 수리한다. 단계별 등록 일정과 fixture/보존 구조에서 필수 raw·stdout/stderr·DB 또는 검증된 gzip 보존 자료의 요구 집합을 확인한다. 현재와 명시적 source-commit 과거 처리를 모두 자료 coverage 검사에 통과시킨 뒤 원래 분석을 실행한다. Issue: #239. 같은 checkout에서 기존 issue branch/소유권을 대조하고 모든 선행 commit을 보존한다.
+- Work performed: not started.
+- Verification evidence: required — CP18-2의 세 반례와 필수 자료 누락/경로/보존 대조, 정상 native/Python control, 과거 Task15/17 원자료의 명시 source 재처리와 기존 분석 byte 동일성. pending 수집기가 이 모듈의 helper를 사용하므로 새 current-source pending control/통합 guard도 확인한다. 과거 registration/raw/manifest/실패 DB·기존 분석을 바꾸거나 효과를 다시 수집하지 않는다.
+- Remaining risk: 과거 schema·gzip 원본 확인·source guard를 약화하면 실제 등록 당시 근거를 잃는다. 형식 보강은 workload/수치 판정·표본 분류/효과 변경이 아니다. Task19는 이 수리까지 포함한 commit으로 새 등록해야 한다.
+- Next step: Task18a 뒤 별도 ordinary task로 실행하고 검증·기록·commit 뒤 멈춘다. 원래 Task19와 뒤의 추가 checkpoint19를 보존한다.
+- Commit status: no task commit attempted.
 
 ## Task 19 — Measure pending queries and the real caller boundary
 
@@ -461,6 +486,15 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Remaining risk: Do not claim the original problem solved if the caller still retains all payloads; add a repository-side repair if required, never edit the consumer without authorization.
 - Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
 - Commit status: no task commit attempted.
+
+## Additional checkpoint after Task 19
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — Task18a/18b/19의 필수 자료 coverage·과거 자료 보존/처리·정식 등록·실제 소비자 읽기 감사·원래 요구 충족을 검토한다. tracking-only checkpoint이며 직접 implementation을 고치지 않는다.
+- Remaining risk: 수리 두 과업을 추가했으므로 세 ordinary boundary 뒤 별도 검토가 필요하다. 기존 after21과 모든 원래 checkpoint를 없애지 않는다.
+- Next step: Task19 task-boundary commit 다음 continuation에 수행한 뒤 Task20 또는 검증한 수리로 이어간다.
+- Commit status: no checkpoint commit attempted.
 
 ## Task 20 — Prepare the missing primary-key scale validation
 
