@@ -90,6 +90,18 @@ eligibility JSON의 `minimum_id`, `lease_fence`, `duplicate_stale_failed`, `canc
 
 정식 수집은 clean 작업본과 현재 수집기·계획을 함께 담은 `PLAN_COMMIT`의 조상을 요구한다. 수집기를 수리했으면 그 변경을 포함한 commit으로 새 등록을 만들고, 과거 등록·raw를 덮어쓰지 않는다. 수집 시간·완료/실패/미실행의 경계는 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 있다. 결과 보고는 원자료의 전체 완료와 동일한 분석 JSON을 확인한 뒤 수행한다.
 
+schema 2 분석은 `preflight_records`, `formal_records`, `diagnostic_records`를 구분한다. `instrumented_records`는 진단 수와 같다. 비계측 block -1, 비계측 정식 범위, 계측 block -2만 허용하며 Python 수명·조건부 분석에도 적용한다. 기존 schema 1 결과의 잘못된 표본 수나 누락 필드는 원본 그대로 보존한다.
+
+기본 `verify`·`analyze`는 현재 소스와 등록 hash가 다르면 거절한다. 과거 결과에는 아래의 명시적 재현 경로를 사용한다. `SOURCE_COMMIT`은 등록의 다섯 기준 파일 hash와 모두 일치하는 신뢰할 수 있는 로컬 조상 commit이다. 이 경로는 그 commit의 분석 Python 코드를 메모리에서 실행하므로 검토한 이력에만 사용한다. 원자료 hash·순서·정확성·완료·시간 한도 검사는 유지하며 `register`·`collect`에는 이 옵션을 허용하지 않는다.
+
+```sh
+python3 bench/common_cost.py verify --registration "$PREFIX.registration.json" --prefix "$PREFIX" --source-commit "$SOURCE_COMMIT"
+python3 bench/common_cost.py analyze --registration "$PREFIX.registration.json" --prefix "$PREFIX" --source-commit "$SOURCE_COMMIT"
+python3 bench/common_cost.py analyze --registration "$PREFIX.registration.json" --prefix "$PREFIX" --source-commit "$SOURCE_COMMIT" --correct-metadata
+```
+
+처음 두 명령은 보존한 입력을 검증하고 당시 schema의 원 JSON을 재현한다. 마지막 명령은 원 분석의 효과·구간·판정을 유지하면서 schema 2의 표본 수와 `metadata_correction`을 추가한다. 이 필드에는 기준 commit·등록 분석 hash·등록 내용 hash와 현재 처리기 두 파일의 hash가 있다. 결과는 stdout으로 내보내며 보존 파일은 직접 고치지 않는다. 수정 결과를 저장할 때는 사용하지 않은 파일을 선택하고 원 분석을 덮어쓰지 않는다. 새 수집이나 다른 내구성·backend의 성능 근거로 사용하지 않는다.
+
 ### 요청 단위 내부 계측
 
 정상 빌드는 `BENCHMARK=0`이며 계측 매크로의 인자와 선언은 전처리 때 사라진다. 런타임 환경 변수로 켤 수 없다. `BENCHMARK=1`만 별도 `build-benchmark`에서 계측 소스를 링크한다. 이 모드에 `BUILD_DIR=build`를 주면 실패한다. 사용자 지정 디렉터리를 재사용해도 모드·컴파일러·플래그 fingerprint가 바뀌면 객체와 공유 라이브러리를 다시 만든다. 실제 플래그는 해당 디렉터리의 `.build-fingerprint`와 Make 출력에 남는다.

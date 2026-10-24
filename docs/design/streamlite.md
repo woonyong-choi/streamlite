@@ -475,7 +475,11 @@ campaign의 1,800초는 수집 시작부터 fixture 생성·복제, worker, 결�
 
 다음 단일 비용 가설은 [#239](https://github.com/woonyong-choi/totedb/issues/239)의 H4로 정한다. 같은 durable 응답과 barrier 횟수를 유지하면서 commit barrier의 wall/CPU 대기와 metadata·data write 작업을 나눠 확인한다. 계측 진단에서 batch 1의 fsync 배타 wall 시간은 ON 업무 완료 시간의 50.5–68.7%, batch 32는 18.3–42.2%였다. 이는 각 부하·조건 한 번씩의 기술 관측이며 OFF 기여율·장치 지연·인과 효과로 확대하지 않는다. hit·256B·batch 32에서 workspace는 catalog clone 1,024→32회, pwrite 3,136→742회였지만 barrier는 두 경로 모두 32회다. 중간 작업 감소와 전체 성능 채택은 별개다.
 
-H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 barrier·도착·반환 조건과 호스트 상태를 고정해 검증한다. sync 생략·자동 거래 합치기로 기존 응답 계약을 바꾸지 않는다. 이번 단일 writer COW 결과는 새 WAL·MVCC·실제 독립 writer의 실측이 아니며, 현재 WAL 권고와 buffered-COW 대조 후보를 유지한다. 분석기의 `preflight_records` 값 96은 사전·진단을 합친 표기이므로 실제 block -1의 48건과 block -2의 48건을 위에서 분리했다. 정식 효과 계산의 480건과 대응 관계에는 영향이 없으며 표기 수리는 후속 검토에 남긴다.
+H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 barrier·도착·반환 조건과 호스트 상태를 고정해 검증한다. sync 생략·자동 거래 합치기로 기존 응답 계약을 바꾸지 않는다. 이번 단일 writer COW 결과는 새 WAL·MVCC·실제 독립 writer의 실측이 아니며, 현재 WAL 권고와 buffered-COW 대조 후보를 유지한다.
+
+등록 당시 schema 1 분석의 `preflight_records` 값 96은 사전·진단을 합친 잘못된 표기다. 원 분석과 등록·raw·manifest는 보존하고, 이 작업본의 schema 2에서는 비계측 block -1의 사전 48건, 비계측 정식 block 0–9의 480건, 계측 block -2의 진단 48건을 각각 계상한다. 다른 block·계측 조합은 거절한다. Python 수명·조건부 분석에도 같은 분류를 적용한다. 이 표기 수리는 정식 효과·대응 관계·구간·보류 판정과 수집 기준을 바꾸지 않는다.
+
+소스가 바뀐 뒤의 과거 재현은 [공통 비용 수집](../build-and-test.md#공통-비용-수집)의 명시적 `--source-commit` 경로를 따른다. 등록한 모든 기준 소스의 hash를 지정한 로컬 조상 commit과 대조한 뒤 당시 분석 코드를 메모리에서 실행한다. 기본 재현은 잘못된 96 표기까지 포함한 원 JSON을 그대로 반환한다. `--correct-metadata`를 함께 지정하면 원 효과 계산을 유지하고 별도 schema 2 결과에 정확한 표본 수와 소스·처리기 hash를 남긴다. 새 수집에는 수리한 코드와 계획을 포함한 새 commit으로 등록하며 과거 등록을 소급 수정하지 않는다.
 
 ### 후속 구현과 검증
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import subprocess
 import sys
@@ -14,8 +15,9 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bench"))
 
 from common_cost import cases, collect, register, verify  # noqa: E402
-from common_cost_analysis import analyze, validate_native  # noqa: E402
+from common_cost_analysis import analyze, analyze_python, validate_native  # noqa: E402
 import common_cost  # noqa: E402
+import common_cost_analysis  # noqa: E402
 
 
 @pytest.fixture
@@ -169,6 +171,208 @@ def test_analysis_preserves_pairs_and_degenerate_uncertainty(registration: dict[
     assert result["cells"]["hit-32-1"]["status"] == "complete"
     records.append(records[-1])
     assert analyze(records, plan)["cells"]["hit-32-1"]["status"] == "incomplete"
+
+
+@pytest.fixture
+def analysis_input() -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    plan = json.loads((ROOT / "bench/common_cost_plan.json").read_text())
+    plan.update(patterns=["hit"], groups=[1], payload_bytes=[32], formal_blocks=1)
+    phases = {}
+    for phase in ("cache", "lifecycle", "conditional"):
+        phases[phase] = [
+            {
+                "case": case,
+                "sample": {
+                    "completed": 8,
+                    "wall_ns": 1000000,
+                    "latencies_ns": [1000],
+                    "cpu_ns": 100000,
+                    "peak_rss_bytes": 1000000,
+                },
+                "storage_bytes": 1000,
+            }
+            for case in cases(plan, phase)
+        ]
+    return plan, phases
+
+
+@pytest.mark.parametrize("phase,per_kind", [("cache", 4), ("lifecycle", 4), ("conditional", 2)])
+def test_analysis_separates_preflight_formal_and_diagnostics(
+    analysis_input: tuple[dict[str, Any], dict[str, list[dict[str, Any]]]], phase: str, per_kind: int
+) -> None:
+    plan, phases = analysis_input
+    records = phases[phase]
+
+    result = analyze(records, plan) if phase == "cache" else analyze_python(records, plan, phase)
+
+    assert result["preflight_records"] == per_kind
+    assert result["formal_records"] == per_kind
+    assert result["diagnostic_records"] == result["instrumented_records"] == per_kind
+    assert len(result["workers"]) == per_kind * 3
+    assert result["schema"] == 2
+
+
+@pytest.mark.parametrize("phase", ["cache", "lifecycle", "conditional"])
+@pytest.mark.parametrize("block,instrumented", [(-3, 0), (-2, 0), (-1, 1), (0, 1), (1, 0), (True, 0), (0, 0.0)])
+def test_analysis_rejects_invalid_sample_classification(
+    analysis_input: tuple[dict[str, Any], dict[str, list[dict[str, Any]]]],
+    phase: str,
+    block: Any,
+    instrumented: Any,
+) -> None:
+    plan, phases = analysis_input
+    records = phases[phase]
+    records[0]["case"].update(block=block, instrumented=instrumented)
+
+    with pytest.raises(ValueError, match="sample classification"):
+        if phase == "cache":
+            analyze(records, plan)
+        else:
+            analyze_python(records, plan, phase)
+
+
+@pytest.fixture
+def registered_sources(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    names = common_cost._criteria_sources()
+    source = b"""def analyze(records, plan):
+    return {"schema": 1, "preflight_records": 8, "workers": records,
+            "cells": {"kept": {"ratios": [0.9, 1.1], "interval": [0.8, 1.2]}},
+            "hypotheses": {"cache": "hold", "workspace": "hold"}}
+def analyze_python(records, plan, phase):
+    result = analyze(records, plan)
+    del result["preflight_records"]
+    result["phase"] = phase
+    return result
+"""
+    sources = {name: source if name.endswith("_analysis.py") else b"registered criteria" for name in names}
+    revision = "a" * 40
+
+    def git_output(arguments: list[str]) -> bytes:
+        if arguments[0] == "rev-parse":
+            return (revision + "\n").encode()
+        if arguments[0] == "merge-base":
+            return b""
+        return sources[arguments[1].split(":", 1)[1]]
+
+    monkeypatch.setattr(common_cost_analysis, "_git_output", git_output)
+    return {"criteria_hashes": {name: hashlib.sha256(value).hexdigest() for name, value in sources.items()}}
+
+
+@pytest.mark.parametrize("phase,per_kind", [("cache", 4), ("lifecycle", 4), ("conditional", 2)])
+def test_registered_analysis_preserves_effects_when_correcting_only_metadata(
+    analysis_input: tuple[dict[str, Any], dict[str, list[dict[str, Any]]]],
+    registered_sources: dict[str, Any],
+    phase: str,
+    per_kind: int,
+) -> None:
+    plan, phases = analysis_input
+    registration = {**registered_sources, "plan": plan, "phase": phase, "control": True}
+    records = phases[phase]
+    before = copy.deepcopy((records, registration))
+
+    original = common_cost_analysis.analyze_registered(records, registration, source_commit="registered")
+    corrected = common_cost_analysis.analyze_registered(
+        records, registration, source_commit="registered", correct_metadata=True
+    )
+
+    assert original["schema"] == 1
+    assert original.get("preflight_records") == (8 if phase == "cache" else None)
+    assert corrected["schema"] == 2
+    assert corrected["preflight_records"] == corrected["formal_records"] == per_kind
+    assert corrected["diagnostic_records"] == corrected["instrumented_records"] == per_kind
+    changed = {
+        "schema",
+        "preflight_records",
+        "formal_records",
+        "diagnostic_records",
+        "instrumented_records",
+        "metadata_correction",
+    }
+    assert {k: v for k, v in corrected.items() if k not in changed} == {
+        k: v for k, v in original.items() if k not in changed
+    }
+    assert corrected["metadata_correction"]["source_commit"] == "a" * 40
+    assert (
+        corrected["metadata_correction"]["registered_analysis_sha256"]
+        == registration["criteria_hashes"]["bench/common_cost_analysis.py"]
+    )
+    assert (records, registration) == before
+
+
+@pytest.mark.parametrize("source_commit", [None, "registered"])
+@pytest.mark.parametrize("corruption", ["missing", "changed"])
+def test_analysis_source_identity_rejects_missing_or_changed_criteria(
+    registered_sources: dict[str, Any], source_commit: str | None, corruption: str
+) -> None:
+    if source_commit is None:
+        registered_sources["criteria_hashes"] = {
+            name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest() for name in common_cost._criteria_sources()
+        }
+    if corruption == "missing":
+        del registered_sources["criteria_hashes"]["bench/common_cost_analysis.py"]
+    else:
+        registered_sources["criteria_hashes"]["bench/common_cost_analysis.py"] = "0" * 64
+
+    with pytest.raises(ValueError, match="criteria source set|analysis input changed"):
+        common_cost_analysis.verify_analysis_sources(registered_sources, source_commit=source_commit)
+
+
+@pytest.mark.parametrize("corruption", ["raw", "deadline", "registration", "order"])
+def test_historical_verification_retains_data_and_campaign_guards(
+    tmp_path: Path, registration: dict[str, Any], monkeypatch: pytest.MonkeyPatch, corruption: str
+) -> None:
+    registration["cases"] = registration["cases"][:1]
+    prefix = tmp_path / "historical"
+    collect(registration, prefix)
+    sources = {name: (ROOT / name).read_bytes() for name in registration["criteria_hashes"]}
+
+    def git_output(arguments: list[str]) -> bytes:
+        if arguments[0] == "rev-parse":
+            return ("a" * 40).encode()
+        if arguments[0] == "merge-base":
+            return b""
+        return sources[arguments[1].split(":", 1)[1]]
+
+    monkeypatch.setattr(common_cost_analysis, "_git_output", git_output)
+    assert len(verify(registration, prefix, source_commit="pinned")) == 1
+    manifest_path = Path(f"{prefix}.manifest.json")
+    manifest = json.loads(manifest_path.read_text())
+    raw = Path(f"{prefix}.raw.jsonl")
+    if corruption in ("raw", "order"):
+        records = [json.loads(raw.read_text())]
+        records[0]["case"]["position"] += 1
+        raw.write_text(json.dumps(records[0]) + "\n")
+        if corruption == "order":
+            manifest["hashes"][str(raw.resolve())] = hashlib.sha256(raw.read_bytes()).hexdigest()
+    elif corruption == "deadline":
+        manifest["elapsed_seconds"] = registration["plan"]["campaign_timeout_seconds"]
+    else:
+        registration["control"] = False
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="raw artifact changed|elapsed time|registration differs|case order"):
+        verify(registration, prefix, source_commit="pinned")
+
+
+@pytest.mark.parametrize(
+    "command,options",
+    [
+        ("collect", ["--source-commit", "HEAD"]),
+        ("register", ["--source-commit", "HEAD"]),
+        ("analyze", ["--correct-metadata"]),
+        ("verify", ["--source-commit", "HEAD", "--correct-metadata"]),
+    ],
+)
+def test_cli_rejects_historical_options_outside_offline_analysis(command: str, options: list[str]) -> None:
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "bench/common_cost.py"), command, "--registration", "unused.json", *options],
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 2
+    assert result.stdout == ""
+    assert "only for offline" in result.stderr or "requires analyze" in result.stderr
 
 
 @pytest.mark.parametrize("scenario", ["sql", "queue", "conditional"])

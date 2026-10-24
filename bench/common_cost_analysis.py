@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import math
+import hashlib
+import json
 import sqlite3
 import statistics
+import subprocess
 import warnings
 from functools import lru_cache
+from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import numpy as np
@@ -14,14 +19,18 @@ from scipy.stats import bootstrap
 __all__ = [
     "analyze",
     "analyze_python",
+    "analyze_registered",
     "expected_digest",
     "python_dimensions",
+    "sample_counts",
+    "verify_analysis_sources",
     "validate_diagnostics",
     "validate_native",
 ]
 
 METRICS = ("throughput", "p99_ns", "cpu_ns", "peak_rss_bytes")
 CONTRASTS = (("00", "10"), ("01", "11"), ("00", "01"), ("10", "11"))
+ROOT = Path(__file__).resolve().parents[1]
 
 
 @lru_cache(maxsize=16)
@@ -128,9 +137,94 @@ def validate_native(sample: dict[str, Any], case: dict[str, Any], plan: dict[str
         raise ValueError("workspace positive control failed")
 
 
+def sample_counts(records: list[dict[str, Any]], plan: dict[str, Any]) -> dict[str, int]:
+    counts = {"preflight_records": 0, "formal_records": 0, "diagnostic_records": 0}
+    for record in records:
+        case = record["case"]
+        block, instrumented = case["block"], case["instrumented"]
+        if type(block) is not int or type(instrumented) is not int or instrumented not in (0, 1):
+            raise ValueError("invalid sample classification types")
+        if block == -1 and not instrumented:
+            counts["preflight_records"] += 1
+        elif 0 <= block < plan["formal_blocks"] and not instrumented:
+            counts["formal_records"] += 1
+        elif block == -2 and instrumented:
+            counts["diagnostic_records"] += 1
+        else:
+            raise ValueError(f"invalid sample classification: block={block}, instrumented={instrumented}")
+    return {**counts, "instrumented_records": counts["diagnostic_records"]}
+
+
+def verify_analysis_sources(
+    registration: dict[str, Any], *, source_commit: str | None = None
+) -> tuple[str | None, dict[str, bytes]]:
+    names = sorted(
+        str(p.relative_to(ROOT)) for p in (ROOT / "bench").glob("common_cost*") if p.suffix in {".c", ".py", ".json"}
+    )
+    if set(registration["criteria_hashes"]) != set(names):
+        raise ValueError("registered criteria source set differs")
+    revision: str | None = None
+    if source_commit is not None:
+        revision = (
+            _git_output(["rev-parse", "--verify", "--end-of-options", f"{source_commit}^{{commit}}"]).decode().strip()
+        )
+        _git_output(["merge-base", "--is-ancestor", revision, "HEAD"])
+    sources = {}
+    for name in names:
+        source = (ROOT / name).read_bytes() if revision is None else _git_output(["show", f"{revision}:{name}"])
+        if hashlib.sha256(source).hexdigest() != registration["criteria_hashes"][name]:
+            raise ValueError(f"analysis input changed since registration: {name}")
+        sources[name] = source
+    return revision, sources
+
+
+def analyze_registered(
+    records: list[dict[str, Any]],
+    registration: dict[str, Any],
+    *,
+    source_commit: str | None = None,
+    correct_metadata: bool = False,
+) -> dict[str, Any]:
+    if correct_metadata and source_commit is None:
+        raise ValueError("metadata correction requires an explicit source commit")
+    revision, sources = verify_analysis_sources(registration, source_commit=source_commit)
+    if revision is None:
+        native, python = analyze, analyze_python
+    else:
+        module = ModuleType("registered_common_cost_analysis")
+        module.__file__ = str(ROOT / "bench/common_cost_analysis.py")
+        code = compile(sources["bench/common_cost_analysis.py"], f"{revision}:bench/common_cost_analysis.py", "exec")
+        exec(code, module.__dict__)
+        native, python = module.analyze, module.analyze_python
+    counts = sample_counts(records, registration["plan"])
+    summary = (
+        native(records, registration["plan"])
+        if registration["phase"] == "cache"
+        else python(records, registration["plan"], registration["phase"])
+    )
+    summary["control"] = registration["control"]
+    if correct_metadata:
+        summary = {
+            **summary,
+            "schema": 2,
+            **counts,
+            "metadata_correction": {
+                "source_commit": revision,
+                "registered_analysis_sha256": registration["criteria_hashes"]["bench/common_cost_analysis.py"],
+                "registration_sha256": hashlib.sha256(json.dumps(registration, sort_keys=True).encode()).hexdigest(),
+                "processor_hashes": {
+                    name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
+                    for name in ("bench/common_cost.py", "bench/common_cost_analysis.py")
+                },
+            },
+        }
+    return summary
+
+
 def analyze(records: list[dict[str, Any]], plan: dict[str, Any]) -> dict[str, Any]:
     if np.__version__ != plan["numpy_version"] or scipy.__version__ != plan["scipy_version"]:
         raise ValueError("analysis dependency version mismatch")
+    counts = sample_counts(records, plan)
     formal = [record for record in records if record["case"]["block"] >= 0 and not record["case"]["instrumented"]]
     summaries: dict[str, Any] = {}
     for pattern in plan["patterns"]:
@@ -145,13 +239,12 @@ def analyze(records: list[dict[str, Any]], plan: dict[str, Any]) -> dict[str, An
                 ]
                 summaries[key] = _analyze_cell(cells, plan)
     return {
-        "schema": 1,
+        "schema": 2,
         "formal_blocks": plan["formal_blocks"],
         "workers": [{"case": record["case"], **_metrics(record)} for record in records],
         "cells": summaries,
         "decision": "incomplete" if any(s["status"] != "complete" for s in summaries.values()) else "review",
-        "instrumented_records": sum(bool(r["case"]["instrumented"]) for r in records),
-        "preflight_records": sum(r["case"]["block"] < 0 for r in records),
+        **counts,
         "diagnostic_overhead": _diagnostic_overhead(records),
         "hypotheses": _hypotheses(summaries, plan),
     }
@@ -216,6 +309,7 @@ def _hypotheses(cells: dict[str, Any], plan: dict[str, Any]) -> dict[str, str]:
 def analyze_python(records: list[dict[str, Any]], plan: dict[str, Any], phase: str) -> dict[str, Any]:
     if np.__version__ != plan["numpy_version"] or scipy.__version__ != plan["scipy_version"]:
         raise ValueError("analysis dependency version mismatch")
+    counts = sample_counts(records, plan)
     conditions = ["eager", "lazy"] if phase == "lifecycle" else ["baseline", "candidate"]
     dimensions = python_dimensions(plan, phase)
     adjusted = {**plan, "conditions": conditions, "family_intervals": len(dimensions) * 4}
@@ -229,7 +323,8 @@ def analyze_python(records: list[dict[str, Any]], plan: dict[str, Any], phase: s
         ]
         summaries[f"{scenario}-{payload}"] = _analyze_cell(matching, adjusted, ((conditions[0], conditions[1]),))
     return {
-        "schema": 1,
+        "schema": 2,
+        **counts,
         "phase": phase,
         "workers": [{"case": record["case"], **_metrics(record)} for record in records],
         "cells": summaries,
@@ -261,6 +356,10 @@ def python_dimensions(plan: dict[str, Any], phase: str) -> list[tuple[str, int]]
     if phase == "lifecycle":
         return [("sql", 0), *(("queue", payload) for payload in plan["payload_bytes"])]
     return [("conditional", payload) for payload in plan["payload_bytes"]]
+
+
+def _git_output(arguments: list[str]) -> bytes:
+    return subprocess.run(["git", *arguments], cwd=ROOT, capture_output=True, check=True).stdout
 
 
 def validate_diagnostics(sample: dict[str, Any]) -> None:

@@ -17,7 +17,14 @@ import time
 from pathlib import Path
 from typing import Any, BinaryIO
 
-from common_cost_analysis import analyze, analyze_python, python_dimensions, validate_diagnostics, validate_native
+from common_cost_analysis import (
+    analyze_registered,
+    python_dimensions,
+    sample_counts,
+    validate_diagnostics,
+    validate_native,
+    verify_analysis_sources,
+)
 
 __all__ = ["cases", "collect", "register", "verify"]
 
@@ -262,10 +269,8 @@ def collect(registration: dict[str, Any], prefix: Path) -> None:
         raise ValueError("collection stopped; failed stdout/stderr/database and partial raw data retained")
 
 
-def verify(registration: dict[str, Any], prefix: Path) -> list[dict[str, Any]]:
-    for name, expected in registration["criteria_hashes"].items():
-        if _digest(ROOT / name) != expected:
-            raise ValueError(f"analysis input changed since registration: {name}")
+def verify(registration: dict[str, Any], prefix: Path, *, source_commit: str | None = None) -> list[dict[str, Any]]:
+    verify_analysis_sources(registration, source_commit=source_commit)
     manifest = json.loads(Path(f"{prefix}.manifest.json").read_text())
     if manifest["registration_sha256"] != _registration_digest(registration):
         raise ValueError("registration differs from collection")
@@ -290,6 +295,7 @@ def verify(registration: dict[str, Any], prefix: Path) -> list[dict[str, Any]]:
         raise ValueError("incomplete campaign accounting")
     if manifest["failures"] or len(records) != len(registration["cases"]):
         raise ValueError("incomplete campaign; no successful-only analysis")
+    sample_counts(records, registration["plan"])
     return records
 
 
@@ -671,7 +677,13 @@ def main() -> int:
     parser.add_argument("--eligibility", type=Path)
     parser.add_argument("--plan-commit", default="HEAD")
     parser.add_argument("--control", action="store_true")
+    parser.add_argument("--source-commit")
+    parser.add_argument("--correct-metadata", action="store_true")
     args = parser.parse_args()
+    if args.source_commit is not None and args.command not in ("verify", "analyze"):
+        parser.error("--source-commit is only for offline verify/analyze")
+    if args.correct_metadata and (args.source_commit is None or args.command != "analyze"):
+        parser.error("--correct-metadata requires analyze with --source-commit")
     if args.command == "register":
         _write_new(args.registration, register(args))
         return 0
@@ -681,14 +693,11 @@ def main() -> int:
     if args.command == "collect":
         collect(registration, args.prefix)
         return 0
-    records = verify(registration, args.prefix)
+    records = verify(registration, args.prefix, source_commit=args.source_commit)
     if args.command == "analyze":
-        summary = (
-            analyze(records, registration["plan"])
-            if registration["phase"] == "cache"
-            else analyze_python(records, registration["plan"], registration["phase"])
+        summary = analyze_registered(
+            records, registration, source_commit=args.source_commit, correct_metadata=args.correct_metadata
         )
-        summary["control"] = registration["control"]
         print(json.dumps(summary, indent=2, sort_keys=True, allow_nan=False))
     else:
         print(json.dumps({"verified": len(records), "control": registration["control"]}))
