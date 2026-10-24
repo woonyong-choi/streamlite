@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 23; original requirements/checkpoints remain, with evidence-driven Task18a/18b, completed checkpoints after19/21 and prerequisite23a.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete boundary is the additional checkpoint after Task 23b; original Task23 and all later requirements/checkpoints remain, with completed prerequisites23a/23b.
 
 ## Initialization only — 2026-10-24
 
@@ -581,6 +581,29 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Remaining risk: typed frame·force·숫자 owner epoch는 transaction commit/원자성/가시성·사망 복구 소유권이 아니다. WAL transport의 단일 배타 append owner는 실제 독립 writer 구현이 아니다. 원래23의 chain/group/CSN/commit witness·영속ID/result page/조회, buffer/checkpoint24·version/abort25·잠금26·동일/별도process27/28·동등COW29·실패30·정리/복구 총비용31/32와 제품/stream은 미완료다. 전체 앱RSS·128MiB 공유상한도 이 allocator 검사로 입증하지 않는다. 현재 WAL/buffer/MVCC/early locking 권고와 현행COW 보존·동등비교를 유지하며 실측 승리나 goal완료로 쓰지 않는다.
 - Next step: 이 task-boundary commit에서 멈춘다. 다음은 원래Task23만 수행하고23a의 transport 위 거래·영속 결과 복구를 완성한다. 22/23a/23 세 경계 뒤 추가checkpoint23을 별도 continuation으로 수행한다. 원래Task23–39/after24와 모든 기존checkpoint·Task6복구는 보존한다. 이번 경계에 원래23·24나 checkpoint를 실행하지 않았으며 goal은active다.
 - Commit record: subject `feat(repo): 분할 WAL 파일과 재시작 스캔 추가`; body marker `Goal-mode boundary: goal-1 task 23a: Implement segmented WAL framing and restart scan`. 이 기록을 담은 커밋의 설정된 작성자·marker와 clean 상태를 경계에서 확인한다.
+
+## Task 23b — Validate transaction and physical-group WAL witnesses
+
+- Status: complete (격리된 WAL의 의미 분석·실파일/독립 byte 검증 완료; 영속 본문·redo·복구 활성화는 미완료)
+- Scope: 23a의 실제 파일 scan 위에서 transaction별 chain·terminal·CSN, 연속 physical group의 page/record 수·digest·완료, COMMIT 의존 group·결과 참조를 검증한다. Issue #266의 후보 선행 구현이며 APPLIED나 영속 본문 조회를 반환하지 않는다.
+- Work performed: 이전 turn은 progress다. clean dbdf21d8의23a marker·설정된 작성자·10파일 범위를 확인했다. 기존 #266 branch/bind와 현재 #263/#266 OPEN·사용자 담당·열린PR 부재를 대조했다. 아직 없는 version/overflow page를 WAL inline 응답으로 대체하지 않고 분석기를 분리했다. 새 header·C 모듈·전용 시험과 Make target을 추가하고 기존 문서3개에 정확 본문 배치·거절 범위·검사 명령을 연결했다. 기존 COW/SQL/ACK·23a transport는 바꾸지 않았다.
+- Implementation boundary: 거래별 첫/직전 LSN·count/CRC·terminal 이후 쓰기·중복 요청 ID·CSN 역행, 연속 image/delta group의 개수/CRC·page header/UUID/checksum/END LSN·delta 범위, commit의 전체 group 의존 목록과 결과 chunk 참조를 검증한다. 전체 scan 뒤 owning 표만 반환하며 뒤쪽 오류도 부분 표를 노출하지 않는다. 미완성 거래/group을 ABORT로 추정하거나 파일을 고치지 않는다. 분석 표의 거래/group4096·활성64 제한은 유한한 내부 작업 설정이며 제품 복구 cap이나 전체 앱 메모리 보장이 아니다.
+- Verification evidence: 실제 `make BUILD_DIR=build-regression test-candidate-wal-witness TEST_TIMEOUT=120 CANDIDATE_WITNESS_REPORT=build-regression/fault/witness-check.json`은10237 check·exit0·빈stderr로 통과했다(`build/task23b-closure-command.json`). -Wall/-Wextra/-Werror·UBSan과 halt_on_error=1, native90초/runner120초를 유지했다. 교차 A/B와 두 COMMIT/한 ABORT·미완성 거래/group,18record 경계와 commit 내부1byte 절단, 재서명 손상34개·중복/교차 protocol7개·빈/두 chunk 참조·0nonce·활성65/전체4097 거절·할당 OOM/해제·두 commit을 읽은 뒤 I/O 오류의 부분 결과 차단을 확인했다. 같은 현재 core의 clang --analyze는경고0/빈stderr다. 이전 성공10193/10237과 두 시험 실패는 별도 prefix/report로 보존하며 한 실행으로 합산하지 않는다.
+- Independent evidence: `build/task23b-independent-closure.json`은 C helper 없이10720B golden·17frame·세 terminal의 chain CRC·두 group CRC/의존 참조·미완성 group2record·18prefix·34개의 유효 외부 CRC를 대조했다. golden SHA256은1fc8dd499257fdb3bf39054d4241689a08656f559be8c99fc46ea11a2569ba4a다. 빈 bytes SHA-256과0nonce·65536+1의 두 참조도 독립 대조했다. result digest는 본문 없는 참조 값으로만 확인하며 실제 응답 hash·page redo를 증명하지 않는다. 이전 두 정상 실행의 같은 byte 결과는 task23b-independent.json에 별도로 남겼다.
+- Failure/AAR: 첫 손상 시험은 page65/record1의 모순 입력을 LIMIT으로 기대한 시험 오류였고 두 번째는 owner 역행을 transport open이 먼저 거절하는 정상 경계를 시험 helper가 실패로 처리했다. 기대 입력·호출 helper를 고치고 실패 파일·report·당시 source/binary를 보존했다. source 검토에서 계약에 없는0nonce 거절도 제거하고 빈 결과의0nonce 대조를 추가했다. 독립 oracle을 module처럼 runpy로 읽은 시도는 기존 report의 덮어쓰기 guard에서 멈췄다. 이를 task23b-oracle-load-failure.json에 남기고 검증한 함수 정의만 불러 새 report로 대조했다. 현재 네이티브 실패/경고는 남아 있지 않으며 당시4묶음 입력 archive는 역해시로 검증했다. 데이터·입력 수·한도 완화나 성공 표본만의 재수집은 없다.
+- Preservation/scope: `build/task23b-preservation.json`은 기존24744artifact항목·seal13·보호된 추적9039파일·main/origin-main6bb8b2e8·다른 네worktree HEAD를 대조했다. 문서3개 check_doc·local file220/anchor65·whitespace가 통과했고 기본 make -n에 새 모듈이 없다. 실제 #266 blocker257/238/261/262와 두 issue의4/5미체크·OPEN을 유지했다(`task23b-phase-and-default.json`, task23b-issues.json). 원래Task23 이후·Task6 복구와 모든 기존checkpoint는 그대로다. 기존 raw/YCSB/실패·Vault/consumer와 제품 기본값·ABI/형식3·SNAPSHOT을 보존하고 원격변경·새checkout/agent·push/PR/merge/배포/전환은 없다. 최종 source·현재/실패 실행자료·추적 hash는 `build/task23b-verification.json`에 고정한다.
+- Remaining risk: witness의 COMMIT은 APPLIED·force 성공·가시성 frontier가 아니다. ALLOC/FREE·system transaction·checkpoint·요청 epoch/floor·ID 예약은 UNSUPPORTED이며 전체256MiB 복구·본문 digest/존재·실제 page 이력/redo·내구 recovery ABORT·복구 배타 소유권은 아직 없다. 원래23의 영속 결과·복구 조정자와 buffer/MVCC/잠금·실제writer·동등COW/총비용·제품/stream은 미완료다. 현재 WAL/buffer/MVCC/early locking 권고와 동등COW 비교·현행 제품 보존은 유지하며 성능 우위나 goal 완료를 주장하지 않는다.
+- Next step: 이 task-boundary commit에서 멈춘다. 다음 continuation은 추가checkpoint23b만 수행해22/23a/23b를 검토한다. 이후 원래23의 모든 영속 결과/복구 의무와24–39·기존23/24 이후checkpoint를 유지한다. 이 경계에 원래23·24나 checkpoint는 실행하지 않았으며 goal은active다.
+- Commit record: subject `feat(repo): WAL 거래와 물리 묶음 검증 추가`; body marker `Goal-mode boundary: goal-1 task 23b: Validate transaction and physical-group WAL witnesses`. 이 기록을 담은 커밋의 설정된 작성자·marker와 clean 상태를 경계에서 확인한다.
+
+## Additional checkpoint after Task 23b
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — Task22/23a/23b의 형식·실제 transport/semantic 분석·근거/보존·본문 미검증 경계와 원래23의 잔여 의무 대조, tracking-only checkpoint.
+- Remaining risk: 모형·frame·commit witness를 영속 결과·실제writer·전원 손실 증거로 확대하지 않는다.
+- Next step: 23b task-boundary 뒤 별도 continuation에서 수행하고 원래23으로 진행한다.
+- Commit status: no checkpoint commit attempted.
 
 ## Task 23 — Implement WAL records and durable commit recovery
 

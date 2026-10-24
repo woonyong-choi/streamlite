@@ -212,3 +212,7 @@ Task22의 상태/형식·18개 실패 oracle과 제한 상태 모형은 계약 �
 새 WAL 파일 모듈이 없고 G2 본문/ID 복구는 ordinary version/overflow page와 transaction witness를 요구한다. 원래23을 없애거나 완료로 줄이지 않고 선행23a로 segmented transport/codec/scan/명시적 tail repair를 먼저 구현한다. 원래23은 실제 transaction/group/commit/영속 결과 저장·조회와 모든 응답/재시작 oracle을 그대로 맡는다. 원래24/checkpoint와 이후 요구를 보존한다. 23a의 record scan·fsync 성공은 APPLIED/DURABLE 거래의 증거가 아니며 SQL/기존 COW 제품에 연결하지 않는다. 기존 이슈266 branch/bind를 재사용하며 formal 비교/제품263의 blocker는 보존한다.
 
 23a의 실제 Make 시험은 같은360개 절단을30개씩12개 필수 실행으로 나눈다. 한 process에 모은 최초 문서 명령은113번째 fixture에서 native90초 한도에 걸렸으며 실패 report·원본/수리 파일과 당시 source/binary를 보존한다. native90초/runner120초와 모든 입력을 유지하고 실행 단위만 줄인다. 두 모듈의 정적 검사·현재12실행·독립 byte/CRC 대조를 통과한 사실은 거래 복구·전원 차단·성능 승리와 다르다. 22/23a/23의 세 경계 뒤 추가 checkpoint after23을 두고 원래 after24와 이후 경계를 유지한다.
+
+## Task 23 semantic prerequisite
+
+23a의 decoder는 body를 검증하지 않으며 version/overflow page·buffer가 아직 없다. 원래23의 영속 결과를 WAL에 중복 inline 저장해 우회하지 않는다. 선행23b는 실제 WAL의 transaction chain·physical group·COMMIT/ABORT witness와 결과 참조 형식을 검증하는 읽기 전용 분석기를 구현한다. 본문·page redo·ID 예약/epoch/checkpoint의 검증이 없는 witness를 APPLIED나 일반 DB 개방으로 내보내지 않는다. 원래23의 영속 결과·복구 조정자와24–39를 유지한다. 22/23a/23b 뒤 추가checkpoint23b를 두고 기존23/24 checkpoint도 유지한다.

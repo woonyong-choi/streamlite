@@ -98,6 +98,14 @@ open은 파일을 바꾸지 않는다. 마지막 불완전 tail이 있으면 app
 
 이 계층의 durable LSN은 확인한 파일 barrier 범위다. COMMIT 종류의 frame이 있다는 사실만으로 APPLIED를 반환하지 않는다. owner epoch 검사는 숫자의 역행을 막으며 새 소유권 인수·사망 복구를 제공하지 않는다. SQL·callback 재실행, page writeback·checkpoint·MVCC·실제 writer·장치 전원 차단과 lost-write 보장은 이 시험 범위가 아니다. 고정 record buffer와 callback allocator의 계상도 전체 앱 RSS·프로세스 간 128MiB 상한 구현으로 확대하지 않는다.
 
+[witness 분석기](../include/storage/candidate_wal_witness.h)는 같은 파일을 읽어 transaction chain·terminal, image/delta group과 결과 참조를 대조한다. [전용 시험](../tests/test_candidate_wal_witness.c)은 열린 A 중 B의 commit, A의 abort 뒤에도 남는 완성 group, 미완성 group·18개 record 경계, 외부 CRC를 다시 맞춘 손상 34개, 중복 ID/terminal·교차 group, 빈/두 chunk 참조·한도/OOM·뒤쪽 읽기 오류를 확인한다.
+
+```sh
+make BUILD_DIR=build-regression test-candidate-wal-witness TEST_TIMEOUT=120 CANDIDATE_WITNESS_REPORT=build-regression/fault/witness-check.json
+```
+
+기본 fixture prefix는 process ID를 포함하며 원본을 지우지 않는다. 반복 실행은 `CANDIDATE_WITNESS_REPORT`에 아직 없는 report 경로를 지정해 앞선 로그도 보존한다. native 90초·runner 120초를 유지한다. 분석은 파일과 transaction 상태를 고치지 않고 전체 scan 실패 시 부분 표를 반환하지 않는다. COMMIT witness는 본문 복원이나 APPLIED가 아니며 ALLOC/FREE·checkpoint·epoch/ID 예약과 실제 redo는 아직 지원하지 않는다. [내부 분석 계약](design/streamlite.md#checkpoint와-회수-순서)의 거절 범위와 남은 복구 의무를 함께 확인한다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

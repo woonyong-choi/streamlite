@@ -378,7 +378,24 @@ page 번호가 재사용되면 디스크 page가 재생 중인 record보다 새 
 
 ### checkpoint와 회수 순서
 
-[비교용 WAL 파일](../build-and-test.md#비교용-wal-파일)의 로컬 transport는 위 record/segment 형식과 순차 append·force·재시작 scan을 구현한다. 이 계층은 16개 record 종류의 본문을 opaque bytes로 취급하며 transaction chain·physical group 완료·CSN·요청 결과를 판정하지 않는다. 마지막의 불완전 길이는 명시적 tail 수리 대상으로, 완전 길이의 checksum 손상은 보수적으로 CORRUPT로 처리한다. 유효 prefix visitor는 전체 scan 성공 전에 외부 효과를 확정하지 않는다. 이 부분 구현과 아래 checkpoint·가시성·결과 복구의 미완료 범위를 구분한다.
+[비교용 WAL 파일](../build-and-test.md#비교용-wal-파일)의 로컬 transport는 위 record/segment 형식과 순차 append·force·재시작 scan을 구현한다. 이 계층은 16개 record 종류의 본문을 opaque bytes로 취급한다. [witness 분석기](../../include/storage/candidate_wal_witness.h)는 별도로 거래 chain·terminal·CSN 순서, image/delta physical group의 개수·checksum과 commit 의존 참조를 검사한다. 결과 본문·실제 redo·영속 ID 조회와 복구 완료를 판정하지 않는다. 마지막의 불완전 길이는 명시적 tail 수리 대상으로, 완전 길이의 checksum 손상은 보수적으로 CORRUPT로 처리한다. 유효 prefix visitor는 전체 scan 성공 전에 외부 효과를 확정하지 않는다. 이 부분 구현과 아래 checkpoint·가시성·결과 복구의 미완료 범위를 구분한다.
+
+이 내부 분석기는 아래 본문 배치를 사용한다. 정수는 앞의 little-endian 규칙을 따르고 예약 bytes는 0이다. ADMIT의 operation digest와 RESULT_CHUNK의 결과 digest는 32B 참조 값이며 분석기는 SQL 선언이나 실제 응답 bytes의 SHA-256을 계산하지 않는다. 이 값을 서로 대조한 것만으로 본문 무결성을 확인했다고 표시하지 않는다.
+
+| record | 분석하는 본문 배치 | 검사 범위 |
+|---|---|---|
+| ADMIT, 64B | 요청 epoch u64·nonce 16B·operation digest 32B·결과 상한 u64 | 첫 record, 중복 요청 ID 거절, 1MiB 이하 상한 |
+| BEGIN, 16B | 격리 u32·예약 u32·snapshot u64 | 격리 0은 SNAPSHOT, 1은 serializable 후보. 중복 BEGIN 거절, serializable의 snapshot은 0 |
+| PHYS_BEGIN, 16B / PHYS_END, 24B | group ID u64·page 수 u32·record 수 u32, 끝에는 CRC32C u32·예약 u32 추가 | 연속 group, 단조 group ID·개수·checksum과 END 위치 대조 |
+| PAGE_IMAGE / PAGE_DELTA | 앞 32B는 group ID·page ID·generation·기대 이전 pageLSN의 u64 네 개. image는 8192B 사본, delta는 개수 u32·예약 u32 뒤 offset u32·길이 u32·bytes 반복 | image UUID·종류 1–5·header/padding/checksum·END LSN, delta의 page 본문 범위·겹침·정렬·정확 길이. 실제 page 이력·redo는 별도 |
+| RESULT_CHUNK, 112B | 요청 epoch u64·nonce 16B·chunk 순번/수 각 u32·전체 길이 u64·digest 32B·VersionRef 24B·offset u64·길이 u32·예약 u32 | 64KiB 분할의 연속 순번·합계·동일 참조 digest, 최대 16chunk. 참조한 본문 존재와 hash는 별도 |
+| ABORT, 32B / COMMIT, 152B 이상 | 첫/직전 record LSN·앞선 record 수 각 u64·chain CRC32C u32·예약 u32. COMMIT은 CSN u64·요청 epoch u64·nonce 16B·operation/result digest 각 32B·결과 bytes u64·chunk 수 u32·예약 8B·의존 group 수 u32·group ID/끝 LSN의 u64 쌍 반복 | terminal 이후 record·끊긴 chain·중복/역행 CSN·빠진 group·결과 참조 불일치 거절 |
+
+chain과 group CRC는 record마다 종류 u16·예약 6B·LSN/transaction ID/이전 LSN/owner epoch/본문 길이의 u64 다섯 개·본문 bytes를 이어 계산한다. chain은 terminal 직전까지, group은 BEGIN과 image/delta만 포함한다. 비어 있는 응답의 참조 digest는 SHA-256의 빈 bytes 값이다. 이 CRC는 손상 검사이며 SHA-256이나 인증을 대신하지 않는다.
+
+분석기는 같은 UUID로 연 transport와 options를 받으며 한 group에서 page별 image 또는 delta 하나를 처리한다. 현재 ALLOC/FREE·system transaction·checkpoint·epoch/floor·ID_RESERVE는 UNSUPPORTED로 거절한다. 분석 전체에 거래와 완성 group을 각각 최대 4096개 보관하고 활성 거래는 64개로 제한한다. 4096개 제한은 회수 없는 분석 표를 유한하게 두는 내부 설정이며 전체 256MiB WAL을 모두 처리하는 제품 복구 보장이 아니다. 더 큰 입력은 LIMIT이고 잘라서 성공하지 않는다. 이 분석 표와 WAL buffer의 할당 계상은 전체 앱 RSS 상한과 다르다.
+
+완전한 파일 scan을 통과한 뒤에만 owning 분석 결과를 반환한다. 미완성 거래·group은 미완성으로 남기며 ABORT를 추측하거나 파일을 고치지 않는다. 관측한 최대 CSN은 확정 frontier가 아니고, COMMIT witness는 APPLIED·force 성공·새 reader 가시성의 증명이 아니다. [전용 시험](../../tests/test_candidate_wal_witness.c)은 교차 거래·record 경계·CRC를 다시 맞춘 손상·한도/OOM와 뒤쪽 읽기 오류의 부분 결과 차단을 검증한다. 원래 영속 결과·복구 조정자는 본문과 metadata page, WAL-before-data·내구 terminal·복구 배타 소유권을 함께 검증해야 한다.
 
 writeback은 latch 아래 frame의 bytes·pageLSN·변경 세대를 사본으로 잡고 latch를 놓는다. 미확정 의존성이 없고 WAL의 durable LSN이 해당 physical group 끝 이상인 것을 확인한 뒤 data에 쓴다. 쓰기 중 frame이 바뀌면 이전 사본의 I/O 완료로 최신 dirty 표시를 지우지 않는다. page가 디스크에 도달한 것과 transaction commit은 다른 상태다. NO-STEAL은 확정 data의 매 commit 강제 쓰기인 FORCE를 뜻하지 않는다.
 

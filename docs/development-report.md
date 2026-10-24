@@ -496,7 +496,9 @@ FFI에도 SQL result에서 native payload로, ctypes에서 Python bytes로 복�
 
 [비교 후보의 저장·복구 계약](design/streamlite.md#비교-후보의-저장복구-계약)은 불변 행 version·논리 abort·초기 NO-STEAL과 영속 요청 ID·결과 조회를 선택한다. redo만으로 미확정 제자리 변경을 취소하는 안은 이전 값을 보존하지 못하므로 제외한다. NO-STEAL의 frame 압력, 결과 본문·ID 보존, owner fencing과 checkpoint/GC 비용은 새 부담으로 남긴다. 같은 결과·보존 계약을 buffered COW에도 적용하며, 이 선택의 구현·중단 복구·실측은 아직 완료하지 않았다.
 
-로컬 후속 구현은 [분할 WAL transport](../include/storage/candidate_wal.h)의 codec·파일 append/force·재시작 scan까지 진행했다. [실파일 시험](../tests/test_candidate_wal.c)의 tail 절단·손상·짧은 I/O·실패·process 종료 검사는 이 계층의 근거다. 거래 commit witness·영속 결과 조회와 version·buffer/checkpoint·실제 writer는 여전히 미완료이며, 기존 COW 제품의 변경이나 WAL 성능 우위로 쓰지 않는다.
+로컬 후속 구현의 [분할 WAL transport](../include/storage/candidate_wal.h)는 codec·파일 append/force·재시작 scan을 제공한다. [실파일 시험](../tests/test_candidate_wal.c)의 tail 절단·손상·짧은 I/O·실패·process 종료 검사는 이 계층의 근거다. 기존 COW 제품의 변경이나 WAL 성능 우위로 쓰지 않는다.
+
+뒤따른 로컬 [witness 분석](../include/storage/candidate_wal_witness.h)은 transaction chain·terminal·CSN 순서, 완성 image/delta group과 commit 의존 참조를 실제 WAL 파일에서 대조한다. 결과 본문은 별도 version/overflow page에 보관한다는 계약을 유지하므로 참조 digest만으로 APPLIED를 반환하지 않는다. [전용 시험](../tests/test_candidate_wal_witness.c)의 record 경계·재서명 손상·자원/읽기 실패 검사는 부분 분석의 근거다. ALLOC/FREE·ID/epoch·checkpoint와 data redo, 영속 본문·복구 조정자·실제 writer·총비용 판정은 남아 있다.
 
 예를 들어 같은 leaf의 서로 다른 두 행을 두 transaction이 바꾸더라도, 나중 transaction이 옛 root를 그대로 게시하면 먼저 확정한 변경을 잃을 수 있다. 쓰기 잠금만 없애는 변경으로는 이 문제를 풀지 못한다. 현재 `database_work_begin`은 작업 종료까지 배타 잠금을 유지한다. 따라서 현재의 단일 writer COW와, 검증·병합을 추가할 다중 writer COW는 같은 구현이 아니다. 이 설명은 현재 코드와 제안의 대조이며 동시 갱신 실험 결과가 아니다. ([현재 잠금](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1163-L1172), [작업 종료](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1229-L1251), [리뉴얼 구조](design/streamlite.md#다중-writer의-검증병합게시))
 
