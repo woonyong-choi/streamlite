@@ -37,6 +37,7 @@ SOURCES = [
     "bench/pending_query_driver.c",
     "bench/pending_query_plan.json",
     "bench/common_cost.py",
+    "bench/common_cost_artifacts.py",
     "bench/common_cost_analysis.py",
     "tests/test_pending_query.py",
     "tests/test_pending_query_native.c",

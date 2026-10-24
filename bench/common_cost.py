@@ -25,6 +25,7 @@ from common_cost_analysis import (
     validate_native,
     verify_analysis_sources,
 )
+from common_cost_artifacts import read_json, validate_archives, validate_artifacts
 
 __all__ = ["cases", "collect", "register", "verify"]
 
@@ -223,6 +224,12 @@ def collect(registration: dict[str, Any], prefix: Path) -> None:
     allowed = {prefix.name + ".registration.json", prefix.name + ".collect.log"}
     if any(path.name not in allowed for path in prefix.parent.glob(prefix.name + "*")):
         raise ValueError("collection prefix overlaps existing artifacts")
+    registration_path = Path(f"{prefix}.registration.json")
+    if registration_path.exists():
+        if read_json(registration_path) != registration:
+            raise ValueError("existing registration differs from collection")
+    else:
+        _write_new(registration_path, registration)
     plan = registration["plan"]
     deadline = _CampaignDeadline(plan["campaign_timeout_seconds"])
     fixtures: dict[int, Path] = {}
@@ -270,8 +277,9 @@ def collect(registration: dict[str, Any], prefix: Path) -> None:
 
 
 def verify(registration: dict[str, Any], prefix: Path, *, source_commit: str | None = None) -> list[dict[str, Any]]:
+    prefix = prefix.resolve()
     verify_analysis_sources(registration, source_commit=source_commit)
-    manifest = json.loads(Path(f"{prefix}.manifest.json").read_text())
+    manifest = read_json(Path(f"{prefix}.manifest.json"))
     if manifest["registration_sha256"] != _registration_digest(registration):
         raise ValueError("registration differs from collection")
     elapsed = manifest["elapsed_seconds"]
@@ -280,21 +288,23 @@ def verify(registration: dict[str, Any], prefix: Path, *, source_commit: str | N
     is_valid_elapsed = math.isfinite(elapsed) and 0 <= elapsed < limit
     if not is_valid_limit or not is_valid_elapsed:
         raise ValueError("campaign elapsed time violates registered limit")
-    for name, expected in manifest["hashes"].items():
-        if _digest(Path(name)) != expected:
-            raise ValueError(f"raw artifact changed: {name}")
+    if manifest["failures"]:
+        raise ValueError("incomplete campaign; no successful-only analysis")
+    expected = len(registration["cases"])
+    counts = {"planned": expected, "completed": expected, "unexecuted": 0}
+    if manifest["schema"] >= 2:
+        counts.update(attempted=expected, failed=0)
+    if any(manifest[name] != value for name, value in counts.items()):
+        raise ValueError("incomplete campaign accounting")
+    layout = validate_artifacts(registration, prefix, manifest)
     records = [json.loads(line) for line in Path(f"{prefix}.raw.jsonl").read_text().splitlines()]
     if [record["case"] for record in records] != registration["cases"][: len(records)]:
         raise ValueError("case order, pairing or unique identity mismatch")
+    if len(records) != expected:
+        raise ValueError("incomplete campaign; no successful-only analysis")
+    validate_archives(records, layout, manifest["hashes"])
     for record in records:
         _validate_sample(record["sample"], record["case"], registration)
-    counts = {"planned": len(registration["cases"]), "completed": len(records), "unexecuted": 0}
-    if manifest["schema"] >= 2:
-        counts.update(attempted=len(records), failed=0)
-    if any(manifest[name] != value for name, value in counts.items()):
-        raise ValueError("incomplete campaign accounting")
-    if manifest["failures"] or len(records) != len(registration["cases"]):
-        raise ValueError("incomplete campaign; no successful-only analysis")
     sample_counts(records, registration["plan"])
     return records
 

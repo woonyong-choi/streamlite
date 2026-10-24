@@ -103,9 +103,11 @@ eligibility JSON의 `minimum_id`, `lease_fence`, `duplicate_stale_failed`, `canc
 
 정식 수집은 clean 작업본과 현재 수집기·계획을 함께 담은 `PLAN_COMMIT`의 조상을 요구한다. 수집기를 수리했으면 그 변경을 포함한 commit으로 새 등록을 만들고, 과거 등록·raw를 덮어쓰지 않는다. 수집 시간·완료/실패/미실행의 경계는 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 있다. 결과 보고는 원자료의 전체 완료와 동일한 분석 JSON을 확인한 뒤 수행한다.
 
+[자료 검증기](../bench/common_cost_artifacts.py)는 등록 일정에서 필수 raw·worker stdout/stderr·cache fixture 생성 로그/DB·case별 DB gzip 경로를 도출한다. 누락·다른 경로·alias·symlink·중복 JSON key·잘못된 digest를 거부하며, 각 gzip의 원래 DB hash·해제 크기·저장 크기와 fixture hash도 대조한다. 같은 접두사의 늦은 분석 출력이나 collect 로그를 필수 집합으로 편입하지 않는다. 새 `collect`는 API로 전달한 등록도 `<prefix>.registration.json`에 보존하고 다른 내용이 있으면 거절한다. 검증기 도입 전 control API에서 등록 파일 없이 보존한 형식만 예외로 허용한다. 정식 자료와 새 등록은 등록 JSON까지 필수다. checksum은 전체 장부 교체를 인증하지 않는다. [자료 회귀](../tests/test_common_cost_artifacts.py)는 세 단계의 정상·누락·경로·gzip 메타데이터와 과거 source 검사를 대조한다.
+
 schema 2 분석은 `preflight_records`, `formal_records`, `diagnostic_records`를 구분한다. `instrumented_records`는 진단 수와 같다. 비계측 block -1, 비계측 정식 범위, 계측 block -2만 허용하며 Python 수명·조건부 분석에도 적용한다. 기존 schema 1 결과의 잘못된 표본 수나 누락 필드는 원본 그대로 보존한다.
 
-기본 `verify`·`analyze`는 현재 소스와 등록 hash가 다르면 거절한다. 과거 결과에는 아래의 명시적 재현 경로를 사용한다. `SOURCE_COMMIT`은 등록의 다섯 기준 파일 hash와 모두 일치하는 신뢰할 수 있는 로컬 조상 commit이다. 이 경로는 그 commit의 분석 Python 코드를 메모리에서 실행하므로 검토한 이력에만 사용한다. 원자료 hash·순서·정확성·완료·시간 한도 검사는 유지하며 `register`·`collect`에는 이 옵션을 허용하지 않는다.
+기본 `verify`·`analyze`는 현재 소스와 등록 hash가 다르면 거절한다. 과거 결과에는 아래의 명시적 재현 경로를 사용한다. `SOURCE_COMMIT`은 등록한 기준 파일 목록·hash와 모두 일치하는 신뢰할 수 있는 로컬 조상 commit이다. 파일 목록은 해당 commit에서 도출하므로 새 검증기 도입 전의 다섯 파일과 도입 후의 여섯 파일을 구분한다. 이 경로는 그 commit의 분석 Python 코드를 메모리에서 실행하므로 검토한 이력에만 사용한다. 강화한 현재 자료 coverage·gzip 검사와 기존 순서·정확성·완료·시간 한도 검사를 통과한 뒤 분석하며 `register`·`collect`에는 이 옵션을 허용하지 않는다.
 
 ```sh
 python3 bench/common_cost.py verify --registration "$PREFIX.registration.json" --prefix "$PREFIX" --source-commit "$SOURCE_COMMIT"
@@ -113,7 +115,7 @@ python3 bench/common_cost.py analyze --registration "$PREFIX.registration.json" 
 python3 bench/common_cost.py analyze --registration "$PREFIX.registration.json" --prefix "$PREFIX" --source-commit "$SOURCE_COMMIT" --correct-metadata
 ```
 
-처음 두 명령은 보존한 입력을 검증하고 당시 schema의 원 JSON을 재현한다. 마지막 명령은 원 분석의 효과·구간·판정을 유지하면서 schema 2의 표본 수와 `metadata_correction`을 추가한다. 이 필드에는 기준 commit·등록 분석 hash·등록 내용 hash와 현재 처리기 두 파일의 hash가 있다. 결과는 stdout으로 내보내며 보존 파일은 직접 고치지 않는다. 수정 결과를 저장할 때는 사용하지 않은 파일을 선택하고 원 분석을 덮어쓰지 않는다. 새 수집이나 다른 내구성·backend의 성능 근거로 사용하지 않는다.
+처음 두 명령은 보존한 입력을 검증하고 당시 schema의 원 JSON을 재현한다. 마지막 명령은 원 분석의 효과·구간·판정을 유지하면서 schema 2의 표본 수와 `metadata_correction`을 추가한다. 이 필드에는 기준 commit·등록 분석 hash·등록 내용 hash와 현재 수집기·분석기·자료 검증기의 hash가 있다. 검증기 도입 전 두 처리기 hash를 기록한 수정 JSON도 원본 그대로 보존한다. 결과는 stdout으로 내보내며 보존 파일은 직접 고치지 않는다. 수정 결과를 저장할 때는 사용하지 않은 파일을 선택하고 원 분석을 덮어쓰지 않는다. 새 수집이나 다른 내구성·backend의 성능 근거로 사용하지 않는다.
 
 ### 요청 단위 내부 계측
 

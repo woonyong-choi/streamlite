@@ -269,6 +269,8 @@ def analyze_python(records, plan, phase):
             return (revision + "\n").encode()
         if arguments[0] == "merge-base":
             return b""
+        if arguments[0] == "ls-tree":
+            return "\n".join(sources).encode()
         return sources[arguments[1].split(":", 1)[1]]
 
     monkeypatch.setattr(common_cost_analysis, "_git_output", git_output)
@@ -348,6 +350,8 @@ def test_historical_verification_retains_data_and_campaign_guards(
             return ("a" * 40).encode()
         if arguments[0] == "merge-base":
             return b""
+        if arguments[0] == "ls-tree":
+            return "\n".join(sources).encode()
         return sources[arguments[1].split(":", 1)[1]]
 
     monkeypatch.setattr(common_cost_analysis, "_git_output", git_output)
@@ -551,6 +555,10 @@ def test_collection_deadline_boundaries_preserve_partial_evidence(
             should_advance = isinstance(args[1], common_cost.gzip.GzipFile) == (stage == "archive")
         elif stage == "hash":
             should_advance = str(args[0]).startswith(str(prefix)) and kwargs.get("deadline") is None
+        elif stage == "manifest":
+            should_advance = str(args[0]) == f"{prefix}.manifest.json"
+        elif stage == "raw":
+            should_advance = Path(f"{prefix}.raw.jsonl").exists()
         if should_advance:
             clock[0] = 1.1
         return result

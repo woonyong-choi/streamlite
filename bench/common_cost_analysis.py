@@ -161,14 +161,22 @@ def verify_analysis_sources(
     names = sorted(
         str(p.relative_to(ROOT)) for p in (ROOT / "bench").glob("common_cost*") if p.suffix in {".c", ".py", ".json"}
     )
-    if set(registration["criteria_hashes"]) != set(names):
-        raise ValueError("registered criteria source set differs")
     revision: str | None = None
     if source_commit is not None:
         revision = (
             _git_output(["rev-parse", "--verify", "--end-of-options", f"{source_commit}^{{commit}}"]).decode().strip()
         )
         _git_output(["merge-base", "--is-ancestor", revision, "HEAD"])
+        paths = _git_output(["ls-tree", "-r", "--name-only", revision, "--", "bench"]).decode().splitlines()
+        names = sorted(
+            name
+            for name in paths
+            if Path(name).parent == Path("bench")
+            and Path(name).name.startswith("common_cost")
+            and Path(name).suffix in {".c", ".py", ".json"}
+        )
+    if set(registration["criteria_hashes"]) != set(names):
+        raise ValueError("registered criteria source set differs")
     sources = {}
     for name in names:
         source = (ROOT / name).read_bytes() if revision is None else _git_output(["show", f"{revision}:{name}"])
@@ -214,7 +222,11 @@ def analyze_registered(
                 "registration_sha256": hashlib.sha256(json.dumps(registration, sort_keys=True).encode()).hexdigest(),
                 "processor_hashes": {
                     name: hashlib.sha256((ROOT / name).read_bytes()).hexdigest()
-                    for name in ("bench/common_cost.py", "bench/common_cost_analysis.py")
+                    for name in (
+                        "bench/common_cost.py",
+                        "bench/common_cost_analysis.py",
+                        "bench/common_cost_artifacts.py",
+                    )
                 },
             },
         }

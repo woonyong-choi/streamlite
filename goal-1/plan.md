@@ -170,3 +170,9 @@ Observe baseline, query peak, held, released and closed memory separately: RSS c
 등록 계획의 fixture 조합과 검증된 전체 일정에서 필수 파일을 독립 도출한다. registration/raw/fixtures JSON, fixture별 정확한 데이터 파일과 생성 stdout/stderr, 모든 query stdout/stderr, native 진단 stdout/stderr가 대상이다. SQLite WAL/SHM과 native lock은 실제 존재할 때 별도로 hash를 요구한다. 분석 뒤 추가되는 출력은 수집 자료가 아니므로 현재 prefix glob 전체를 필수 집합으로 삼지 않는다. manifest에 기재한 경로는 도출한 필수/부속 집합 안의 절대 정규 경로만 허용하며 alias·symlink·중복 JSON key·잘못된 digest를 거부한다. 자료 구조 검사와 hash 검사가 끝나기 전 raw 분석을 시작하지 않는다.
 
 기존 pending 수집기와 회귀 파일 안에서 국소 수리하고 공통 검증기는 Task18b에 남긴다. 숫자 계획·통계·제품/runtime·기존 raw는 바꾸지 않는다. CP18-1 여섯 반례를 새 control에 재현하고 수정 전 실패와 수정 후 거절을 보존한다. 과거 b9cfef4a 자료의 별도 읽기 대조는 source가 바뀐 사실을 숨기지 않고 자료 검사만 검증한다. 새 current-source control36건과 CLI 재분석으로 통합 동작을 확인한다. 원자료 전체 교체를 인증하는 형식으로 확대하지 않는다. 두 수리를 담은 후속 commit에서만 Task19를 새 등록한다.
+
+## Task 18b 공통 자료 coverage 수리
+
+#239의 기존 branch를 같은 checkout에서 e028684f까지 fast-forward해 선행 기록을 보존한다. 수집기는 이미717줄이므로 자료 구조·hash·gzip 검증을 별도 실행 모듈 `bench/common_cost_artifacts.py`에 둔다. 새 등록은 이 모듈도 기준 source에 포함하며 pending source pin에도 추가한다. 과거 명시 source 처리는 현재 파일 목록 대신 해당 commit의 실제 common_cost 파일 목록과 등록 hash를 정확히 대조한다. 통계·수치 기준은 바꾸지 않는다.
+
+성공한 일정의 필수 raw·worker 로그·cache fixture 생성 로그/DB·각 case의 DB gzip 경로를 등록에서 도출한다. 누락·alias·잘못된 digest를 raw 통계 처리 전에 거부하고, raw의 archive 목록은 도출한 경로·gzip 역해시·해제 bytes·storage 합계·fixture hash와 대조한다. 새 collect는 API에 전달된 등록도 prefix의 JSON으로 보존하며 이미 있는 다른 내용은 덮지 않는다. helper 도입 전 control API는 등록 파일이 없을 수 있는 기존 형식으로 한정해 허용하고, 과거 정식 등록 파일과 현재 등록 파일은 필수다. 분석 출력이나 collect 로그를 필수 자료로 임의 편입하지 않는다. CP18-2 반례와 정상 cache/Python/pending control, 과거 Task15/17 byte 동일 재분석과 실패 자료를 확인한 뒤 이 경계에서 멈춘다.
