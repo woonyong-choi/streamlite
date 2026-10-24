@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 21; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the completed additional after19 checkpoint.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete boundary is the checkpoint after Task 21, followed by Task 22; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the completed additional after19 checkpoint.
 
 ## Initialization only — 2026-10-24
 
@@ -530,13 +530,16 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Task 21 — Execute the retained primary-key scale validation
 
-- Status: incomplete
+- Status: complete (원래 고정 규모9case의 로컬 정식 수집·검증 완료; 새 backend·제품 통합/발행과 구분)
 - Scope: Collect the missing same-condition 1k/10k/100k three repeats, scan counts and p50/p95/p99 against the compatible SQLite input; preserve partial loads/timeouts separately. Issues: #158.
-- Work performed: not started.
-- Verification evidence: required — Full requested row counts, per-repeat correctness/reopen/scan and percentile evidence, raw hashes/aggregation; distinguish original historical and new baseline results.
-- Remaining risk: If the required scale still fails, diagnose and queue a justified repair; timeout documentation alone is not goal completion.
-- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
-- Commit status: no task commit attempted.
+- Work performed: 직전ff3af84d의 Task20 marker·설정된 작성자·8파일 범위·초기 clean 상태로 progress를 확인했다. 기존 #158 branch와 bind를 재사용했고 열린 동일 PR은 없었다. source/계획·입력·binary·제품은 바꾸지 않고 새 build/task21-primary-key-formal 접두사에9case를 수집했다. 기존 설계에 반복별 INSERT/point/missing의 p50/p95/p99와 스캔·한계를 기록하고 빌드 안내/개발 보고·plan/Continuity를 갱신했다.
+- Preregistration: registration은 clean plan/source 조상 ff3af84dd28db14db67f7cc95ce6eefdf230a50d·source6·runtime9d70c9b4의 코드78개·실제4identity와 환경을 첫 표본 전에 고정했다. control=false, SHA25612c8dde65077b1786a2b24c2d2c8d7e7b3f596c16db0f634e5f8bdbcda9f93bb다. 원 seed137·세 규모3회·공유 적재120초/문장30초·예열1/여섯 조회20회·정순/역순/정순과 모든 자원 gate를 유지했다. macOS26.5.2 arm64/CPython3.9.6/SQLite3.51.0이며 기존 OFF library를 재사용했다. 새 clean build-at-commit 실행으로 쓰지 않는다.
+- Collection evidence: manifest는 예정/시도/완료9·실패0·미실행0,227.684619667초이며 CLI 전체228.6552235초다. 1천/1만/10만 행이 각3회 모두 요청 행 수를 채웠고 부분 적재0이다. 10만 행 적재44.148171/53.063050/68.333559초로 모두120초 이하였다. 엔진별 총333000행과 timed 조회1080쌍을 수행했다. 필수46+lock9의55artifact·68702742B를 보존했으며 manifest SHA256078801478269c8f9b8cddd4be21265a25274fce39dafe33b153f6309913bd6ff다. 모든 worker/CLI stderr는 비었다.
+- Verification evidence: 실제 `build/check-env/bin/python -W error bench/primary_key_scale.py verify --prefix build/task21-primary-key-formal`은9/control=false를 확인했다. 같은 analyze 두 번은 byte 동일 SHA2563d9a318d4b18b46d0a9c473e5dbf83fcc890da9e993e863d001cbe9a720d6eea다(build/task21-cli.json). 별도 원자료 계산은 typed 기대 digest1440건·point/missing720건·일정1080쌍·분위수/QPS54계열을 대조했다(task21-independent-audit.json). 모든 INSERT의 heap 스캔0/색인 조회N, point/missing 각각20회 합계 스캔0/색인20/페이지계수60, 비기본키 양성 대조N과 재열기·종료를 확인했다. 이0은 heap 접근·물리 I/O0이 아니며 SQLite 직접 scan 행은 측정하지 않았다.
+- Disposition/preservation: requested_scope_complete는 이 규모 측정 범위의 판정이다. task21-disposition.json에 모든 반복과 자원을 남겼고 native/SQLite worker 관측 고수위는63.25/29MiB다. build/task21-preservation.json은 기존20410artifact항목·직전/과거 seal·원 입력/실패/보존 tar·runtime79/identity100·main/origin-main6bb8b2e8·다른 네 worktree HEAD를 대조했다. 문서3개·상대 파일195개·INSERT9/조회18개 표 행과 whitespace를 검사했다. Task20의24회귀/실제 build/Ruff/format/mypy는 입력·binary·로그 hash가 같은 범위로 재사용했고 새 suite/build 실행으로 세지 않는다. task21-verification.json은 새76artifact를 고정한다. 최신 #158 본문/담당·OPEN/1미체크는 그대로이며 로컬 결과를 원격 완료로 올리지 않았다.
+- Remaining risk/AAR: 원120초 실패·180초 별도 성공과 현재 실행을 구분한다. 과거 raw 발견 한계·첫 driver/legacy 등록 재현 공백은 그대로다. 3반복·조회별20개 p99=최대값은 설명 통계이며 과거 대비 인과 효과·일반 속도 채택을 검정하지 않는다. 세 번째 native INSERT p99는1.986ms로 반복 차이도 보존했다. 공유 호스트·warm OS cache·RSS 사후 guard와 allocator/앱 전체 cap·물리 I/O를 구별한다. 원 caller 보유·실제 writer·WAL/buffer/MVCC/early locking와 동등 buffered-COW의 회수/checkpoint/복구 총비용·stream·제품 통합은 미완료다. 이 성공은 현재 WAL 권고를 변경하지 않는다. 새 결함/수리 과업은 이 경계의 근거에서 확인하지 못했고 goal은 active다.
+- Next step: 이 task-boundary commit에서 멈춘다. 다음 continuation은 원래 checkpoint after21만 수행하고 Task22의 backend/복구 계약은 그 뒤에 진행한다. Task6 복구와 Task20, 원래 after21/Task22–39의 모든 경계를 보존한다. 원격/consumer/Vault 쓰기·새 checkout/agent·push/PR/merge/배포/전환은 없다.
+- Commit record: subject `docs(docs): 기본키 세 규모 실측과 검증 결과 추가`; body marker `Goal-mode boundary: goal-1 task 21: Execute the retained primary-key scale validation`. 이 기록을 담은 커밋의 설정된 작성자·marker와 clean 상태를 경계에서 확인한다. 최종 추적/자료 seal은 build/task21-closure.json에 고정한다.
 
 ## Checkpoint after Task 21
 

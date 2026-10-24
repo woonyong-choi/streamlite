@@ -190,3 +190,9 @@ Observe baseline, query peak, held, released and closed memory separately: RSS c
 공유 적재120초·문장30초·worker RSS2GiB·결과 인코딩512MiB는 원래 조건이다. 전체1800초/8GiB/디스크여유2GiB는 준비 전에 정한 수집 가정이며 고객 SLO가 아니다. 같은 완료 행까지 두 엔진을 실행하고, 경계 뒤 마지막 쌍이 끝나도120초 이상은 요청 규모 완료로 세지 않는다. native getter는 SQL 시간 밖에서 읽고 비기본키 full scan으로0의 계측 유효성을 대조한다. SQLite 직접 스캔 행은 미측정으로 둔다. 같은 잘못된 point 결과를 두 엔진이 반환해도 독립 기대값으로 거절하고, 부분 입력·한쪽 완료/다른 쪽 timeout·manifest/등록 누락을 보존·검사한다.
 
 원래 old archive checkout과 현재 build/bench·build/sqlite-performance는 없고 확인한 정리 장부/보존 tar 목록에서 과거 성능 raw를 찾지 못했다. 이것은 확인한 위치의 한계이며 파일 전체 부재·복구·재해시 성공을 주장하지 않는다. 공개 이슈/PR의 원 실패 기록과 현존 보존 자료를 유지하고 새 표본과 섞지 않는다. 작은 대조24행만 수행하며 Task21이 이 계획을 담은 commit에서 새 정식 등록·수집한다. 원래 후속 Task21–39와 모든 checkpoint, WAL 권고와 동등 COW 비교는 유지한다.
+
+## Task 21 기본키 규모 판정
+
+Task20을 담은 clean ff3af84d에서 source6·runtime 코드78·실제4identity와 원래9case를 새 등록하고 수집했다. 1천/1만/10만 행이 각각3회 모두120초 안에 완료됐고, SQLite와 typed 결과·재열기·native 기본키 스캔0/비기본키 양성 대조를 통과했다. 기준·입력·제품·binary를 바꾸거나 실패를 제외한 재수집은 하지 않았다. 분석 두 번의 byte 동일성과 원자료의 독립 기대 결과·분위수를 확인했다. 원120초 실패·180초 별도 성공과 현재 환경의 새 관측을 분리한다.
+
+이번 판정은 현재 단일 writer COW의 기본키 규모 검증이다. 세 반복/조회별20표본은 설명 통계이며 속도 채택·과거 대비 인과 효과·실제 writer·새 WAL backend의 근거가 아니다. WAL/buffer/MVCC/early locking 권고와 동등 buffered-COW의 회수/checkpoint/복구 총비용 비교는 그대로다. 원자료는 기존 build 실행 영역에 보존하고 원격 이슈/제품 통합·발행은 완료로 올리지 않는다. 다음 경계는 원래 checkpoint after21만 수행하며 Task22 이후는 그 뒤에 진행한다.

@@ -337,3 +337,5 @@ build/check-env/bin/python bench/primary_key_scale.py analyze --prefix build/pri
 ```
 
 `register --control`은24행의 수집기 대조만 등록한다. 정식 결과로 합치지 않는다. `verify`는 등록 일정에서 필수 자료를 도출하고 hash·행 수·조회 순서·독립 기본키 기대값·스캔 양성 대조·재열기를 검사한다. timeout의 부분 입력도 실제 행 수로 보존하지만 요청 규모 완료는 아니다. SQLite의 직접 스캔 행 수는 기록하지 않는다. 기존 `sqlite_workload.py`의 전체 혼합·복구 캠페인과 다른 경계이며, 그 과거 raw나 실패 표본을 교체하지 않는다.
+
+[기본키 규모 첫 판정](design/streamlite.md#기본키-규모-실측의-첫-판정)은 계획/source `ff3af84d`에서 등록한9case를 모두 완료했다. 보존 자료가 있는 이 작업본에서 `verify`·`analyze`의 접두사에 `build/task21-primary-key-formal`을 지정하면 같은 분석을 재생성한다. 원자료는 로컬에 보존했고 공개 발행은 별도다. 새 표본은 기존 접두사를 재사용하지 않는다. 이번 결과는 현재 단일 writer COW의 기본키 규모 검증이며 새 backend의 채택 근거와 구분한다.
