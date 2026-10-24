@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete boundary is the checkpoint after Task 21, followed by Task 22; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the completed additional after19 checkpoint.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 22; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the completed checkpoints after19/21.
 
 ## Initialization only — 2026-10-24
 
@@ -543,12 +543,16 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Checkpoint after Task 21
 
-- Status: incomplete
-- Work performed: not started.
-- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 19–21; tracking-only checkpoint.
-- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
-- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
-- Commit status: no checkpoint commit attempted.
+- Status: complete (로컬 범위·source·자료·재현·판정 검토 완료; 새 효과/제품 구현·원격 상태 확인과 구분)
+- Work performed: 직전 turn은 e616166c의 Task21 marker·ff3af84d parent·설정된 작성자·정확한5파일 변경과 초기 clean 상태로 확인한 progress다. Task19–21의 요구·수집/분석/검증기·정상/실패 모델·자원과 소유권·build/type/test 근거·보존/복원·문서를 대조했다. 새로운 코드 수리를 요구하는 결함은 이 검토에서 확인하지 못했다. UI/UX는 내부 수집/자료 검토에 해당 없음이다. tasks.md만 추적 변경했다.
+- Preservation/source evidence: build/checkpoint21-preservation.json은 기존20486artifact항목(20410+Task21의76)·직전/과거 seal10개·Task21 추적5파일/Continuity·원 입력/보존 tar/실패 표본을 대조한다. pending source11/runtime79/identity100과 기본키 source6/runtime코드78/identity4는 등록 hash와 같다. 제품 src/include/python은9d70c9b4와 같고 현재 기본값은 유지한다. 로컬 main/origin-main6bb8b2e8와 다른 네 worktree HEAD를 보존했다. 실제 원격 main은 연결 실패로 새 확인하지 못했다.
+- Reproduction/coverage evidence: 실제 `build/check-env/bin/python -W error bench/pending_query.py verify --prefix build/task19-pending-formal`과 primary_key_scale.py의 Task21 prefix 검증은1728/9·control=false를 확인했다. 각 analyze는 원 JSON과 byte 동일하며 SHA256은8a2cd02e4b3281373248e5617ee3b1423820ca18be1cc90f21c7422b66682fc3 / 3d9a318d4b18b46d0a9c473e5dbf83fcc890da9e993e863d001cbe9a720d6eea다(checkpoint21-cli.json). 원자료는 재수집하지 않았다. 기본키 public verify의 누락6유형은 raw record 읽기0회에서 거절됐고 pending 자료 component의 누락3유형도 선행 guard에서 거절됐다(checkpoint21-coverage-controls.json). 읽기 전용 메모리 모델이며 실제 원자료를 손상시키지 않았다.
+- Independent judgment: checkpoint21-independent.json에서 pending 정식1440/사전144/진단144·대응 중앙값192개·96cell의순서5/5·주16/성장12기준을 대조했다. 고정 구간은 원 source로 재생성했으며 별도의 bootstrap 구현을 새로 증명했다고 쓰지 않는다. 기본키9case의 요청 행 수/120초·스캔·재열기, point/missing720건과 분위수/QPS54계열을 직접 계산했다. 전체 typed 기대 digest1440건은 Task21의 보존된 독립 기대값에 재대조했다. 한 page의 지지와 caller 전체 보유 문제·전체 순차/축적 비용은 여전히 별개다. 규모 완료는 현재 단일 writer COW 결과이며 WAL/실제 writer 우위가 아니다.
+- Validation/document evidence: 문서3개 check_doc·main 대비 whitespace·상대 파일195개·INSERT9/조회18표 행이 통과했다(checkpoint21-doc-check.json). Task18a65와 Task18b227+등록2+legacy3의 별도 실행, Task20의24검사·실제 build/Ruff/format/mypy는 source/시험/binary/log hash가 같은 범위로 재사용했다. 새 suite/build/CI나 물리 복구 시험을 수행한 것으로 합치지 않는다. Task6·Task19–21과 모든 Task22–39/checkpoint, input/plan/goal-current·공개 문서는 그대로다.
+- AAR/remote limits: GitHub MCP7호출은 Promise fulfilled여도 isError=true인 transport 실패였다. 초기에 계산한 미체크0은 폐기했으며 실제 issue 상태로 쓰지 않았다. git fetch도 github.com DNS 실패였다(checkpoint21-remote-failures.json). 마지막 확인 #158은 Task21의 OPEN/1미체크 스냅샷이며 이번 원격 갱신은 미검증이다. 첫 pending verify/analyze는 성공했지만 비교 대상 파일명을 추측해 FileNotFoundError가 났다. 기존 task19-cli.json의 실제 task19-analysis-first.json 경로로 완료 출력만 다시 대조하고 primary 명령부터 계속했다. 표본·완료한 분석을 다시 실행하거나 파일을 덮지 않았다. 존재하지 않는 pending_query_artifacts.py 읽기도 읽음으로 처리하지 않고 실제 guard가 있는 pending_query.py를 확인했다.
+- Remaining risk: 과거 raw 발견 한계·첫 실패 driver/legacy 등록 재현 공백·원 caller 전체 메모리·실제 writer·WAL/buffer/MVCC/early locking와 동등 buffered-COW의 회수/checkpoint/복구 총비용·stream·제품 통합은 남는다. 원격 연결 실패를 이슈 완료나 phase readiness 확인으로 바꾸지 않는다. 현재 WAL 권고와 현행 COW 보존·동등 비교는 유지하고 goal은 active다. 원격/Vault/consumer 쓰기·새 checkout/agent·push/PR/merge/배포/전환은 없다.
+- Next step: 이 tracking-only checkpoint commit에서 멈춘다. 다음 continuation은 원래 Task22의 WAL/version/abort/checkpoint·결과 조회/소유권 계약을 구체화한다. 관련 원격 상태는 연결 가능 시 다시 확인하며, 계약 구체화를 전체 #257의 미발행 상태 때문에 무기한 보류하지 않는다. 이 경계에서 Task22 계약 선택이나 구현을 실행하지 않았다.
+- Commit record: subject `docs(docs): 기본키 실측 검토와 WAL 계약 진입 기록 갱신`; body marker `Goal-mode boundary: goal-1 checkpoint after task 21: complete`. 이 기록을 담은 tracking-only commit의 설정된 작성자·marker와 clean 상태를 경계에서 확인한다. 최종 근거는 build/checkpoint21-verification.json에 고정한다.
 
 ## Task 22 — Specify WAL and version recovery contracts
 
