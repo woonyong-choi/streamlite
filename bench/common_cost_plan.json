@@ -1,0 +1,56 @@
+{
+  "schema": 1,
+  "baseline_commit": "ce7a9f4609d19fbcac3e12eeda6f37a1b8d62c28",
+  "lifecycle_baseline_commit": "54b43509",
+  "rows": 10000,
+  "operations": 1024,
+  "groups": [
+    1,
+    32
+  ],
+  "payload_bytes": [
+    256,
+    4096
+  ],
+  "patterns": [
+    "hit",
+    "miss",
+    "unique"
+  ],
+  "conditions": [
+    "00",
+    "10",
+    "11",
+    "01"
+  ],
+  "formal_blocks": 10,
+  "preflight_blocks": 1,
+  "diagnostic_blocks": 1,
+  "lifecycle_instances": 32,
+  "seed": 257,
+  "bootstrap_resamples": 10000,
+  "family_intervals": 192,
+  "alpha": 0.05,
+  "minimum_throughput_ratio": 1.05,
+  "maximum_tail_ratio": 1.05,
+  "maximum_cpu_ratio": 1.05,
+  "maximum_rss_extra_bytes": 16777216,
+  "maximum_storage_ratio": 1.1,
+  "shared_requested_bytes": 134217728,
+  "worker_peak_rss_bytes": 268435456,
+  "worker_timeout_seconds": 120,
+  "campaign_timeout_seconds": 1800,
+  "campaign_storage_bytes": 8589934592,
+  "numpy_version": "1.26.4",
+  "scipy_version": "1.13.1",
+  "validated_builds": {
+    "off": {
+      "library_sha256": "5bd113d6bed190df7bc123c1598395120a5646f643fe8282cb32dd6dd19974b3",
+      "driver_sha256": "699ea410b8cb0be7c82887c314eef25d02b814cd3cd87e37184beaa7cf398e8b"
+    },
+    "on": {
+      "library_sha256": "3ba750e6cb3d7b94ac6a4f7253944703b9b4231fdd328f3d095a57a497547a6a",
+      "driver_sha256": "5c576c9331e894bbaa6564fef9ed3134a7ba148bc9126c4d21578a7bd2a42984"
+    }
+  }
+}

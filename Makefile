@@ -402,6 +402,12 @@ $(BUILD_DIR)/test_benchmark: $(BUILD_DIR)/tests/test_benchmark.o $(BUILD_DIR)/be
 .PHONY: counter-driver
 counter-driver: $(BUILD_DIR)/counter_driver
 
+.PHONY: common-cost-driver
+common-cost-driver: $(BUILD_DIR)/common_cost_driver
+
+$(BUILD_DIR)/common_cost_driver: bench/common_cost_driver.c src/benchmark.h src/sql/database_cache.h src/sql/database_workspace.h $(TOTEDB_SHARED_LIB) $(BUILD_FINGERPRINT)
+	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(TOTEDB_SHARED_LIB)) -ltotedb -Wl,-rpath,$(abspath $(dir $(TOTEDB_SHARED_LIB)))
+
 $(BUILD_DIR)/counter_driver: bench/counter_driver.c src/benchmark.h include/totedb.h $(TOTEDB_SHARED_LIB) $(BUILD_FINGERPRINT)
 	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(TOTEDB_SHARED_LIB)) -ltotedb -lsqlite3 -Wl,-rpath,$(abspath $(dir $(TOTEDB_SHARED_LIB)))
 

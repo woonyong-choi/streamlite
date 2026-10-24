@@ -299,7 +299,7 @@ WAL의 복구 재생과 checkpoint·version GC는 COW의 root 선택·manifest �
 
 반복 SQL 준비 비용이 줄어든 COW와 준비 비용이 그대로인 WAL을 비교하면 저장 방식의 차이를 분리할 수 없다. 같은 변경 누적·준비 결과 재사용·payload 배치를 적용한 두 후보에서, COW의 병합·재작성·회수와 WAL의 redo·writeback·checkpoint·version GC를 비교한다. 짧은 put→drain만으로 장기 삭제·재사용이나 다중 writer의 이점을 판정하지 않는다.
 
-아래 E0–E7은 구현 후 사전 등록할 비교의 설계안이다. 수집기·실행 명령·환경·G1–G6를 채운 실행 계획의 대체물이 아니다. 기존 [로컬 DB 비교 계획](../experiments/local-db-comparison/design.md)과 [release 비용 계획](../experiments/release-cost/design.md)은 사전 지식으로만 사용하고 원자료·실패 표본·당시 판정은 고치지 않는다. 새 표본을 과거 결과에 합치거나 서로 다른 실험의 개선 배수를 곱하지 않는다.
+아래 E0–E7은 비교를 나누는 설계다. E0–E3와 선택형 수명의 실행 조건은 [공통 비용 수집의 사전 계획](#공통-비용-수집의-사전-계획)에서 고정한다. 이후 저장 후보·writer·stream 비교의 수집기와 G1–G6는 별도 과업이다. 기존 [로컬 DB 비교 계획](../experiments/local-db-comparison/design.md)과 [release 비용 계획](../experiments/release-cost/design.md)은 사전 지식으로만 사용하고 원자료·실패 표본·당시 판정은 고치지 않는다. 새 표본을 과거 결과에 합치거나 서로 다른 실험의 개선 배수를 곱하지 않는다.
 
 | 단계 | 기준과 후보 | 고정 조건과 반증할 가설 |
 |---|---|---|
@@ -409,6 +409,50 @@ G5에는 부하별 최소 완료량 `Q_min`, p99 상한 `L99_max`, writer 최대
 WAL을 새 엔진의 기본 방향으로 권고하더라도 제품 채택은 이 비교의 검증 결과로 판단한다. 같은 예산에서 COW가 shared-root 병합·경로 재작성·pin/회수·공정성 기준에 실패하고 WAL 안이 통과하면 제품 교체 근거가 된다. COW의 국소 구현 결함인지 구조상 비용인지와 배제하지 못한 원인도 남긴다. 둘 다 실패하면 어느 쪽도 채택하지 않으며 SQLite 제품 대안과 요구·비용을 다시 비교한다. SQLite를 택해 실제 병렬 writer 요구를 완화하려면 별도 명시적 결정이 필요하다. 우열이 불확정이면 기존 backend를 보존한다.
 
 탈락·철회에는 실패한 부하와 사전 기준, 양쪽 commit·설정·원자료·실패 표본, 원인 경로와 반례, 포기할 기존 보장, 새 복구·checkpoint·이관 부담과 복원 범위를 D52에 연결한다. 수집 전 계획 commit이 결과의 조상인지, 원자료 hash와 집계 재생성이 일치하는지도 검사한다. 성능 채택 후보가 나와도 기본 backend 변경·기존 파일 전환·배포 완료를 뜻하지 않는다.
+
+### 공통 비용 수집의 사전 계획
+
+같은 1,024개 UPDATE를 cache/workspace 네 조건으로 실행하고 마지막 전체 행·본문을 SQLite 계산과 대조한다. 문장이 적어졌다는 사실이나 workspace의 사본 flush 수만으로 성능을 채택하지 않는다. [수집기](../../bench/common_cost.py), [입력·한도](../../bench/common_cost_plan.json), [native 실행기](../../bench/common_cost_driver.c), [Python 실행기](../../bench/common_cost_worker.py), [분석기](../../bench/common_cost_analysis.py)가 이 계획을 실행한다. 추적은 [#239](https://github.com/woonyong-choi/totedb/issues/239), cache·workspace·조건부 SQL·선택형 수명의 각 후속 이슈를 사용한다.
+
+| 항목 | 고정한 값과 이유 |
+|---|---|
+| 사전 지식 | 기존 보고서와 cache/workspace 회귀, 작은 수집기 대조, 10,000행·4,096B 입력의 완료 확인. 효과 확인 표본에서 제외 |
+| 대상 | 제품 기준 `ce7a9f4609d19fbcac3e12eeda6f37a1b8d62c28`, 현행 단일 writer·COW·durable commit. 새 WAL·MVCC 후보의 성능 판정과 분리 |
+| 실행 환경 | 검증 환경 macOS 26.5.2 arm64, Apple M4 10코어·24GiB, APFS. 등록 시 OS·장치·compiler·실제 라이브러리 링크·filesystem을 다시 조회하고 hash와 함께 고정 |
+| 분석 도구 | CPython 3.9.6, NumPy 1.26.4, SciPy 1.13.1. `random_state=257`의 RandomState와 BCa 10,000회, worker 단위 대응 유지 |
+| 빌드 | 같은 `-O2` 공유 경로와 설정, 기본 cache/workspace 0. handle별 내부 제어만 변경. ON은 `BENCHMARK=1`만 다르며 시간·CPU·쓰기 진단 표본을 OFF 성능과 분리 |
+| SQL 입력 | `counters(id INTEGER PRIMARY KEY,counter INTEGER NOT NULL,payload TEXT NOT NULL)` 10,000행, 초기 counter 0·본문 `x` 반복 256/4,096B. fixture는 별도 생성하고 같은 파일 hash를 조건마다 복제 |
+| UPDATE | `UPDATE counters SET counter=counter+? WHERE id=?`, binding은 `(1,(i*17+257)%10000+1)`, i는 0–1,023. 반환 영향 행 1, 매 결과 소비·해제 |
+| 준비 경로 | `hit`는 같은 SQL, `miss`는 96종 주석을 순환해 64항목 cache를 초과, `unique`는 문장마다 다른 주석. binding·문장·commit 수는 네 조건에서 동일 |
+| 거래 | commit당 1/32문장, 마지막 부분 batch 없음. 같은 UPDATE 한 번을 rollback하는 handle 예열은 별도 기록하며 실제 작업에서 제거하지 않음. 새 handle이 OS cold cache를 뜻하지 않는 조건 |
+| E1/E2 표본 | 3종 준비 경로×2종 본문×2종 batch의 12cell. cell마다 사전 1block·정식 10block·진단 1block, block마다 `00/10/11/01` 네 조건 모두 실행. 첫 숫자는 cache, 둘째는 workspace |
+| 순서 | 정식 block 2개씩 시작 조건을 순환하고 두 번째는 첫 번째의 역순. 각 대비에서 후보 먼저 5회·기준 먼저 5회. 사전·진단은 각각 block -1/-2이며 정식 효과에서 제외 |
+| 선택형 수명 | SQL 단독 본문 축 없음, 큐 사용 256/4,096B의 3cell. worker마다 DB 32개를 차례로 열어 CRUD·commit·결과 소비·close·reopen. 큐 사용은 각 DB에 put/get/ack/purge 한 번 포함 |
+| 수명 기준군 | `54b43509`의 Python Database class를 메모리에서 읽은 eager 경로와 현재 lazy 경로. native 라이브러리와 Queue 구현은 같게 고정. import·비교용 source 적재는 API 시간 밖이며 별도 process wall과 RSS에 포함 |
+| E3 | 현재 경로와 다른 후보의 OFF/ON 라이브러리, 소스 commit·hash·최소 ID·lease/fence·중복/stale/FAILED·cancel/OOM·failure readback·reopen 근거를 먼저 등록. 없으면 비교 불가로 거절하며 현행 경로 두 개를 후보로 위장하지 않는 조건 |
+| E3 입력 | 256/4,096B의 2cell, worker당 put/get/ack/purge 1,024회. 첫 작업에서 중복 ACK·stale ACK·ACKED readback을 추가 검사. 정상 작업 지연과 guard 시간을 구분하고 whole-worker 비용에는 둘 다 포함 |
+| 두 조건의 표본 | cell마다 사전 1쌍·정식 10쌍을 교대로 실행하고 진단 1쌍은 별도 수집. SQL/큐 수명과 E3는 서로 다른 효과 모집단 |
+
+native의 업무 완료 시간은 open·예열 rollback·begin/UPDATE/commit·결과 해제·work 정리·close·reopen/close를 포함한다. 전체 행 digest와 page 무결성을 확인하는 감사 시간만 `audit_ns`로 따로 재며 `wall_ns = completion_ns + audit_ns`를 검사한다. CPU도 같은 구분을 보존한다. 감사는 성능 분모에서 제외해 반복 UPDATE 비용이 검증용 전체 스캔으로 가려지지 않게 한다. 실제 commit의 encode·쓰기·barrier·page 회수는 제외하지 않는다. 전체 worker 시간과 CPU, subprocess wall도 함께 보존한다.
+
+지연은 native에서 begin부터 durable commit·work 정리까지의 거래별 관측이고 batch 32를 개별 UPDATE p99로 바꾸지 않는다. Python 수명은 DB 한 개의 전체 수명, E3는 정상 put/get/ack/purge의 작업별 관측이다. 각 worker의 p50·p95·p99·최대는 nearest-rank로 계산하며 대응한 worker의 p99 비를 비교한다. 입력 생성·fixture 복제·연구 자료 압축은 업무 밖이다. 부모 process의 대기 방식 때문에 subprocess wall은 부가 관측이며 업무 완료 시간을 대신하지 않는다.
+
+RSS는 새 worker의 process high-water이며 baseline과 최종 최고치를 bytes로 기록한다. native의 최고치에는 감사용 결과·무결성 메모리도 포함하므로 이를 순수 UPDATE 작업 메모리나 allocator 절감으로 해석하지 않는다. resident·query·result 예약 최고치, 마지막 resident, close 뒤 0 반환, 거래별 workspace 최고치·최종 사본 flush·catalog clone을 따로 기록한다. cache hit/miss·eviction은 매 문장, workspace 통계와 APPLIED 결과는 매 거래에서 수집한다. 예상하지 않은 cache 초기화·한도 거절은 표본을 버릴 이유가 아니라 중단 조건이다.
+
+실제 pread/pwrite/fsync·file lock의 호출·kernel 수락 bytes·중첩 및 배타 시간은 ON 자료에만 있다. OFF의 미수집 값을 0으로 채우지 않는다. workspace flush는 buffered image만 세며 전체 pwrite·제어 쓰기 수가 아니다. native 직접 실행에는 C API handle mutex가 없고 Python API에는 있으므로 서로의 단계 시간을 합치지 않는다. SQL 실행 경계 수는 현재 계측으로 직접 셀 수 없으면 null로 남긴다. ON과 OFF 사전 표본의 같은 조건 wall/CPU 비는 계측 교란의 기술 통계이며 효과 추정이나 기여율과 구분한다.
+
+| 판정 항목 | 수집 전 규칙 |
+|---|---|
+| 정확성 | 영향 행·타입·순서·본문을 포함한 전체 행 digest를 독립 SQLite 실행과 대조, close/reopen 뒤 같은 digest와 page orphan/conflict 0. Python은 SQL 행·ID·payload·attempt·fence·terminal·purge·empty·reopen 검사. 기존 OOM·rollback·UNKNOWN 회귀 근거도 보존 |
+| 메모리·중단 | shared 요청 128MiB, workspace 8MiB와 cache 기존 한도, whole-worker RSS 256MiB. worker의 생성·실행·종료·감사를 합쳐 120초, campaign 1,800초·보존 파일 8GiB·남은 디스크 1GiB. collection 한도이며 고객 SLO가 아님 |
+| 보존 | 오류·timeout·설정/소스/binary 불일치·자료 손실에서 즉시 중단, 전체 예정·완료·실패·미실행 수 보존. 실패 DB/부분 stdout/stderr는 그대로 유지. 성공한 새 합성 DB만 gzip으로 무손실 보존하고 역해시 확인 후 작업용 전개본을 제거. 기존 원자료는 미수정 |
+| 분석 | 10개 대응 비의 중앙값·범위·명목 95% 및 Bonferroni 조정 BCa. E1/E2는 12cell×4대비×4지표=192구간, 수명 12구간, E3 8구간을 각 독립 family로 고정. 퇴화·NaN·누락·불완전 campaign은 보류하며 방법 교체나 성공 표본만 분석 금지 |
+| 개선 가설 | cache의 주 부하는 hit·256B·batch 1, workspace는 hit·256B·batch 32. 각각 다른 기능 OFF/ON 두 문맥 모두 조정 처리량 비 하한 1.05 이상, 나머지 모든 cell에서는 하한 0.95 이상 |
+| 공통 보호 기준 | 모든 비교에서 조정 p99/CPU 비 상한 1.05 이하, worker RSS 증가 최대 16MiB, 논리 DB 크기 비 최대 1.10. workspace 메모리를 숨기거나 gzip 크기를 DB 크기로 사용 금지 |
+| 수명·E3 가설 | SQL 단독 수명·E3 256B를 각 주 부하로 처리량 하한 1.05 이상, 다른 cell은 0.95 이상. 동일 tail/CPU/RSS/공간 보호 기준 적용 |
+| 채택의 의미 | 위 수치는 5% 미만의 작은 국소 개선을 기본값 변경 근거로 쓰지 않기 위한 가역적 연구 기준. 통과는 검토 후보이며 자동 기본값 변경·제품 통합이 아님. 부적합·불확실은 이유와 반례를 보존하고 기존 기본값 유지 |
+
+이 계획을 담은 commit을 정식 수집의 조상으로 지정한다. `register`는 고정한 수집 코드·설정이 그 commit과 같은지 확인하고 현재 모든 제품 소스·Python·compiler·환경·fixture 입력과 양쪽 binary hash를 수집 전에 기록한다. E3는 구현 뒤 같은 기준으로 후보·실패 검증 근거를 추가 고정하며 그 결과를 보고 기준을 바꾸지 않는다. `verify`는 원자료 hash·대응 순서·정확성·전체 완료를 검사하고 `analyze`는 원자료에서 같은 JSON을 재생성한다. 실행 명령은 [공통 비용 수집](../build-and-test.md#공통-비용-수집)에 있다. 비교 수집기가 준비됐다는 사실은 정식 실측·개선 효과·새 backend 완료를 뜻하지 않는다.
 
 ### 후속 구현과 검증
 

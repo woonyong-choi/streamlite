@@ -69,6 +69,25 @@ make TXN_WORKSPACE=0 SQL_TEMPLATE_CACHE=0 all
 
 `test-database-workspace`는 기본 빌드에서도 내부 제어로 cache/workspace 네 조건을 검사하며 `test-all`에 포함한다. [database_workspace.h](../src/sql/database_workspace.h)의 제어·통계는 내부 시험용이며 Python·공개 C ABI에 추가하지 않는다. 작업이 열려 있으면 설정 변경과 resident ledger의 새 연결을 거절한다. 한도는 [시험용 설정](design/streamlite.md#공통-개선의-시험용-한도)을 따르며 query·result의 기존 한도와 전체 RSS를 뜻하지 않는다. 문장별 heap·색인 계산과 사본 탐색·복사 비용은 남는다. 시험의 쓰기 횟수·예약 최고치와 실패 주입은 성능 채택이나 물리 전원 장애의 증거가 아니다.
 
+### 공통 비용 수집
+
+[사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.
+
+```sh
+make BENCHMARK=0 SQL_TEMPLATE_CACHE=0 TXN_WORKSPACE=0 common-cost-driver
+make BENCHMARK=1 SQL_TEMPLATE_CACHE=0 TXN_WORKSPACE=0 BUILD_DIR=build-benchmark common-cost-driver
+python3 bench/common_cost.py register --phase cache --plan-commit "$PLAN_COMMIT" --registration "$PREFIX.registration.json"
+python3 bench/common_cost.py collect --registration "$PREFIX.registration.json" --prefix "$PREFIX"
+python3 bench/common_cost.py verify --registration "$PREFIX.registration.json" --prefix "$PREFIX"
+python3 bench/common_cost.py analyze --registration "$PREFIX.registration.json" --prefix "$PREFIX"
+```
+
+수집·분석 interpreter에는 NumPy 1.26.4·SciPy 1.13.1이 필요하며 등록 정보가 실제 버전을 고정한다. `--phase lifecycle`은 같은 native 라이브러리에서 eager/lazy Python 수명을 비교한다. `--phase conditional`은 별도 `--candidate-build`, `--candidate-on-build`, `--eligibility`를 요구한다. 후보가 없거나 baseline과 같은 binary면 비교를 거절한다. eligibility는 최소 ID·lease/fence·중복/stale/FAILED·cancel/OOM·실패 readback·reopen 검증 근거를 연결하며 구현 전에는 정식 E3를 실행하지 않는다.
+
+eligibility JSON의 `minimum_id`, `lease_fence`, `duplicate_stale_failed`, `cancel_oom`, `failure_readback`, `reopen`은 통과했을 때만 true로 기록한다. `source_commit`은 후보 검증 commit이고 `build_source_commits`와 `library_hashes`는 각각 `off`, `on`, `candidate`, `candidate_on`의 commit과 SHA-256을 담는다. `artifacts`는 실제 검증 파일 경로와 SHA-256의 대응이다. 등록은 실제 파일·binary hash와 commit 존재를 확인하고, 수집 직전 다시 검사한다. 이 표시는 필요한 실패 검증을 새로 수행하거나 미구현 후보를 통과시킨다는 뜻이 아니다.
+
+`--control` 등록은 16행·8작업·작은 본문의 수집기 검증용이며 효과 판단에 쓰지 않는다. [수집기 시험](../tests/test_common_cost.py)은 정상 결과·잘못된 변경·누락 지표·자료 변조·실패 뒤 중단/DB 보존·binary 변경·순서/대응·분석 재생성과 Python 수명을 검사한다. 별도 실패 주입 시험을 대신하지 않는다. 정식 수집은 clean 작업본과 계획 commit의 조상을 요구한다. 결과 보고는 원자료의 전체 완료와 동일한 분석 JSON을 확인한 뒤 수행한다.
+
 ### 요청 단위 내부 계측
 
 정상 빌드는 `BENCHMARK=0`이며 계측 매크로의 인자와 선언은 전처리 때 사라진다. 런타임 환경 변수로 켤 수 없다. `BENCHMARK=1`만 별도 `build-benchmark`에서 계측 소스를 링크한다. 이 모드에 `BUILD_DIR=build`를 주면 실패한다. 사용자 지정 디렉터리를 재사용해도 모드·컴파일러·플래그 fingerprint가 바뀌면 객체와 공유 라이브러리를 다시 만든다. 실제 플래그는 해당 디렉터리의 `.build-fingerprint`와 Make 출력에 남는다.
