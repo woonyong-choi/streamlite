@@ -405,6 +405,63 @@ Q5 대조는 빈 결과, page 0·음수·1,024 초과, payload 상한, metadata�
 
 검증기는 manifest에 적힌 hash만 검사하지 않고, 등록 일정·fixture 조합에서 필요한 파일을 도출해 누락을 먼저 거부한다. raw·fixture 등록·필수 데이터·worker/native 진단 로그가 대상이며, 존재하는 SQLite WAL/SHM·native lock은 부속 자료로 검사한다. 필수 목록·경로·hash와 fixture 등록을 대조한 뒤 원자료를 분석한다. 수집 뒤 생성한 분석 출력은 이 필수 집합에 넣지 않는다. 잘못된 경로·alias·symlink·중복 JSON key·digest도 거부하지만 전체 장부 교체에 대한 인증을 뜻하지 않는다.
 
+### pending 조회 수집의 첫 판정
+
+현재 COW runtime `9d70c9b4`에서 backlog 10,000건의 native 한 page 조회는 등록한 표본 범위의 메모리·지연 기준을 충족했다. 이는 persist-queue 1.1.0과 현재 호환 계층의 전체 `queue()` 복원 뒤 필요한 결과를 고르는 경로를 native page API와 비교한 결과다. 작은 backlog와 전체 순차 소비에는 시간 비용이 남고, caller가 모든 payload를 쌓으면 메모리도 backlog와 함께 증가한다. 원 소비자 교체와 새 WAL backend의 효과는 아직 확인하지 않았다.
+
+계획/source 조상 `c0cb4216ed75d608b9595d3dd2e01da662483e15`의 clean 작업본에서 기존 입력·기준을 유지해 1,728건을 수집했다. 정식 1,440건·사전 144건·진단 144건을 569.33초에 마쳤고 실패·미실행은 0건이었다. fixture 12개와 artifact hash 3,609개를 검증했다. macOS 26.5.2 arm64·CPython 3.9.6·SQLite 3.51.0과 등록한 vendor source·OFF/ON binary·driver를 유지했고, 새 빌드나 기본 backend 변경은 없었다. NumPy 1.26.4·SciPy 1.13.1의 등록 환경에서 CLI 분석 두 번은 SHA-256 `8a2cd02e4b3281373248e5617ee3b1423820ca18be1cc90f21c7422b66682fc3`으로 byte 동일했다. 원자료에서 모든 기대 digest와 주 비교 구간·메모리 증가 기준·96개 비교의 앞뒤 5회 교대를 별도로 계산해 같은 판정을 확인했다. 원자료와 실행 증거는 로컬 작업본에 보존했으며 공개 배포한 자료로 표시하지 않는다.
+
+아래 값은 native/기준군의 query wall·프로세스 RSS 대응 비에 대한 조정 구간 상한이다. 기준은 각각 1.05·0.75 이하다. 표의 16개 비교가 모두 통과해 전체 판정은 `support_sampled_scope`다. 중앙값·원 구간·세부 96cell은 재현한 분석 JSON에 남겼다. 신뢰구간 방법과 유한 표본의 한계는 위 사전 계획을 따른다.
+
+| body B | page | 과제 | 기준군 | wall 비 상한 | RSS 비 상한 |
+|---|---|---|---|---|---|
+| 256 | 16 | Q1 metadata | vendor | 0.087 | 0.519 |
+| 256 | 16 | Q1 metadata | compat | 0.003 | 0.599 |
+| 256 | 16 | Q2 payload | vendor | 0.070 | 0.517 |
+| 256 | 16 | Q2 payload | compat | 0.002 | 0.638 |
+| 256 | 100 | Q1 metadata | vendor | 0.328 | 0.518 |
+| 256 | 100 | Q1 metadata | compat | 0.013 | 0.591 |
+| 256 | 100 | Q2 payload | vendor | 0.458 | 0.529 |
+| 256 | 100 | Q2 payload | compat | 0.015 | 0.601 |
+| 4096 | 16 | Q1 metadata | vendor | 0.031 | 0.213 |
+| 4096 | 16 | Q1 metadata | compat | 0.004 | 0.238 |
+| 4096 | 16 | Q2 payload | vendor | 0.049 | 0.217 |
+| 4096 | 16 | Q2 payload | compat | 0.011 | 0.254 |
+| 4096 | 100 | Q1 metadata | vendor | 0.056 | 0.213 |
+| 4096 | 100 | Q1 metadata | compat | 0.010 | 0.227 |
+| 4096 | 100 | Q2 payload | vendor | 0.075 | 0.241 |
+| 4096 | 100 | Q2 payload | compat | 0.012 | 0.256 |
+
+작은 backlog의 Q1/Q2 시간은 설명 지표다. 아래 범위는 각 8cell의 wall 대응 중앙값 중 최소·최대이며 통합 효과나 새 채택 기준이 아니다. backlog 128·256B·page 100의 Q2는 vendor 대비 중앙값 10.065, 조정 구간 9.063–11.573이었다. 작은 입력에서도 항상 빨라졌다는 해석은 성립하지 않는다. 개별 cell의 조정 구간은 원 분석 JSON에 보존한다.
+
+| backlog | 기준군 | cell 중앙값 범위 | 중앙값이 1보다 큰 cell |
+|---|---|---|---|
+| 128 | vendor | 0.625–10.065 | 6/8 |
+| 128 | compat | 0.095–0.769 | 0/8 |
+| 1024 | vendor | 0.080–2.169 | 2/8 |
+| 1024 | compat | 0.012–0.104 | 0/8 |
+
+Q1·Q2·Q3의 12개 native 증가 비교도 모두 통과했다. backlog 128 대비 큰 입력에서 관측한 최대 증가는 요청 query ledger 2,976B·Python peak 331,695B·RSS 2,555,904B였다. 각각 고정한 1MiB·1MiB·16MiB 이하였다. 전체 worker RSS 최대는 93.48MiB, 진단 Python peak 최대는 49.25MiB였고 별도 native probe의 query/shared 요청 peak 최대는 68,530/2,550,110B였다. 이 값은 유한 입력의 관측이며 Python C API 전체의 할당 cap이나 OS 강제 상한을 구현했다는 뜻이 아니다.
+
+10,000건·4,096B body·page 100의 단일 진단에서 Q1 native는 역직렬화 0회, Q2는 100회·411,792B였다. 두 전체-list 기준군은 두 과제 모두 10,000회·41,198,894B를 복원했다. Q3 native는 전체 10,000건을 복원하면서 Python peak 2.08MiB·RSS 22.80MiB를 관측했다. Q4처럼 결과를 모두 유지하면 Python peak 47.41MiB·RSS 87.03MiB였고, vendor 49.25/93.48MiB·compat 47.47/87.27MiB와 가까워졌다. 이 진단값을 정식 비계측 효과의 신뢰구간이나 전체 allocator 보장으로 사용하지 않는다.
+
+메모리 지지는 전체 순차 소비의 속도 우위를 뜻하지 않는다. 10,000건 Q3의 vendor 대비 native wall 대응 중앙값과 조정 구간은 아래와 같았다. Q3 시간은 사전에 정한 설명 지표이며 이 결과를 본 뒤 채택 기준을 바꾸지 않았다.
+
+| body B | page | wall 대응 중앙값 | 조정 구간 |
+|---|---|---|---|
+| 256 | 16 | 12.718 | 10.667–19.865 |
+| 256 | 100 | 13.600 | 10.103–15.853 |
+| 4096 | 16 | 3.005 | 2.549–3.744 |
+| 4096 | 100 | 3.024 | 0.883–3.344 |
+
+같은 큰 본문·page 100의 native C 진단은 전체 순차 조회에서 101page·색인 탐침 30,101회·성공 pread 575,700,992B를 관측했다. 반환 payload는 41,198,894B였다. [행별 채우기](../../src/queue/ack_queue.c#L1095-L1116)는 note·created·payload를 각각 가져오므로 이 반복 경로는 후속 비용 후보다. metadata만 반환한 Q1도 성공 pread 3,301,376B를 기록했다. 반환·복사 bytes와 syscall 읽기는 서로 다른 값이며, OS cache를 거친 실제 장치 I/O로 환산하지 않는다. 계측 ON 진단을 비계측 시간의 비용 기여율로 사용하지 않는다. 반복 SQL과 열별 조회는 두 backend의 공통 실행 비용으로 남으며 WAL로 바꾸면 사라진다고 계산하지 않는다.
+
+원 소비자의 보관된 소스를 읽기만 하고 복구 loop의 AST를 합성 row producer에 적용한 8개 대조를 별도로 수행했다. 전체-list와 가상의 iterator producer 모두 비ACK request를 같은 사전에 유지했다. 1,024건 중 ACK 상태 256건을 뺀 768건·4,096B body 합계 3,145,728B가 producer 반환 뒤에도 남았고 caller가 사전을 비운 뒤 보유 항목 수가 0이 됐다. 이는 loop의 참조 유지 대조이며 실제 소비자 프로세스의 RSS·속도·native 통합 결과가 아니다. 기본 256건·논리 payload 64MiB admission은 process RSS 상한과 다르며, 복구 loop는 전체 복원 뒤 cleanup을 호출한다. 보관된 checkout의 다른 미커밋 변경과 실제 서비스는 건드리지 않았다.
+
+원 소비자의 `clear_acked_data(keep_latest=0)` 호출은 고정한 vendor 소스의 기본 `max_delete=1000`을 사용한다. 남은 ACK 이력이 있으면 전체 `queue()` 복원 뒤 상태를 걸러내므로 pending admission 256건을 저장된 전체 행 수의 상한으로 해석하지 않는다. 이 판단은 소스 감사이며 실제 보관 DB의 행 수나 실행 효과를 측정한 것은 아니다.
+
+큰 backlog에서 한 page가 필요한 호출에는 현재 native 목록 API의 표본 내 근거가 생겼다. 전체 request를 계속 보유하는 원 caller의 메모리 문제는 이 API로만 해결됐다고 판정하지 않는다. 기존 Q5 소규모 혼합 상태·중단·변환/serializer 오류·native 할당 실패·해제 회귀는 동일 소스와 고정 binary의 근거로 재사용했고, 큰 입력이나 실제 소비자 전체에 대한 새 장애 시험으로 확대하지 않았다. 현재 파일·ABI·기본 backend와 WAL/buffer/MVCC/early-locking 권고는 유지한다. 실제 writer와 정리·복구를 포함한 동등 buffered-COW 비교는 별도 미완료 과업이다.
+
 ### 동등한 보장과 관측값
 
 SQLite는 WAL/FULL·실제 연결 수·cache·checkpoint 설정을 기록하고 같은 상태기계와 원자성·fence·보존 계약을 검증한다. 일반 WAL의 writer 직렬화는 제품 대안의 제약으로 남기며 E5의 실제 병렬 writer 충족으로 세지 않는다. 새 다중 연결 실험은 [공식 WAL 문서](https://www.sqlite.org/wal.html#the_wal_reset_bug)가 명시한 WAL-reset 수정 포함 버전의 binary·source hash를 고정한다. 과거 버전의 결과와 새 비교를 합쳐 전후 개선으로 해석하지 않는다.

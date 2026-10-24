@@ -176,3 +176,9 @@ Observe baseline, query peak, held, released and closed memory separately: RSS c
 #239의 기존 branch를 같은 checkout에서 e028684f까지 fast-forward해 선행 기록을 보존한다. 수집기는 이미717줄이므로 자료 구조·hash·gzip 검증을 별도 실행 모듈 `bench/common_cost_artifacts.py`에 둔다. 새 등록은 이 모듈도 기준 source에 포함하며 pending source pin에도 추가한다. 과거 명시 source 처리는 현재 파일 목록 대신 해당 commit의 실제 common_cost 파일 목록과 등록 hash를 정확히 대조한다. 통계·수치 기준은 바꾸지 않는다.
 
 성공한 일정의 필수 raw·worker 로그·cache fixture 생성 로그/DB·각 case의 DB gzip 경로를 등록에서 도출한다. 누락·alias·잘못된 digest를 raw 통계 처리 전에 거부하고, raw의 archive 목록은 도출한 경로·gzip 역해시·해제 bytes·storage 합계·fixture hash와 대조한다. 새 collect는 API에 전달된 등록도 prefix의 JSON으로 보존하며 이미 있는 다른 내용은 덮지 않는다. helper 도입 전 control API는 등록 파일이 없을 수 있는 기존 형식으로 한정해 허용하고, 과거 정식 등록 파일과 현재 등록 파일은 필수다. 분석 출력이나 collect 로그를 필수 자료로 임의 편입하지 않는다. CP18-2 반례와 정상 cache/Python/pending control, 과거 Task15/17 byte 동일 재분석과 실패 자료를 확인한 뒤 이 경계에서 멈춘다.
+
+## Task 19 정식 수집과 소비자 감사 경계
+
+두 수리를 포함한 c0cb4216을 그대로 계획/source 조상으로 새 등록하고, 같은 checkout의 기존 #265 branch를 fast-forward해 전체1728건(정식1440건)을 수행한다. 기준·표본·backend·binary를 바꾸지 않는다. 기존 Q5 소규모 실패/수명 회귀는 입력/hash가 같은 근거로 재사용하고 큰 입력의 새 실패 시험으로 확대하지 않는다. 정식 분석은 두 번 재생성하고 모든 결과 digest·주 판정16개·증가 기준12개·앞뒤5회 교대를 별도 raw 계산으로 대조한다.
+
+소비자는 현재 보관된 checkout의 runtime source를 읽기만 한다. 그 파일은 HEAD와 같지만 다른8개 dirty 파일과 보관 상태를 유지한다. 실제 서비스나 소비자 프로젝트를 실행하지 않고, 원 복구 loop의 AST만 별도 합성 row producer에 적용한8개 대조로 참조 유지 의미를 확인한다. 이 대조는 RSS·속도나 정식 표본이 아니다. 기본256건·논리 payload64MiB admission과 복구·프로세스 메모리 한도를 구분한다. 원 소비자의 전체 request 사전 축적은 page API만으로 없어지지 않으며 변경은 승인하지 않는다. Q1/Q2와 Q1–Q3 메모리 기준의 표본 내 지지는 Q4 축적·전체 순차 소비 비용·새 backend/실제 writer 우위와 구분한다. WAL 권고와 동등 buffered-COW 비교를 유지한다.

@@ -321,3 +321,5 @@ build/check-env/bin/python bench/pending_query.py analyze --prefix build/pending
 `verify`는 등록 계획·일정에서 필수 raw·등록 JSON·fixture 데이터·생성 로그·각 worker와 native 진단 로그를 계산해 hash 목록의 누락부터 거부한다. 기재한 파일은 허용된 절대 정규 경로여야 하며 alias·symlink·중복 JSON key와 잘못된 digest를 거부한다. fixture 등록 두 사본의 경로·데이터 hash도 일치해야 한다. 수집 때 남은 SQLite WAL/SHM과 native lock은 별도로 hash를 확인한다. 수집 뒤 저장한 분석 출력은 필수 수집 자료로 추가하지 않는다. 이 검사는 자료의 완전성과 변경을 확인하며, 전체 장부를 교체하는 행위에 대한 인증은 제공하지 않는다.
 
 [수집기 회귀](../tests/test_pending_query.py)는 정상 결과·손상 digest·행 수·계측 혼입·변경된 입력·시간 초과·실패 보존, 혼합 상태·page 전환·수명·변환/serializer 오류를 검사한다. [native 실패 대조](../tests/test_pending_query_native.c)는 같은 합성 fixture를 인자로 받아 payload malloc·session reserve 실패 뒤 부분 결과·누수와 다음 조회를 확인한다. 제품 코드·현재 파일·기본 backend와 소비 프로젝트는 이 명령으로 교체하지 않는다.
+
+[첫 판정](design/streamlite.md#pending-조회-수집의-첫-판정)은 계획/source `c0cb4216`에서 등록한 전체 1,728건(정식 1,440건)을 사용한다. 보존 자료가 있는 이 로컬 작업본에서는 위 `verify`·`analyze`의 접두사에 `build/task19-pending-formal`을 지정하면 같은 분석을 재생성한다. 새 효과를 수집할 때는 기존 접두사를 재사용하지 않는다. 한 page의 표본 내 메모리·지연 지지, 전체 순차 소비의 시간 비용, caller 전체 축적과 실제 소비자 미교체를 함께 읽는다.
