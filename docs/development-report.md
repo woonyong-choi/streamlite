@@ -536,10 +536,12 @@ WAL 권고로 새로 부담하는 것은 redo·full-page image·공유 frame·�
 | 기본 개발 방향 권고, 미구현 | StreamLite page/redo WAL·buffer pool·MVCC·조기 잠금·실제 독립 writer | 설계 G1–G6와 복구·자원·전체 비용 검증, 기존 제품 전환은 별도 판단 |
 | 비교 후보 유지 | buffered COW와 동등한 조기 잠금·공통 개선 | 정리·복구 포함 같은 조건의 tail·공정성·전체 자원, WAL 권고의 반증 여부 |
 | 검토 중 | 공개 prepared API | binding·schema·소유권·예산 계약과 공개 범위 확정 |
-| 기준 코드에 없음, 후속 내부 구현·회귀 확인 | 제한 SQL 문장·준비 결과 cache, 기본 OFF | hit/miss·반복 없는 SQL·workspace 네 조건의 비계측 효과와 채택·제품 통합 판정 |
-| 후속 내부 구현·회귀 확인 | 거래별 catalog 재사용·최신 COW 사본 보유, 기본 OFF | cache/workspace 네 조건의 비계측 효과·최고 메모리·정리 포함 수명주기와 채택 판정 |
+| 후속 내부 구현·회귀와 첫 실측, 채택 보류 | 제한 SQL 문장·준비 결과 cache, 기본 OFF | 넓은 처리량·tail/CPU 구간과 RSS 구간 퇴화를 보존, 독립 추가 근거와 제품 통합 판정 |
+| 후속 내부 구현·회귀와 첫 실측, 채택 보류 | 거래별 catalog 재사용·최신 COW 사본 보유, 기본 OFF | 네 조건의 보류 근거와 장기 정리 포함 수명주기, H4 barrier 비용·최종 채택 판정 |
 | 요구 미충족 | 현재 메모리 우위·기존 큐 대비 속도·미사용 전용 비용 배제 | 원 소비 경로 메모리·정상/실패 계약별 비교와 lifecycle 비용 분리 |
 | 미검증 | 새 엔진의 총 편익·장기 INSERT/UPDATE/DELETE 효율 | SQLite 직접 ACK 대안의 기능·개발·검증·운영 비용, cleanup 포함 수명주기 비교 |
+
+2026-10-24의 [공통 비용 첫 실측](design/streamlite.md#공통-비용-수집의-첫-판정)은 수리한 계획 commit `94552080`의 단일 writer COW 비교다. 예정 576건을 모두 완료하고 원자료 검증·같은 분석 JSON 재생성을 통과했지만 cache와 workspace는 사전 보호 기준에서 모두 보류했다. 내부 clone·pwrite 감소를 전체 앱의 개선이나 새 WAL 엔진의 성능으로 바꾸지 않는다. 다음 비용 가설은 같은 내구성과 barrier 횟수 아래 commit barrier의 대기·CPU를 분리하는 H4다. 기존 WAL 권고, 동등한 buffered-COW 대조와 실제 독립 writer 요구는 유지한다. 세부 원자료의 공개 발행·제품 통합은 남아 있다.
 
 ### 독자가 확인해야 할 미확인 범위
 
