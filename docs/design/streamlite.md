@@ -382,6 +382,10 @@ page 번호가 재사용되면 디스크 page가 재생 중인 record보다 새 
 
 이 내부 분석기는 아래 본문 배치를 사용한다. 정수는 앞의 little-endian 규칙을 따르고 예약 bytes는 0이다. ADMIT의 operation digest와 RESULT_CHUNK의 결과 digest는 32B 참조 값이며 분석기는 SQL 선언이나 실제 응답 bytes의 SHA-256을 계산하지 않는다. 이 값을 서로 대조한 것만으로 본문 무결성을 확인했다고 표시하지 않는다.
 
+파일 transport는 create/open에서 디렉터리 fd를 고정하고 segment마다 device/inode와 열린 fd를 보유한다. 상대 prefix로 연 뒤 cwd가 바뀌어도 inventory·scan·회전·force·tail 수리는 그 디렉터리를 사용한다. 절대 경로 문자열만 보존하는 안은 이후 같은 경로가 다른 디렉터리를 가리킬 수 있어 채택하지 않는다. 보유 fd는 inode가 재사용되는 동안 같은 식별자로 오인하는 것을 막으며 최대 64개 segment에 한정한다. 디렉터리·lock/active·임시 scan fd의 비용도 별도로 남는다.
+
+각 작업의 진입과 append·force·scan·회전·tail 수리가 성공하기 전에 보유 segment의 경로·inode를 대조한다. 누락·교체를 관측하면 IO와 poison으로 차단하며, 다른 파일을 동기화한 결과로 durable LSN을 올리지 않는다. 이 검사는 외부 파일 변경을 허용하는 프로토콜이나 악의적 경로 경합의 원자적 배제가 아니다. 외부 제자리 편집과 파일 교체는 지원하지 않는다. [파일 소유권 시험](../../tests/test_candidate_wal_files.c)은 cwd 변경 뒤 같은 이름·다른 UUID의 파일, 같은 UUID·같은 bytes의 inode 교체와 force 도중 교체를 대조한다. fd 보유와 작업별 metadata 조회 비용은 후속 총비용 비교에 포함한다.
+
 | record | 분석하는 본문 배치 | 검사 범위 |
 |---|---|---|
 | ADMIT, 64B | 요청 epoch u64·nonce 16B·operation digest 32B·결과 상한 u64 | 첫 record, 중복 요청 ID 거절, 1MiB 이하 상한 |

@@ -116,18 +116,24 @@ TEST_BINS = $(addprefix $(BUILD_DIR)/,$(BASIC_TESTS))
 CANDIDATE_WAL_OBJS = $(BUILD_DIR)/storage/candidate_wal.o $(BUILD_DIR)/storage/candidate_wal_format.o
 $(BUILD_DIR)/test_candidate_wal: $(BUILD_DIR)/tests/test_candidate_wal.o $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
 $(BUILD_DIR)/test_candidate_wal_witness: $(BUILD_DIR)/tests/test_candidate_wal_witness.o $(BUILD_DIR)/storage/candidate_wal_witness.o $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
+$(BUILD_DIR)/test_candidate_wal_files: $(BUILD_DIR)/tests/test_candidate_wal_files.o $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
 
 CANDIDATE_WAL_TEST_TARGETS = $(addprefix test-candidate-wal-,0 1 2 3 4 5 6 7 8 9 10 11)
+CANDIDATE_WAL_REPORT_PREFIX ?= $(BUILD_DIR)/fault/test_candidate_wal
 .PHONY: test-candidate-wal $(CANDIDATE_WAL_TEST_TARGETS)
 test-candidate-wal: $(CANDIDATE_WAL_TEST_TARGETS)
 
 $(CANDIDATE_WAL_TEST_TARGETS): test-candidate-wal-%: $(BUILD_DIR)/test_candidate_wal
-	$(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_candidate_wal-$*.json -- ./$(BUILD_DIR)/test_candidate_wal "" $*
+	$(TEST_RUNNER) --report $(CANDIDATE_WAL_REPORT_PREFIX)-$*.json -- ./$(BUILD_DIR)/test_candidate_wal "" $*
 
-.PHONY: test-candidate-wal-witness
+.PHONY: test-candidate-wal-witness test-candidate-wal-files
 CANDIDATE_WITNESS_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_witness.json
 test-candidate-wal-witness: $(BUILD_DIR)/test_candidate_wal_witness
 	$(TEST_RUNNER) --report $(CANDIDATE_WITNESS_REPORT) -- ./$(BUILD_DIR)/test_candidate_wal_witness
+
+CANDIDATE_WAL_FILES_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_files.json
+test-candidate-wal-files: $(BUILD_DIR)/test_candidate_wal_files
+	$(TEST_RUNNER) --report $(CANDIDATE_WAL_FILES_REPORT) -- ./$(BUILD_DIR)/test_candidate_wal_files
 
 $(BUILD_DIR)/test_record: $(BUILD_DIR)/tests/test_record.o $(BUILD_DIR)/storage/record.o $(BUILD_DIR)/storage/record_page.o
 $(BUILD_DIR)/test_overflow: $(BUILD_DIR)/tests/test_overflow.o $(BUILD_DIR)/storage/overflow.o $(BUILD_DIR)/storage/checksum.o $(BUILD_DIR)/storage/record_page.o
@@ -168,7 +174,7 @@ test-result: $(BUILD_DIR)/test_result $(BUILD_DIR)/test_result_fault
 	$(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_result.json -- ./$(BUILD_DIR)/test_result
 	$(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_result_fault.json -- ./$(BUILD_DIR)/test_result_fault
 
-$(TEST_BINS) $(BUILD_DIR)/test_overflow_file $(BUILD_DIR)/test_value_sqlite $(BUILD_DIR)/test_candidate_wal $(BUILD_DIR)/test_candidate_wal_witness:
+$(TEST_BINS) $(BUILD_DIR)/test_overflow_file $(BUILD_DIR)/test_value_sqlite $(BUILD_DIR)/test_candidate_wal $(BUILD_DIR)/test_candidate_wal_witness $(BUILD_DIR)/test_candidate_wal_files:
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD_DIR)/storage/record_fault.o: src/storage/record.c

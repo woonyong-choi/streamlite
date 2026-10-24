@@ -216,3 +216,9 @@ Task22의 상태/형식·18개 실패 oracle과 제한 상태 모형은 계약 �
 ## Task 23 semantic prerequisite
 
 23a의 decoder는 body를 검증하지 않으며 version/overflow page·buffer가 아직 없다. 원래23의 영속 결과를 WAL에 중복 inline 저장해 우회하지 않는다. 선행23b는 실제 WAL의 transaction chain·physical group·COMMIT/ABORT witness와 결과 참조 형식을 검증하는 읽기 전용 분석기를 구현한다. 본문·page redo·ID 예약/epoch/checkpoint의 검증이 없는 witness를 APPLIED나 일반 DB 개방으로 내보내지 않는다. 원래23의 영속 결과·복구 조정자와24–39를 유지한다. 22/23a/23b 뒤 추가checkpoint23b를 두고 기존23/24 checkpoint도 유지한다.
+
+## Task 23c file ownership repair
+
+checkpoint23b의 실제 반례는 상대 prefix와 cwd가 바뀌면 append한 inode 대신 다른 파일을 force하고도 내구 LSN을 올리는 것이다. 디렉터리 fd를 create/open에서 한 번 획득하고 이후 openat·독립 directory stream·directory fsync를 그 fd에 고정한다. 절대 경로 문자열만 보존하는 안은 같은 경로의 디렉터리 별칭 변경을 배제하지 못하므로 선택하지 않는다. 각 segment의 device/inode와 열린 fd를 최대64개 보유해 inode 재사용의 ABA를 막고 경로 누락·교체를 관측하면 IO와 poison으로 차단한다. 작업 전후 대조와 force 성공 뒤 재검사 전에 durable watermark를 올리지 않는다. 외부 제자리 변경·악의적 namespace 교체의 원자적 배제는 지원하지 않는다.
+
+8개 cwd 조건·12개 inode 누락/교체 조건·fd 수명과 기존360절단/10237witness를 별도 prefix/report로 검증한다. 기존 build fingerprint·원 optimized/regression binary와 원자료는 덮지 않는다. 같은 source인 checksum/format object를 재사용하고 현재 파일 모듈과 시험만 새 output에 빌드하며 실제 Make의 재사용 인자를 근거에 남긴다. fd 보유·metadata 조회는 이후 비교 비용이다. 이번 수리는 거래 commit/영속 본문·복구 활성화·실제writer·제품 채택이 아니며, 끝나면 원래23과 모든 후속 요구/checkpoint를 그대로 진행한다.

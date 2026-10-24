@@ -18,9 +18,8 @@
 #define INTERRUPT_LIMIT 32u
 
 struct candidate_wal {
-    char prefix[PATH_MAX];
-    char directory[PATH_MAX];
     char stem[NAME_MAX + 1];
+    struct { dev_t device; ino_t inode; int fd; bool is_bound; } files[MAX_SEGMENTS];
     uint8_t uuid[16];
     uint8_t *buffer;
     candidate_wal_io_t io;
@@ -33,6 +32,7 @@ struct candidate_wal {
     unsigned tail_segment;
     int lock_fd;
     int active_fd;
+    int directory_fd;
     pid_t process_id;
     bool is_poisoned;
     bool is_scanning;
@@ -60,11 +60,33 @@ static bool is_zero(const uint8_t *p, size_t size)
     return true;
 }
 
+static bool segment_name(const candidate_wal_t *w, unsigned id, char out[NAME_MAX + 1])
+{
+    int n = snprintf(out, NAME_MAX + 1, "%s.wal.%016" PRIx64, w->stem, (uint64_t)id);
+    return n > 0 && n <= NAME_MAX;
+}
+
+static bool has_owned_files(const candidate_wal_t *w)
+{
+    for (unsigned id = 0; id < MAX_SEGMENTS; id++) {
+        if (!w->files[id].is_bound) continue;
+        char name[NAME_MAX + 1];
+        struct stat st;
+        if (!segment_name(w, id, name)) return false;
+        if (fstatat(w->directory_fd, name, &st, AT_SYMLINK_NOFOLLOW) != 0) return false;
+        if (!S_ISREG(st.st_mode)) return false;
+        if (st.st_dev != w->files[id].device || st.st_ino != w->files[id].inode) return false;
+    }
+    return true;
+}
+
 static candidate_wal_status_t check_access(candidate_wal_t *w)
 {
     if (w == NULL || w->is_scanning) return CANDIDATE_WAL_INVALID;
     if (w->process_id != getpid()) return CANDIDATE_WAL_FORKED;
-    return w->is_poisoned ? CANDIDATE_WAL_POISONED : CANDIDATE_WAL_OK;
+    if (w->is_poisoned) return CANDIDATE_WAL_POISONED;
+    if (!has_owned_files(w)) { w->is_poisoned = true; return CANDIDATE_WAL_IO; }
+    return CANDIDATE_WAL_OK;
 }
 
 static candidate_wal_status_t poison(candidate_wal_t *w)
@@ -114,27 +136,38 @@ static candidate_wal_status_t sync_fd(candidate_wal_t *w, int fd)
 
 static candidate_wal_status_t sync_directory(candidate_wal_t *w)
 {
-    int fd = open(w->directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (fd < 0) return CANDIDATE_WAL_IO;
-    candidate_wal_status_t status = sync_fd(w, fd);
-    int saved = errno;
-    if (close(fd) != 0 && status == CANDIDATE_WAL_OK) return CANDIDATE_WAL_IO;
-    errno = saved;
-    return status;
+    return sync_fd(w, w->directory_fd);
 }
 
 static int open_segment(candidate_wal_t *w, unsigned id, int flags)
 {
-    char path[PATH_MAX];
-    int n = snprintf(path, sizeof(path), "%s.wal.%016" PRIx64, w->prefix, (uint64_t)id);
-    if (n < 0 || (size_t)n >= sizeof(path)) { errno = ENAMETOOLONG; return -1; }
-    return open(path, flags | O_CLOEXEC | O_NOFOLLOW, 0600);
+    char name[NAME_MAX + 1];
+    if (id >= MAX_SEGMENTS || !segment_name(w, id, name)) { errno = ENAMETOOLONG; return -1; }
+    int fd = openat(w->directory_fd, name, flags | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    if (fd < 0) return -1;
+    struct stat st;
+    bool is_valid = fstat(fd, &st) == 0;
+    if (is_valid) is_valid = S_ISREG(st.st_mode);
+    if (is_valid && w->files[id].is_bound)
+        is_valid = st.st_dev == w->files[id].device && st.st_ino == w->files[id].inode;
+    if (!is_valid) { close(fd); errno = EIO; return -1; }
+    if (!w->files[id].is_bound) {
+        int owned = fcntl(fd, F_DUPFD_CLOEXEC, 0);
+        if (owned < 0) { int saved = errno; close(fd); errno = saved; return -1; }
+        w->files[id].fd = owned;
+    }
+    w->files[id].device = st.st_dev;
+    w->files[id].inode = st.st_ino;
+    w->files[id].is_bound = true;
+    return fd;
 }
 
 static candidate_wal_status_t inventory(candidate_wal_t *w, unsigned *count)
 {
-    DIR *dir = opendir(w->directory);
-    if (dir == NULL) return CANDIDATE_WAL_IO;
+    int fd = openat(w->directory_fd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return CANDIDATE_WAL_IO;
+    DIR *dir = fdopendir(fd);
+    if (dir == NULL) { close(fd); return CANDIDATE_WAL_IO; }
     bool seen[MAX_SEGMENTS] = {false};
     size_t stem_bytes = strlen(w->stem);
     unsigned highest = 0;
@@ -341,6 +374,7 @@ candidate_wal_status_t candidate_wal_scan(candidate_wal_t *w, candidate_wal_visi
         if (close(fd) != 0 && status == CANDIDATE_WAL_OK) status = CANDIDATE_WAL_IO;
     }
     w->is_scanning = false;
+    if (status == CANDIDATE_WAL_OK && !has_owned_files(w)) status = CANDIDATE_WAL_IO;
     if (status == CANDIDATE_WAL_OK && w->info.valid_end_lsn < saved.durable_end_lsn)
         status = CANDIDATE_WAL_CORRUPT;
     if (status == CANDIDATE_WAL_OK && w->info.highest_owner_epoch > w->owner_epoch) status = CANDIDATE_WAL_STALE;
@@ -384,15 +418,12 @@ static candidate_wal_status_t allocate_wal(const char *prefix, const candidate_w
     w->memory = memory;
     w->lock_fd = -1;
     w->active_fd = -1;
+    w->directory_fd = -1;
     w->process_id = getpid();
     w->owner_epoch = options->owner_epoch;
     w->max_bytes = max_bytes;
     memcpy(w->uuid, options->uuid, 16);
-    strcpy(w->prefix, prefix);
     strcpy(w->stem, stem);
-    if (slash == NULL) strcpy(w->directory, ".");
-    else if (slash == prefix) strcpy(w->directory, "/");
-    else memcpy(w->directory, prefix, (size_t)(slash - prefix));
     w->io = io;
     w->buffer = memory.allocate(memory.context, CANDIDATE_WAL_RECORD_BYTES);
     if (w->buffer == NULL) {
@@ -401,6 +432,12 @@ static candidate_wal_status_t allocate_wal(const char *prefix, const candidate_w
     }
     w->info.resident_bytes = sizeof(*w) + CANDIDATE_WAL_RECORD_BYTES;
     *out = w;
+    char directory[PATH_MAX] = {0};
+    if (slash == NULL) strcpy(directory, ".");
+    else if (slash == prefix) strcpy(directory, "/");
+    else memcpy(directory, prefix, (size_t)(slash - prefix));
+    w->directory_fd = open(directory, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (w->directory_fd < 0) { candidate_wal_close(out); return CANDIDATE_WAL_IO; }
     return CANDIDATE_WAL_OK;
 }
 
@@ -431,6 +468,7 @@ candidate_wal_status_t candidate_wal_create(const char *prefix, const candidate_
     }
     if (status == CANDIDATE_WAL_OK) status = sync_fd(w, w->active_fd);
     if (status == CANDIDATE_WAL_OK) status = sync_directory(w);
+    if (status == CANDIDATE_WAL_OK && !has_owned_files(w)) status = CANDIDATE_WAL_IO;
     if (status != CANDIDATE_WAL_OK) { candidate_wal_close(out); return status; }
     w->position = 64;
     w->info.valid_end_lsn = 64;
@@ -482,6 +520,7 @@ static candidate_wal_status_t rotate(candidate_wal_t *w)
     if (write_full(w, w->buffer, 64, 0) != CANDIDATE_WAL_OK) return poison(w);
     if (sync_fd(w, w->active_fd) != CANDIDATE_WAL_OK) return poison(w);
     if (sync_directory(w) != CANDIDATE_WAL_OK) return poison(w);
+    if (!has_owned_files(w)) return poison(w);
     w->position = (uint64_t)next * CANDIDATE_WAL_SEGMENT_BYTES + 64;
     w->info.segments++;
     w->info.valid_end_lsn = w->position;
@@ -513,6 +552,7 @@ candidate_wal_status_t candidate_wal_append(candidate_wal_t *w, const candidate_
     if (status != CANDIDATE_WAL_OK) return status;
     if (write_full(w, w->buffer, total, w->position % CANDIDATE_WAL_SEGMENT_BYTES) != CANDIDATE_WAL_OK)
         return poison(w);
+    if (!has_owned_files(w)) return poison(w);
     w->position += total;
     w->info.records++;
     w->info.highest_owner_epoch = w->owner_epoch;
@@ -537,6 +577,7 @@ candidate_wal_status_t candidate_wal_force(candidate_wal_t *w, uint64_t through_
         if (status != CANDIDATE_WAL_OK) return poison(w);
     }
     if (w->needs_force_all && sync_directory(w) != CANDIDATE_WAL_OK) return poison(w);
+    if (!has_owned_files(w)) return poison(w);
     w->needs_force_all = false;
     w->info.durable_end_lsn = w->info.valid_end_lsn;
     return CANDIDATE_WAL_OK;
@@ -557,6 +598,7 @@ candidate_wal_status_t candidate_wal_repair_tail(candidate_wal_t *w)
         offset = 64;
     }
     if (sync_fd(w, w->active_fd) != CANDIDATE_WAL_OK) return poison(w);
+    if (!has_owned_files(w)) return poison(w);
     w->position = (uint64_t)w->tail_segment * CANDIDATE_WAL_SEGMENT_BYTES + offset;
     w->info.valid_end_lsn = w->position;
     w->info.has_tail = false;
@@ -581,6 +623,9 @@ candidate_wal_status_t candidate_wal_close(candidate_wal_t **wal)
         if (close(w->active_fd) != 0) status = CANDIDATE_WAL_IO;
     }
     if (w->lock_fd >= 0 && close(w->lock_fd) != 0) status = CANDIDATE_WAL_IO;
+    for (unsigned id = 0; id < MAX_SEGMENTS; id++)
+        if (w->files[id].is_bound && close(w->files[id].fd) != 0) status = CANDIDATE_WAL_IO;
+    if (w->directory_fd >= 0 && close(w->directory_fd) != 0) status = CANDIDATE_WAL_IO;
     candidate_wal_memory_t memory = w->memory;
     if (w->buffer != NULL) memory.release(memory.context, w->buffer, CANDIDATE_WAL_RECORD_BYTES);
     memory.release(memory.context, w, sizeof(*w));

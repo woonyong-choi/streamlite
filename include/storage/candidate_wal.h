@@ -81,6 +81,8 @@ candidate_wal_status_t candidate_wal_encode(const uint8_t uuid[16], const candid
 /* payload는 input을 빌리며 정확한 frame 한 개만 받는다. */
 candidate_wal_status_t candidate_wal_decode(const uint8_t uuid[16], const uint8_t *input, size_t size,
                                           candidate_wal_record_t *out);
+/* 디렉터리와 segment inode를 열어 보유하며 cwd 변경은 이후 파일 해석을 바꾸지 않는다. */
+/* 보유 segment의 경로 누락·교체를 관측하면 IO 뒤 poison으로 차단하며 외부 파일 변경은 미지원이다. */
 candidate_wal_status_t candidate_wal_create(const char *prefix, const candidate_wal_options_t *options,
                                           candidate_wal_t **out);
 /* 열기는 파일을 바꾸지 않으며 불완전 마지막 tail도 info에 남긴다. */

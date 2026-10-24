@@ -498,6 +498,8 @@ FFI에도 SQL result에서 native payload로, ctypes에서 Python bytes로 복�
 
 로컬 후속 구현의 [분할 WAL transport](../include/storage/candidate_wal.h)는 codec·파일 append/force·재시작 scan을 제공한다. [실파일 시험](../tests/test_candidate_wal.c)의 tail 절단·손상·짧은 I/O·실패·process 종료 검사는 이 계층의 근거다. 기존 COW 제품의 변경이나 WAL 성능 우위로 쓰지 않는다.
 
+파일 소유권 검토에서는 상대 경로로 append한 뒤 cwd가 바뀌면 다른 파일을 fsync하고도 내구 LSN을 올리는 결함을 재현했다. 디렉터리 fd와 segment inode·열린 fd를 보유하고 작업 전후 누락·교체를 거절하도록 수리했다. [회귀 시험](../tests/test_candidate_wal_files.c)은 cwd 변경 8조건과 파일 누락·교체 12조건에서 올바른 barrier 또는 IO·poison·내구 LSN 보존을 확인한다. 이 추가 fd와 metadata 조회는 WAL의 비용이며 후속 비교에서 제외하지 않는다. 외부 파일 변경·악의적 경로 경합을 지원하는 복구 프로토콜로 확대하지 않는다.
+
 뒤따른 로컬 [witness 분석](../include/storage/candidate_wal_witness.h)은 transaction chain·terminal·CSN 순서, 완성 image/delta group과 commit 의존 참조를 실제 WAL 파일에서 대조한다. 결과 본문은 별도 version/overflow page에 보관한다는 계약을 유지하므로 참조 digest만으로 APPLIED를 반환하지 않는다. [전용 시험](../tests/test_candidate_wal_witness.c)의 record 경계·재서명 손상·자원/읽기 실패 검사는 부분 분석의 근거다. ALLOC/FREE·ID/epoch·checkpoint와 data redo, 영속 본문·복구 조정자·실제 writer·총비용 판정은 남아 있다.
 
 예를 들어 같은 leaf의 서로 다른 두 행을 두 transaction이 바꾸더라도, 나중 transaction이 옛 root를 그대로 게시하면 먼저 확정한 변경을 잃을 수 있다. 쓰기 잠금만 없애는 변경으로는 이 문제를 풀지 못한다. 현재 `database_work_begin`은 작업 종료까지 배타 잠금을 유지한다. 따라서 현재의 단일 writer COW와, 검증·병합을 추가할 다중 writer COW는 같은 구현이 아니다. 이 설명은 현재 코드와 제안의 대조이며 동시 갱신 실험 결과가 아니다. ([현재 잠금](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1163-L1172), [작업 종료](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1229-L1251), [리뉴얼 구조](design/streamlite.md#다중-writer의-검증병합게시))

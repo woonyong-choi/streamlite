@@ -87,16 +87,24 @@ E3 비교의 baseline·candidate와 각 계측 ON은 같은 소스와 cache/work
 [candidate WAL](../include/storage/candidate_wal.h)은 내부 비교용 format1 transport다. 기본 라이브러리·SQL·ACK의 object 목록에는 넣지 않는다. [codec](../src/storage/candidate_wal_format.c)은 record의 길이·padding·CRC32C·UUID·LSN을 검사하고 [파일 모듈](../src/storage/candidate_wal.c)은 4MiB segment와 명시적 force·재시작 scan·tail 수리를 제공한다. record 본문과 transaction/group/commit의 의미 판정·영속 요청 결과 조회는 별도 구현 대상이다.
 
 ```sh
-make BUILD_DIR=build-regression test-candidate-wal TEST_TIMEOUT=120
+make BUILD_DIR=build-regression test-candidate-wal TEST_TIMEOUT=120 CANDIDATE_WAL_REPORT_PREFIX=build-regression/fault/wal-check
 ```
 
 [전용 시험](../tests/test_candidate_wal.c)은 작은 두 번째 frame의 360개 절단 지점과 원본을 남긴 별도 수리 파일, checksum을 다시 맞춘 잘못된 필드·기록 순서, segment 경계·누락·owner 역행, 짧은 I/O·EINTR·0바이트·동기화/할당 실패를 검사한다. 실제 자식 process는 force 직전·직후 종료와 성공 확인 뒤 SIGKILL을 구분한다. 합성 fixture를 지우지 않으며 기본 prefix에 process ID를 넣어 기존 파일 덮어쓰기를 피한다. 목표 작업의 반복 검증은 별도 prefix·report로 보존한다.
 
-Make target은 절단 지점을 30개씩 12개 실행으로 나누며 모두 성공해야 통과한다. 첫 실행에는 나머지 경계·실패·process 시험도 포함한다. 각 native 실행은 90초, runner는 위 명령에서 120초로 제한한다. 파일 수리에 필요한 fsync가 느린 호스트에서 360개를 한 process에 몰아 실패하는 경우에도 입력을 빼거나 한도를 늘려 통과시키지 않는다. 각 report와 부분 fixture를 남긴다.
+Make target은 절단 지점을 30개씩 12개 실행으로 나누며 모두 성공해야 통과한다. 첫 실행에는 나머지 경계·실패·process 시험도 포함한다. 반복 실행은 `CANDIDATE_WAL_REPORT_PREFIX`에 아직 없는 report 접두사를 지정한다. 각 native 실행은 90초, runner는 위 명령에서 120초로 제한한다. 파일 수리에 필요한 fsync가 느린 호스트에서 360개를 한 process에 몰아 실패하는 경우에도 입력을 빼거나 한도를 늘려 통과시키지 않는다. 각 report와 부분 fixture를 남긴다.
 
 open은 파일을 바꾸지 않는다. 마지막 불완전 tail이 있으면 append/force를 거절하고 호출자가 원본을 보존한 뒤 명시적으로 수리해야 한다. 완전 길이의 checksum 손상과 중간 손상은 CORRUPT로 차단한다. 실패한 append/force 또는 scan 오류 뒤 handle은 poison이며 close/reopen이 필요하다. scan visitor가 중간에 멈춘 경우는 poison과 구분한다.
 
 이 계층의 durable LSN은 확인한 파일 barrier 범위다. COMMIT 종류의 frame이 있다는 사실만으로 APPLIED를 반환하지 않는다. owner epoch 검사는 숫자의 역행을 막으며 새 소유권 인수·사망 복구를 제공하지 않는다. SQL·callback 재실행, page writeback·checkpoint·MVCC·실제 writer·장치 전원 차단과 lost-write 보장은 이 시험 범위가 아니다. 고정 record buffer와 callback allocator의 계상도 전체 앱 RSS·프로세스 간 128MiB 상한 구현으로 확대하지 않는다.
+
+[파일 소유권 시험](../tests/test_candidate_wal_files.c)은 create/reopen·회전·tail 수리에서 상대/절대 경로와 cwd 변경을 대조한다. 실제 fsync fd의 inode가 원 파일과 같은지 검사하고 동명의 다른 UUID 파일을 보존한다. 같은 UUID·bytes로 바꾼 segment와 force 중 교체는 IO 뒤 poison이며 내구 LSN이 그대로여야 한다. 반복 scan·성공/실패 close의 열린 fd 수도 대조한다. transport는 디렉터리와 최대 64개 segment의 fd를 보유하며 외부 파일 변경은 지원하지 않는다.
+
+```sh
+make BUILD_DIR=build-regression test-candidate-wal-files TEST_TIMEOUT=120 CANDIDATE_WAL_FILES_REPORT=build-regression/fault/wal-files-check.json
+```
+
+반복 실행은 아직 없는 report 경로를 지정한다. 이 시험은 파일 barrier 대상과 오류 뒤 상태를 확인하며 거래 복구·실제 writer·성능 우위를 입증하지 않는다.
 
 [witness 분석기](../include/storage/candidate_wal_witness.h)는 같은 파일을 읽어 transaction chain·terminal, image/delta group과 결과 참조를 대조한다. [전용 시험](../tests/test_candidate_wal_witness.c)은 열린 A 중 B의 commit, A의 abort 뒤에도 남는 완성 group, 미완성 group·18개 record 경계, 외부 CRC를 다시 맞춘 손상 34개, 중복 ID/terminal·교차 group, 빈/두 chunk 참조·한도/OOM·뒤쪽 읽기 오류를 확인한다.
 
