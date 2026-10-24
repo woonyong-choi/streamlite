@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current next required boundary is the additional checkpoint after Task 19; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the additional after19 checkpoint.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. Current first incomplete task is Task 20; original requirements/checkpoints remain, with evidence-driven Task18a/18b and the completed additional after19 checkpoint.
 
 ## Initialization only — 2026-10-24
 
@@ -504,12 +504,16 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Additional checkpoint after Task 19
 
-- Status: incomplete
-- Work performed: not started.
-- Verification evidence: required — Task18a/18b/19의 필수 자료 coverage·과거 자료 보존/처리·정식 등록·실제 소비자 읽기 감사·원래 요구 충족을 검토한다. tracking-only checkpoint이며 직접 implementation을 고치지 않는다.
-- Remaining risk: 수리 두 과업을 추가했으므로 세 ordinary boundary 뒤 별도 검토가 필요하다. 기존 after21과 모든 원래 checkpoint를 없애지 않는다.
-- Next step: Task19 task-boundary commit 다음 continuation에 수행한 뒤 Task20 또는 검증한 수리로 이어간다.
-- Commit status: no checkpoint commit attempted.
+- Status: complete (범위·자료 완전성·재현·판정 감사; 새 구현·효과 표본이나 원 소비자 해결 완료와 구분)
+- Work performed: 직전 turn은 progress다. d9a17284의 Task19 marker·c0cb4216 parent·설정된 작성자·정확한5파일 범위와 초기 clean 상태로 확인했다. Task18a/18b/19의 요구, 검증기와 분석/worker 소스, 소유권·실패·자원·보존, build/type/test 근거, rollback과 문서/이슈 상태를 대조했다. 새로운 수리 과업을 요구하는 결함은 이 검토에서 확인하지 못했다. UI는 내부 수집/분석 경로에 해당 없음이다.
+- Preservation/source evidence: `build/checkpoint19-preservation.json`은 기존 장부20265항목(16630+Task19의3635), 직전 seal6개, 기준 source11/runtime79·고정 identity100개를 실제 파일/Git 내용에 대조한다. Task19 closure의5개 문서/추적 hash와 Continuity도 같다. main/origin/main/live main6bb8b2e8와 다른 네 worktree HEAD를 보존했다. 소비자4파일 hash·추적 dirty8경로·Task19 종료 때 관측한 미추적7경로 목록은 같다. 미추적 파일 내용 전체의 시간상 보존이나 실제 소비자 실행을 새로 주장하지 않는다.
+- Reproduction/coverage evidence: 실제 `build/check-env/bin/python -W error bench/pending_query.py verify --prefix build/task19-pending-formal`은1728/control=false를 확인했고 `analyze --prefix`는 원 JSON과 byte 동일 SHA256 8a2cd02e4b3281373248e5617ee3b1423820ca18be1cc90f21c7422b66682fc3이다(`checkpoint19-cli.json`). 현재 두 검증기의 읽기 전용 대조9개는 누락 hash를 raw JSON 처리0회에서 모두 거절했다. 공통 과거 Task17 conditional48건도 명시 source df37ea61로 정상 검증했다(`checkpoint19-coverage-controls.json`). Task18b의 세 과거 정식 분석 재현·gzip 역검증과227+등록2+legacy3의 별도 시험, Ruff/format/mypy·native Q5 근거는 동일 source/binary/hash 범위만 재사용했다. 새 suite/build/CI나 정식 재수집으로 세지 않는다.
+- Independent judgment: `checkpoint19-independent.json`에서 원자료만으로 정식1440/사전144/진단144·기대 결과 digest1728개·주 구간16개·성장12개·순서5/5의96개 비교를 다시 계산했다. 고정 기준의 표본 내 지지는 일치한다. 작은 backlog의 vendor 대비 느린 cell, Q3 전체 순차 wall 중앙값3.0–13.6배와1을 포함하는 구간, Q4 전체 축적, ledger/RSS/장치I/O 차이와 원 caller의 request 사전 보유는 그대로 한계다. 이 결과를 새 WAL/실제 writer 우위나 현재 소비자 효과로 확대하지 않는다. source의 전체 복원→상태 필터→cleanup과 논리 admission/전체 저장행/RSS 차이를 확인했다.
+- Document/remote evidence: `checkpoint19-doc-check.json`의 문서3개 check_doc·main 대비 whitespace, local file targets187개, 주16/순차4/작은4행의 수치 대조가 통과했다. NumPy1.26.4/SciPy1.13.1도 등록 환경과 같다. 최신 #257/#265/#239/#158은 모두 OPEN이며 미체크2/4/4/1개다(`checkpoint19-issues.json`). 미발행 로컬 결과를 원격 통합/이슈 완료로 바꾸지 않았다. Task6·완료18a/18b/19와 원래20–39/모든 후속 checkpoint, input/plan/goal-current를 보존한다. 원격·consumer·Vault 쓰기, 새 checkout/agent, push/PR/merge/배포/전환은 없다.
+- AAR: 첫 재분석 호출에서 venv 실행 경로에 resolve를 적용해 base interpreter를 직접 실행했고 scipy import가 실패했다. 실패 stdout/stderr를 보존하고 같은 venv 경로의 absolute 호출로 고쳐 정상 검증·byte 재현을 확인했다. binary bytes가 같아도 실행 경로의 pyvenv.cfg 선택은 다르므로 등록한 venv 경로를 유지한다. 이는 검사 orchestration 오류이며 원자료/제품 수정으로 통과시킨 것이 아니다. 자료 완전성·동일 hash·재현·요구 충족의 판단은 각각 별도로 확인한다.
+- Remaining risk: 원 caller 전체 메모리 해결, 기본키 규모 실측, 실제 독립 writer·WAL/buffer/MVCC/early locking와 동등 buffered-COW의 복구/checkpoint/회수 총비용, stream·제품 통합은 미완료다. 기존 driver 첫 실패 binary와 중간 control 등록 객체의 재현 공백도 유지한다. 현재 WAL 권고와 COW 비교 후보/현행 제품 보존을 구분하며 goal은 active다.
+- Next step: 이 tracking-only checkpoint commit에서 멈춘다. 다음 continuation은 원래 Task20의 #158 입력/수집기 감사·준비만 수행한다. Task21 규모 수집이나 Task22 backend 계약을 이 경계에서 시작하지 않는다. 원래 after21과 모든 후속 경계를 유지한다.
+- Commit record: subject `docs(docs): 조회 실측과 자료 보존 검토 기록 갱신`; body marker `Goal-mode boundary: goal-1 checkpoint after task 19: complete`. 이 기록을 담은 tracking-only commit의 작성자·marker와 clean 상태를 경계에서 확인한다. 최종 근거는 `build/checkpoint19-verification.json`에 고정한다.
 
 ## Task 20 — Prepare the missing primary-key scale validation
 
