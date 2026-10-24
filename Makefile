@@ -43,6 +43,15 @@ endif
 CACHE_FLAGS = -UTOTE_SQL_TEMPLATE_CACHE -DTOTE_SQL_TEMPLATE_CACHE=$(SQL_TEMPLATE_CACHE)
 override CFLAGS += $(CACHE_FLAGS)
 
+TXN_WORKSPACE ?= 0
+ifneq ($(TXN_WORKSPACE),0)
+ifneq ($(TXN_WORKSPACE),1)
+$(error TXN_WORKSPACE must be 0 or 1)
+endif
+endif
+WORKSPACE_FLAGS = -UTOTE_TXN_WORKSPACE -DTOTE_TXN_WORKSPACE=$(TXN_WORKSPACE)
+override CFLAGS += $(WORKSPACE_FLAGS)
+
 BENCHMARK ?= 0
 ifneq ($(BENCHMARK),0)
 ifneq ($(BENCHMARK),1)
@@ -63,7 +72,7 @@ BENCHMARK_FLAGS = -UTOTE_BENCHMARK
 endif
 override CFLAGS += $(BENCHMARK_FLAGS)
 SHARED_CFLAGS ?= -O2 -g $(WARNFLAGS) $(INCLUDES)
-override SHARED_CFLAGS += $(BENCHMARK_FLAGS) $(CACHE_FLAGS)
+override SHARED_CFLAGS += $(BENCHMARK_FLAGS) $(CACHE_FLAGS) $(WORKSPACE_FLAGS)
 BUILD_FINGERPRINT = $(BUILD_DIR)/.build-fingerprint
 CONFIG_ID := $(shell printf '%s\n' 'BENCHMARK=$(BENCHMARK)' 'CC=$(CC)' 'CFLAGS=$(CFLAGS)' 'SHARED_CFLAGS=$(SHARED_CFLAGS)' 'LDFLAGS=$(LDFLAGS)' | shasum -a 256 | cut -d' ' -f1)
 ifeq ($(shell grep -Fx 'CONFIG_ID=$(CONFIG_ID)' $(BUILD_FINGERPRINT) 2>/dev/null),)
@@ -88,7 +97,7 @@ $(BUILD_DIR)/tests/%.o: tests/%.c $(BUILD_FINGERPRINT)
 
 STORAGE_OBJS = $(BENCHMARK_OBJ) $(BUILD_DIR)/storage/record.o $(BUILD_DIR)/storage/record_page.o \
                $(BUILD_DIR)/storage/overflow.o $(BUILD_DIR)/storage/checksum.o $(BUILD_DIR)/storage/value.o $(BUILD_DIR)/storage/catalog.o \
-               $(BUILD_DIR)/storage/page_file.o $(BUILD_DIR)/storage/page_cache.o $(BUILD_DIR)/storage/catalog_store.o \
+               $(BUILD_DIR)/storage/page_file.o $(BUILD_DIR)/storage/page_cache.o $(BUILD_DIR)/storage/page_workspace.o $(BUILD_DIR)/storage/catalog_store.o \
                $(BUILD_DIR)/storage/pk_tree.o $(BUILD_DIR)/storage/text_tree.o
 BASIC_TESTS = test_record test_record_fault test_overflow test_overflow_fault test_value test_value_fault \
               test_catalog test_catalog_fault test_lexer test_lexer_fault test_page_file test_catalog_store \
@@ -191,7 +200,7 @@ test-fault: $(BUILD_DIR)/test_fault_runtime $(BUILD_DIR)/fault_fixture
 	FAULT_FIXTURE=$(abspath $(BUILD_DIR)/fault_fixture) $(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_fault_fixture.json -- $(PYTEST) -q tests/test_fault_fixture.py --basetemp=$(BUILD_DIR)/fault/fixture-tests -p no:cacheprovider
 
 # SQL 실행기(#198). 파일마다 한 역할이며 공유 타입은 src/sql/database_exec.h에 있다
-DATABASE_EXEC_NAMES = database database_prepare database_cache sql_statement_clone database_expr database_subquery database_ddl database_insert database_select \
+DATABASE_EXEC_NAMES = database database_prepare database_cache database_workspace sql_statement_clone database_expr database_subquery database_ddl database_insert database_select \
                       database_group database_join database_update database_check
 DATABASE_EXEC_OBJS = $(addprefix $(BUILD_DIR)/sql/,$(addsuffix .o,$(DATABASE_EXEC_NAMES)))
 DATABASE_EXEC_FAULT_OBJS = $(addprefix $(BUILD_DIR)/sql/,$(addsuffix _fault.o,$(DATABASE_EXEC_NAMES)))
@@ -225,6 +234,14 @@ $(BUILD_DIR)/test_database_cache: $(BUILD_DIR)/tests/test_database_cache.o $(BUI
 $(BUILD_DIR)/test_database_cache: LDLIBS += -lsqlite3
 $(BUILD_DIR)/test_database_cache:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(BUILD_DIR)/test_database_workspace: $(BUILD_DIR)/tests/test_database_workspace.o $(BUILD_DIR)/tests/alloc_audit.o $(DATABASE_AUDIT_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS) -lsqlite3
+
+test-database-workspace: $(BUILD_DIR)/test_database_workspace
+	$(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_database_workspace.json -- ./$(BUILD_DIR)/test_database_workspace
+
+.PHONY: test-database-workspace
 
 test-database-cache: $(BUILD_DIR)/test_database_cache
 	$(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_database_cache.json -- ./$(BUILD_DIR)/test_database_cache
@@ -340,7 +357,7 @@ test-sqlite-session-diff: $(BUILD_DIR)/session_probe test-sqlite-session-diff-ha
 	LD_LIBRARY_PATH=$(abspath $(SQLITE_REF_DIR)) $(PYTHON) tests/sqlite_session_diff.py \
 		--probe ./$(BUILD_DIR)/session_probe --workdir $(SQLITE_DIFF_DIR)
 
-test-all: test test-overflow-file test-value-sqlite test-value-varchar test-database test-database-cache test-transaction test-session test-ack-queue test-ack-queue-python
+test-all: test test-overflow-file test-value-sqlite test-value-varchar test-database test-database-cache test-database-workspace test-transaction test-session test-ack-queue test-ack-queue-python
 
 clean:
 	rm -rf $(BUILD_DIR)

@@ -439,14 +439,22 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
     for (size_t m = 0; m < matches.count; m++) {
         for (size_t i = 0; i < assign_count; i++) {
             value_t computed = {0};
+            const sqlexpr_t *expr = update->assignments[i].value;
+            size_t literal_bytes = expr->kind == SQLEXPR_LITERAL ? value_bytes(&expr->value) : 0;
+            if (!q_reserve(db, literal_bytes)) {
+                status = DATABASE_EXEC_NOMEM;
+                goto done;
+            }
             sqleval_error_t error = {SQLEVAL_OK, 0, NULL};
             if (sqleval_run(progs[i], matches.items[m].cells, &computed, &error) != SQLEVAL_OK) {
+                q_release(db, literal_bytes);
                 status = eval_failure(db, &error);
                 goto done;
             }
             bool cast = cast_for_column(db, &computed.view, &view.columns[targets[i]], &fresh[m * assign_count + i],
                                         &status);
             value_clear(&computed);
+            q_release(db, literal_bytes);
             if (!cast) goto done;
             if (view.columns[targets[i]].not_null && fresh[m * assign_count + i].view.type == VALUE_NULL) {
                 status = not_null_violation(db, &view.columns[targets[i]]);

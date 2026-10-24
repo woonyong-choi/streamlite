@@ -14,6 +14,7 @@
 #include "storage/le.h"
 
 #include "page_cache.h"
+#include "page_workspace.h"
 #include "storage/checksum.h"
 #include "storage/record_page.h"
 #include "../benchmark.h"
@@ -99,6 +100,7 @@ struct page_file {
     size_t cache_pages;     /* 이 핸들의 캐시 상한. 계상은 이 값으로 한다 */
     page_cache_t *cache;    /* 처음 쓰일 때 만든다. 만들지 못하면 NULL로 두고 캐시 없이 동작한다 */
     bool cache_tried;
+    page_workspace_t *workspace;
     pid_t owner;            /* 연 프로세스. fork한 자식은 이 핸들을 쓰지 않는다 */
     page_file_lock_t lock;  /* 지금 쥔 잠금 */
     uint32_t lock_timeout_ms;     /* writer 잠금과 열기의 대기 상한 */
@@ -1150,6 +1152,12 @@ page_file_status_t page_file_read(page_file_t *file, uint32_t page_id, page_kind
     if (!data_page_in_range(file, page_id)) return PAGE_FILE_INVALID;
     uint16_t cached_kind;
     uint32_t cached_table;
+    page_kind_t private_kind;
+    if (file->workspace != NULL && page_workspace_read(file->workspace, page_id, &private_kind, &cached_table, body)) {
+        if (private_kind == kind && cached_table == table_id) return PAGE_FILE_OK;
+        errno = EBADMSG;
+        return PAGE_FILE_CORRUPT;
+    }
     if (page_cache_get(cache_of(file), page_id, &cached_kind, &cached_table, body)) {
         if (cached_kind != kind || cached_table != table_id) {
             errno = EBADMSG;
@@ -1183,6 +1191,11 @@ page_file_status_t page_file_write(page_file_t *file, uint32_t page_id, page_kin
         errno = EIO;
         return PAGE_FILE_IO;
     }
+    if (file->workspace != NULL) {
+        if (!page_file_is_fresh(file, page_id)) return PAGE_FILE_INVALID;
+        page_cache_drop(file->cache, page_id);
+        return page_workspace_write(file->workspace, page_id, kind, table_id, body);
+    }
     uint8_t page[PAGE_FILE_PAGE_BYTES];
     encode_page(page, kind, page_id, table_id, PAGE_BODY_BYTES, body);
     uint64_t offset = (uint64_t)page_id * PAGE_FILE_PAGE_BYTES;
@@ -1208,7 +1221,10 @@ page_file_status_t page_file_page_info(page_file_t *file, uint32_t page_id,
     uint8_t page[PAGE_FILE_PAGE_BYTES];
     envelope_t envelope;
     uint16_t cached_kind;
-    if (page_cache_get(cache_of(file), page_id, &cached_kind, &envelope.table_id, page + PAGE_ENVELOPE_BYTES)) {
+    if (file->workspace != NULL && page_workspace_read(file->workspace, page_id, &envelope.kind,
+                                                        &envelope.table_id, page + PAGE_ENVELOPE_BYTES)) {
+        cached_kind = (uint16_t)envelope.kind;
+    } else if (page_cache_get(cache_of(file), page_id, &cached_kind, &envelope.table_id, page + PAGE_ENVELOPE_BYTES)) {
         envelope.kind = (page_kind_t)cached_kind;
     } else {
         page_file_status_t status = read_verified(file, page_id, page, &envelope);
@@ -1276,6 +1292,8 @@ page_file_status_t page_file_alloc(page_file_t *file, uint32_t *page_id)
         return PAGE_FILE_OK;
     }
     if (file->page_count >= PAGE_FILE_MAX_PAGES) return PAGE_FILE_LIMIT;
+    if (file->workspace != NULL && file->workspace->admit_pages != NULL &&
+        !file->workspace->admit_pages(file->workspace->ledger.ctx, file->page_count + 1)) return PAGE_FILE_NOMEM;
     if (!ensure_capacity(file, (size_t)file->page_count + 1)) return PAGE_FILE_NOMEM;
     uint32_t id = file->page_count++;
     file->state[id] = PS_FRESH;
@@ -1300,6 +1318,8 @@ page_file_status_t page_file_release(page_file_t *file, uint32_t page_id)
             file->state[page_id] = PS_DISCARDED;
             list_push(&file->reusable, page_id);
             forget_write(file, page_id);
+            if (file->workspace != NULL) page_workspace_drop(file->workspace, page_id);
+            page_cache_drop(file->cache, page_id);
             return PAGE_FILE_OK;
         default:
             return PAGE_FILE_INVALID; /* 이중 해제 */
@@ -1321,6 +1341,7 @@ void page_file_restore_pending(page_file_t *file)
 void page_file_release_fresh(page_file_t *file)
 {
     if (file == NULL || check_access(file, PAGE_FILE_LOCK_EXCLUSIVE) != PAGE_FILE_OK) return;
+    if (file->workspace != NULL) page_workspace_clear(file->workspace);
     for (size_t i = 0; i < file->fresh.len; i++) {
         uint32_t id = file->fresh.items[i];
         if (file->state[id] != PS_FRESH) continue;
@@ -1450,6 +1471,36 @@ static void undo_chain(page_file_t *file, const id_list_t *chain)
     for (size_t i = chain->len; i > 0; i--) page_file_release(file, chain->items[i - 1]);
 }
 
+page_file_status_t page_file_workspace_begin(page_file_t *file, page_workspace_t *workspace)
+{
+    if (file == NULL || workspace == NULL || file->workspace != NULL) return PAGE_FILE_INVALID;
+    page_file_status_t status = check_access(file, PAGE_FILE_LOCK_EXCLUSIVE);
+    if (status != PAGE_FILE_OK) return status;
+    file->workspace = workspace;
+    return PAGE_FILE_OK;
+}
+
+void page_file_workspace_end(page_file_t *file)
+{
+    file->workspace = NULL;
+}
+
+static page_file_status_t flush_image(void *ctx, uint32_t id, page_kind_t kind, uint32_t table,
+                                      const uint8_t body[PAGE_BODY_BYTES])
+{
+    return page_file_write(ctx, id, kind, table, body);
+}
+
+static page_file_status_t flush_workspace(page_file_t *file)
+{
+    page_workspace_t *workspace = file->workspace;
+    if (workspace == NULL) return PAGE_FILE_OK;
+    file->workspace = NULL;
+    page_file_status_t status = page_workspace_flush(workspace, flush_image, file);
+    file->workspace = workspace;
+    return status;
+}
+
 page_file_status_t page_file_commit(page_file_t *file)
 {
     if (file == NULL) return PAGE_FILE_INVALID;
@@ -1462,6 +1513,8 @@ page_file_status_t page_file_commit(page_file_t *file)
     }
     file->commit_outcome = PAGE_FILE_COMMIT_NOT_APPLIED;
     if (file->committed.generation >= UINT64_MAX - 1) return PAGE_FILE_LIMIT;
+    page_file_status_t flushed = flush_workspace(file);
+    if (flushed != PAGE_FILE_OK) return flushed;
 
     /*
      * 빈 목록이 제어 페이지에 다 들어가지 않으면 사슬 페이지를 받는다. 재사용 목록에서 받으면 적을 번호도 하나 준다.

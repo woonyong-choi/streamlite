@@ -12,7 +12,7 @@ StreamLite는 SQL, 영속 이벤트 스트림, ACK 작업 처리를 각각 선�
 
 새 엔진의 기본 방향은 page/redo WAL, bytes 상한이 있는 buffer pool, MVCC, 조기 key 잠금으로 권고한다. 작은 상태의 잦은 변경을 durable commit과 본문 page 반영으로 분리하고, 같은 leaf의 다른 행을 쓰는 거래가 매번 옛 root를 병합하지 않게 하기 위해서다. 선택 근거와 반증 조건은 [성능과 안전을 함께 고르는 순서](#성능과-안전을-함께-고르는-순서)에 있다. 이는 현재 요구에서 도출한 설계 권고이며 새 backend의 구현·동등 조건 실측·제품 전환 승인은 아니다.
 
-기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache는 기본 OFF인 내부 비교 경로로 분리하며 성능 채택은 측정 전이다. Python의 큐 등록부는 첫 명시 사용 때 생성하며 수명·실패 회귀를 검증했다. transaction 변경 누적·영속 fanout 스트림·실제 동시 writer는 구현 완료가 아니다. StreamLite 표시명을 채택해도 기존 `totedb` 패키지·Python import·`tote_*` C ABI·`libtotedb`·DB 파일 형식은 그대로 둔다.
+기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache와 transaction workspace는 기본 OFF인 내부 비교 경로로 분리하며 성능 채택은 측정 전이다. Python의 큐 등록부는 첫 명시 사용 때 생성하며 수명·실패 회귀를 검증했다. 영속 fanout 스트림·새 backend·실제 동시 writer는 구현 완료가 아니다. StreamLite 표시명을 채택해도 기존 `totedb` 패키지·Python import·`tote_*` C ABI·`libtotedb`·DB 파일 형식은 그대로 둔다.
 
 ### 하지 않는 것
 
@@ -155,13 +155,13 @@ cache는 DB handle마다 분리한다. key는 SQL의 정확한 bytes·길이와 
 
 hit도 입력 bytes 상한·binding 개수/값·취소·poison·실패한 transaction 검사를 생략하지 않는다. template를 빌리는 동안 pin하고, 실행마다 현재 binding을 복제한 독립 소유 AST를 만든 뒤 pin을 해제한다. 실행 AST의 이름·literal·binding 사본은 query 몫이다. 반환 결과는 기존 소유권 이전을 따르며 template나 호출자의 SQL/binding buffer를 참조하지 않는다. 잘못된 binding을 이전 값으로 메우거나 cache 준비 실패 뒤 SQL을 두 번 실행하지 않는다. 기존 오류 class·code·offset과 한 호출의 실행 횟수를 대조한다.
 
-schema를 해석한 실행 계획은 cache하지 않는다. 실행마다 잠금과 최신 catalog를 확보한 뒤 이름·열·색인·타입을 다시 해석한다. 같은 handle의 DDL에는 보수적으로 template를 무효화하고 rollback 뒤에도 옛 실행 metadata를 복원하지 않는다. 다른 handle의 게시를 감지해 [catalog를 다시 읽을 때](../../src/sql/database.c#L863-L903)도 우선 cache를 비운다. 이 정책은 외부의 데이터 변경에도 miss를 늘릴 수 있지만 별도 파일 세대 형식을 추가하지 않는다. 그 miss 비용을 측정하며, schema 전용 세대나 해석된 계획 재사용은 별도 개선 근거 없이 섞지 않는다. 이미 실행별로 복제한 AST와 호출자가 소유한 결과의 수명은 eviction과 독립이다.
+schema를 해석한 실행 계획은 cache하지 않는다. 실행마다 잠금과 최신 catalog를 확보한 뒤 이름·열·색인·타입을 다시 해석한다. 같은 handle의 DDL에는 보수적으로 template를 무효화하고 rollback 뒤에도 옛 실행 metadata를 복원하지 않는다. 다른 handle의 게시를 감지해 [catalog를 다시 읽을 때](../../src/sql/database.c#L893-L933)도 우선 cache를 비운다. 이 정책은 외부의 데이터 변경에도 miss를 늘릴 수 있지만 별도 파일 세대 형식을 추가하지 않는다. 그 miss 비용을 측정하며, schema 전용 세대나 해석된 계획 재사용은 별도 개선 근거 없이 섞지 않는다. 이미 실행별로 복제한 AST와 호출자가 소유한 결과의 수명은 eviction과 독립이다.
 
 cache는 없을 때 지연 생성하고 항목 수와 전체 bytes를 함께 제한한다. SQL key·template·parameter 목록·색인/교체 metadata·pin된 퇴출 대기 항목까지 상주 비용에 포함한다. 준비 중 old+new의 최고 요청량을 먼저 예약한다. 실행 binding을 포함한 AST 복제는 query ledger로, cache 소유물은 DB의 resident ledger로 계상한다. resident ledger가 없는 bounded 실행에는 문장 ledger를 붙잡아 cache를 만들지 않고 기존 경로를 쓴다. 무계상 직접 API에서도 cache 자체의 유한 한도는 지킨다. 한 handle의 한도가 여러 handle·pool 전체나 RSS의 한도를 뜻하지 않는다.
 
 퇴출은 참조하지 않는 LRU 항목부터 하며 pin된 항목을 해제하지 않는다. 선택적인 cache 저장 거절은 이미 성공한 실행의 결과를 바꾸지 않는다. 실제 실행 AST/결과의 필수 할당이 실패하면 기존 NOMEM 계약을 유지한다. session의 문장 반환 때 query 몫은 0이어야 하며 cache는 query 몫의 사후 초기화에 기대지 않는다. [session 회계](../../include/sql/session.h#L13-L32)처럼 결과는 호출자의 해제까지, cache는 DB close까지 각 소유자가 책임진다. 첫 구현은 현행 handle 실행 직렬화 계약을 따르며, 새 병렬 경로에서는 LRU·pin metadata의 짧은 동기화와 실행 중 참조를 따로 검증한다. cache 보호를 거래 전체의 전역 잠금으로 늘리지 않는다.
 
-내부 비교 경로는 [구문 복제](../../src/sql/sql_statement_clone.c)와 [cache 소유권](../../src/sql/database_cache.c)을 분리한다. miss는 현행 parser로 준비한 SQL을 한 번 실행하고, [실행 성공 뒤](../../src/sql/database.c#L976-L982)에만 값 없는 template 저장을 시도한다. 저장 admission이나 할당을 확보하지 못하면 저장을 생략한다. 이미 성공한 SQL을 다시 준비·실행하거나 결과를 오류로 바꾸지 않는다. 필수 query 예약이 부족하면 참조 중이 아닌 cache를 먼저 회수한다. hit 준비의 필수 예약을 확보하지 못한 경우에는 pin을 놓고 [실행 전에만 uncached 준비](../../src/sql/database_prepare.c#L105-L119)로 돌아간다. 실행 AST 할당이 실패했거나 SQL이 실행된 뒤에는 이 경로로 재시도하지 않는다.
+내부 비교 경로는 [구문 복제](../../src/sql/sql_statement_clone.c)와 [cache 소유권](../../src/sql/database_cache.c)을 분리한다. miss는 현행 parser로 준비한 SQL을 한 번 실행하고, [실행 성공 뒤](../../src/sql/database.c#L1006-L1012)에만 값 없는 template 저장을 시도한다. 저장 admission이나 할당을 확보하지 못하면 저장을 생략한다. 이미 성공한 SQL을 다시 준비·실행하거나 결과를 오류로 바꾸지 않는다. 필수 query 예약이 부족하면 참조 중이 아닌 cache를 먼저 회수한다. hit 준비의 필수 예약을 확보하지 못한 경우에는 pin을 놓고 [실행 전에만 uncached 준비](../../src/sql/database_prepare.c#L105-L119)로 돌아간다. 실행 AST 할당이 실패했거나 SQL이 실행된 뒤에는 이 경로로 재시도하지 않는다.
 
 이 경로의 [회귀 시험](../../tests/test_database_cache.c)은 SQLite 값·타입 대조, binding 오류 위치, DDL·rollback·다른 handle, 항목/bytes 퇴출, pin, 큰 SQL, 취소, 실패 주입과 마지막 소유자 해제를 검사한다. 세션의 전체 할당 회계와 결과 보유 시험도 함께 검증한다. [시험 설정](../build-and-test.md#sql-template-cache)은 기본 OFF이며 새 writer·workspace·stream 구현이나 성능 채택을 뜻하지 않는다. 내부 통계는 cache가 살아 있는 동안의 hit/miss·퇴출·거절이며 전체 회수·비활성화·close 때 초기화한다. 수집기는 초기화를 감지해야 한다.
 
@@ -174,6 +174,10 @@ workspace는 transaction이 소유한 catalog·행·색인 변경과 dirty page�
 문장마다 수행하던 물리 완료를 미루면 I/O 오류가 commit에서 관측될 수 있다. 이 이동을 숨기거나 모든 commit 오류를 UNKNOWN으로 합치지 않는다. 게시 권한 인수 전과 미적용을 증명한 실패, 인수 후 확정할 수 없는 실패를 구분한다. NOT_APPLIED면 자기 private 자원을 정리하고, UNKNOWN이면 게시·회수를 차단하며 저장 자원을 재사용하지 않는다. 임의 spill·큰 transaction의 자동 분할·내구 barrier 생략으로 예산을 맞추지 않는다. 새 다중 writer의 공유 buffer/version과 복구 형식은 G6의 별도 계약을 따른다.
 
 workspace의 문장 밖 보유량은 현재 작업 catalog와 같은 DB resident/shared 회계에 남기고, 별도 transaction 작업량 한도로 제한한다. session의 query/result 한도를 transaction 전체 한도라고 다시 해석하지 않는다. 실행 중 임시 사본과 반환 결과도 동시에 존재할 수 있으므로 전체 shared 예산과 각 scope를 함께 검사한다. cache/workspace의 OFF·ON 네 조건에는 같은 논리 입력·결과·상위 예산과 내구 조건을 적용한다.
+
+내부 [workspace 경로](../../src/sql/database_workspace.c)는 첫 문장의 private catalog를 다음 문장에서 재사용한다. [페이지 사본](../../src/storage/page_workspace.c)은 작업이 새로 할당한 COW page만 보유한다. 다음 문장이 대체하거나 삭제한 사본은 놓고, 살아 있는 최종 사본을 기존 게시 절차 전에 encode·write한다. 읽기는 자기 private 사본을 우선하며 작업 밖의 catalog는 미확정 page를 가리키지 않는다. 문장별 heap·색인 계산과 root restamp는 남으며, 최종 사본의 목록 탐색·복사·메모리 보유 비용도 든다. 이 경로를 새 WAL·buffer pool이나 실제 동시 writer 완료로 쓰지 않는다.
+
+사본·catalog·회수 목록은 작업 한도와 resident/shared 예산을 함께 검사한다. 파일의 할당 목록이 커질 때도 할당 전에 그 상주 몫을 확보하며, 실패 뒤 남는 목록은 DB 소유로 계속 계상한다. 작업 중 resident ledger를 새로 붙이는 일은 거절하므로 bounded 열기나 작업 시작 전에 연결한다. 논리 오류·취소·할당 거절은 실패 거래와 명시적 rollback을 유지한다. commit에서 최종 page 쓰기에 실패하면 기존 NOT_APPLIED·UNKNOWN 경계로 정리하며, UNKNOWN의 디스크 page는 재사용하지 않는다. [회귀 시험](../../tests/test_database_workspace.c)은 cache/workspace 네 조건의 SQLite 결과, 자기 변경·미확정 비노출, 큰 값·초과 거절, 할당/I/O 실패, 삭제·재사용과 보유 결과의 수명을 검사한다. [내부 설정](../build-and-test.md#transaction-workspace)은 기본 OFF이며 비계측 처리량·tail·전체 RSS와 채택은 별도 수집 대상이다.
 
 ### 공통 개선의 시험용 한도
 
@@ -199,7 +203,7 @@ SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈
 
 ### 공통 계약의 검증 입력
 
-이 표는 각 구현이 확인할 기대 결과다. cache와 Python 큐 수명의 회귀·실패 검증은 앞의 시험 파일에 연결하며, workspace·stream 수명·조건부 SQL의 새 경로는 검증 전이다. 비계측 업무 결과와 성능 채택은 별도 수집으로 판정한다.
+이 표는 각 구현이 확인할 기대 결과다. cache·workspace와 Python 큐 수명의 회귀·실패 검증은 앞의 시험 파일에 연결하며, stream 수명·조건부 SQL의 새 경로는 검증 전이다. 비계측 업무 결과와 성능 채택은 별도 수집으로 판정한다.
 
 | 입력 | 기대 결과와 검사 경계 |
 |---|---|
@@ -209,7 +213,7 @@ SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈
 | 기존 입력 한도 안에서 cache admission의 16KiB를 넘는 SQL·64항목 초과·pin/eviction·cache 저장 OOM | 지원 SQL은 uncached 경로로 한 번 실행, 사용 중 template·기존 항목·카운터 손상 없음 |
 | AST/결과 NOMEM·취소·오류 뒤 query 종료, 결과 보유 중 session/DB 종료 | query 몫 0, cache는 resident 소유, 결과는 해제까지 유효하고 마지막 소유자가 반환 |
 | transaction의 첫 변경 성공 뒤 제약 오류·OOM·취소 | 실패 상태에서 문장/commit 거절, rollback 뒤 기존 DB 보존, 다른 거래 자원 해제 없음 |
-| workspace의 자기 변경 조회·같은 page 재수정·DELETE/재사용·최고량 초과 | 자기 최신 값과 최종 원자성 보존, 반복 물리 완료·최고 bytes·거절 관측, 자동 분할 없음 |
+| workspace의 자기 변경 조회·같은 page 재수정·DELETE/재사용·최고량 초과 | `test_database_workspace.c`의 SQLite 대조·초과 거절·반복 삭제·결과 수명 검사, 자동 분할 없음 |
 | 게시 전후 I/O·sync 실패와 응답 유실 | NOT_APPLIED/UNKNOWN/내구 성공을 해당 경계로 판정, 불확정 저장 자원 재사용 없음 |
 | SQL 단독 생성/실행/종료와 기능 첫 사용·반복 close·Busy close | 전용 빈 set/list·polling 없음, 명시 사용의 등록·강한 소유·오류 뒤 handle 상태 보존 |
 | 최소 eligible 후보 경합·expiry·stale/중복 ACK·FAILED·반환 결과 해제 | 기존 후보와 fence/상태 의미 일치, 실패 readback·scan·복사·추가 SQL도 비용에 포함 |
@@ -263,7 +267,7 @@ SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈
 
 ### 소스에서 확인한 비용과 저장 단위
 
-현재 [publish_inner](../../src/sql/database.c#L718-L755)는 transaction 안에서도 문장별 `heap_batch_finish` 뒤에 변경을 stage한다. [catalog_clone](../../src/storage/catalog.c#L249-L257)은 encode/decode를 거치고, [page_file_write](../../src/storage/page_file.c#L1171-L1198)는 page를 encode한 뒤 실제 파일 쓰기와 cache 갱신을 한다. 준비 결과 cache와 transaction workspace는 이 반복을 줄일 공통 개선이다. 이 비용 전부를 COW의 필수 비용으로 세거나, WAL을 붙이면 파싱·복사도 사라진다고 계산하지 않는다.
+기본 OFF 경로의 [publish_inner](../../src/sql/database.c#L751-L788)는 transaction 안에서도 문장별 `heap_batch_finish` 뒤에 변경을 stage한다. [catalog_clone](../../src/storage/catalog.c#L249-L257)은 encode/decode를 거치고, [page_file_write](../../src/storage/page_file.c#L1180-L1213)는 page를 encode한 뒤 실제 파일 쓰기와 cache 갱신을 한다. 내부 workspace ON 경로는 사본을 보유하고 commit 전에 최종 사본만 쓰며, 문장별 논리 완료와 색인 계산은 유지한다. 준비 결과 cache와 transaction workspace는 양쪽 저장 방식에 적용할 공통 개선이다. 이 비용 전부를 COW의 필수 비용으로 세거나, WAL을 붙이면 파싱·복사도 사라진다고 계산하지 않는다.
 
 여기서 COW 대조군은 변경 page를 복사하고 root를 직접 영속 게시하는 방식이다. 공통 개선을 적용해도 새로 공개할 변경 page와 필요한 참조 경로를 영속화한다. 같은 leaf의 서로 다른 행을 각 writer가 옛 사본에서 준비하면 최신 상태로 합쳐야 한다. 조기 행 잠금은 같은 행 충돌을 줄이지만 이 물리 공유를 없애지 않는다. WAL 안은 같은 page의 짧은 latch와 redo 순서로 이를 조정하고, commit은 해당 로그의 내구성에 연결한다. [PostgreSQL 18 WAL 설명](https://www.postgresql.org/docs/18/wal-intro.html)의 WAL-before-data 원칙은 data page를 매 commit마다 동기화하지 않고도 redo로 복구하는 경계를 설명한다. 이 원칙이 새 구현의 안전성 증거를 대신하지 않는다.
 

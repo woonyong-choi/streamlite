@@ -474,7 +474,7 @@ Litequeue에도 claim_id·retry_expired가 있고 persist-queue에도 auto_resum
 
 `publish_inner`는 `heap_batch_finish`를 끝낸 뒤 명시적 거래의 `stage_adopt`로 간다. `page_file_write`는 단순 dirty 표시가 아니라 encode·`write_full`·cache 갱신이며 하위에서 pwrite한다. batch32의 512→16 commit 감소에도 한 commit 안 INSERT 64개의 문장별 복제·heap 완료·페이지 쓰기는 남는다. 모든 문장이 fsync한다는 뜻은 아니다.
 
-정상 no-idempotency·재시도 없음·첫 ACK 경로의 정적 대조는 ToteDB put/get/ack가 1/3/2SQL로 합계 6SQL·3쓰기 거래, persist-queue가 4SQL·3거래, Litequeue가 3SQL·3거래다. BEGIN/COMMIT·하위 SELECT·trigger 전체 수나 동적 counter가 아니다. 구조는 확인되지만 파싱·복제·I/O·FFI의 시간 기여율은 미확정이다. ([clone](../src/storage/catalog.c#L249-L257), [실행·게시](../src/sql/database.c), [heap 완료](../src/storage/heap_store.c), [쓰기](../src/storage/page_file.c#L1186-L1197), [큐 경로와 원인 분석](experiments/local-db-comparison/report.md#성능-우위-기대가-충족되지-않은-이유), [persist-queue 고정 소스](https://github.com/peter-wangxu/persist-queue/tree/b4fb6d186e375850b2d9ac49fc635779be95f173), [Litequeue 0.14 배포 소스](https://files.pythonhosted.org/packages/c1/3c/4a065c1e63f39682ea88422fcec8cd3387c8df2fb53205160026c9b5d2dc/litequeue-0.14.tar.gz))
+정상 no-idempotency·재시도 없음·첫 ACK 경로의 정적 대조는 ToteDB put/get/ack가 1/3/2SQL로 합계 6SQL·3쓰기 거래, persist-queue가 4SQL·3거래, Litequeue가 3SQL·3거래다. BEGIN/COMMIT·하위 SELECT·trigger 전체 수나 동적 counter가 아니다. 구조는 확인되지만 파싱·복제·I/O·FFI의 시간 기여율은 미확정이다. ([clone](../src/storage/catalog.c#L249-L257), [실행·게시](../src/sql/database.c), [heap 완료](../src/storage/heap_store.c), [쓰기](https://github.com/woonyong-choi/totedb/blob/e49a3d2f252c0e501bc7e76cc064e77e6ec98673/src/storage/page_file.c#L1186-L1197), [큐 경로와 원인 분석](experiments/local-db-comparison/report.md#성능-우위-기대가-충족되지-않은-이유), [persist-queue 고정 소스](https://github.com/peter-wangxu/persist-queue/tree/b4fb6d186e375850b2d9ac49fc635779be95f173), [Litequeue 0.14 배포 소스](https://files.pythonhosted.org/packages/c1/3c/4a065c1e63f39682ea88422fcec8cd3387c8df2fb53205160026c9b5d2dc/litequeue-0.14.tar.gz))
 
 SQLite는 이미 writeable인 페이지의 재사용과 dirty list를 제공한다. CPython sqlite3도 문장 cache를 경유한다. 실제 DB 기준군은 `cached_statements=128`이지만 실측 hit율은 미확인이다. Litequeue 0.14는 cache를 끄므로 경쟁 큐의 모든 우위를 prepared cache 하나로 설명할 수 없다. upstream SQLite 3.45.1·CPython 3.12.15와 배포 바이너리의 정확한 patch·revision 일치는 확인하지 않았다. ([SQLite pager](https://raw.githubusercontent.com/sqlite/sqlite/version-3.45.1/src/pager.c), [SQLite page cache](https://raw.githubusercontent.com/sqlite/sqlite/version-3.45.1/src/pcache.c), [CPython cache 경로](https://raw.githubusercontent.com/python/cpython/v3.12.15/Modules/_sqlite/cursor.c), [실제 runner](../bench/local_db_compare.py), 2026-10-19 확인)
 
@@ -510,7 +510,7 @@ FFI에도 SQL result에서 native payload로, ctypes에서 Python bytes로 복�
 | 새 엔진의 page/redo WAL·buffer pool·MVCC·조기 잠금, 현재 권고 | [리뉴얼 구조](design/streamlite.md#성능과-안전을-함께-고르는-순서), [복구 계약](design/streamlite.md#wal-권고안의-복구정리-경계) | 작은 변경의 page writeback을 durable group 사이에도 합칠 수 있다는 구조적 이익을 우선한다. 복구·공유 상태·checkpoint·version GC를 새로 구현하고 검증하는 부담을 감수하는 설계안이다. |
 | buffered COW, 동등 조건 비교 후보 유지 | [권고를 바꾸는 조건](design/streamlite.md#권고를-바꾸는-조건과-보존할-것) | 같은 조기 잠금·cache·workspace·group 정책으로 비교한다. 요구를 충족하고 WAL의 추가 비용이 이익을 없애면 다시 선택할 수 있다. 두 후보의 구현·실측은 아직 없다. |
 
-문장마다 남는 `catalog_clone`의 encode/decode와 `heap_batch_finish` 뒤 페이지 쓰기는 공통 개선 대상이다. 이를 COW의 필수 비용으로 확정하거나 WAL을 붙이면 파싱·복사도 사라진다고 계산하지 않는다. 읽기 cache와 fresh 재사용도 이미 있다. 기존 게시·오류·회수 경계를 회귀 기준으로 보존하는 이유와 새 엔진의 기본 방향을 고르는 이유를 구분한다. 이 설명은 현재 코드 해석이며 최초 COW 채택 동기의 복원이 아니다. ([clone](../src/storage/catalog.c#L249-L257), [문장 완료](../src/sql/database.c#L718-L755), [페이지 쓰기](../src/storage/page_file.c#L1186-L1198), [회수 계약](../include/storage/page_file.h#L183-L209))
+기준 코드에서 문장마다 남는 `catalog_clone`의 encode/decode와 `heap_batch_finish` 뒤 페이지 쓰기는 공통 개선 대상이다. 이를 COW의 필수 비용으로 확정하거나 WAL을 붙이면 파싱·복사도 사라진다고 계산하지 않는다. 읽기 cache와 fresh 재사용도 이미 있다. 기존 게시·오류·회수 경계를 회귀 기준으로 보존하는 이유와 새 엔진의 기본 방향을 고르는 이유를 구분한다. 이 설명은 현재 코드 해석이며 최초 COW 채택 동기의 복원이 아니다. ([clone](../src/storage/catalog.c#L249-L257), [문장 완료](https://github.com/woonyong-choi/totedb/blob/e49a3d2f252c0e501bc7e76cc064e77e6ec98673/src/sql/database.c#L718-L755), [페이지 쓰기](https://github.com/woonyong-choi/totedb/blob/e49a3d2f252c0e501bc7e76cc064e77e6ec98673/src/storage/page_file.c#L1186-L1198), [회수 계약](../include/storage/page_file.h#L183-L209))
 
 공통 개선을 적용한 direct page-COW도 각 durable group에서 공개할 변경 page와 참조 경로를 영속화해야 한다. 같은 leaf의 다른 행을 바꾼 writer도 최신 tree에 변경을 병합하고 root 게시를 조정해야 한다. WAL은 변경 로그를 먼저 영속화한 뒤 같은 data page의 변경을 여러 group에 걸쳐 모아 쓸 수 있다. 이 저장 단위 차이가 작은 변경이 잦은 새 요구에서 WAL을 우선하는 이유다. COW의 group 누적·fresh 재사용·조건부 1-sync도 공정한 대조에 포함하며, 매 변경에 새 물리 page를 할당한다고 가정하지 않는다. 큰 bulk·큰 group·읽기 중심 입력에서는 이 이점이 줄 수 있다. ([비용 모형과 소스](design/streamlite.md#소스에서-확인한-비용과-저장-단위))
 
@@ -524,7 +524,7 @@ WAL 권고로 새로 부담하는 것은 redo·full-page image·공유 frame·�
 
 ### 유지·철회·보류와 다음 판정 조건
 
-기준 코드 이후에는 [구문 template cache](../src/sql/database_cache.c)와 Python의 첫 큐 사용 시 등록부를 생성하는 경로를 구현하고 소유권·오류·수명 회귀를 검증했다. [캐시 시험](../tests/test_database_cache.c)과 [Python 수명 시험](../tests/test_queue_lifecycle.py)은 이 내부 구현의 검증 범위다. cache는 기본 OFF인 비교 경로이며, [실행 성공 뒤 저장하는 계약](design/streamlite.md#공통-실행-계약)을 따른다. 이 작업본의 구현·회귀를 기본 브랜치 통합·배포나 비계측 성능·전체 메모리 개선의 근거로 쓰지 않는다. workspace·새 backend·실제 동시 writer·영속 fanout stream의 완료와도 구분한다.
+기준 코드 이후에는 [구문 template cache](../src/sql/database_cache.c)·[transaction workspace](../src/sql/database_workspace.c)와 Python의 첫 큐 사용 시 등록부를 생성하는 경로를 구현하고 소유권·오류·수명 회귀를 검증했다. [캐시 시험](../tests/test_database_cache.c)·[workspace 시험](../tests/test_database_workspace.c)과 [Python 수명 시험](../tests/test_queue_lifecycle.py)은 이 내부 구현의 검증 범위다. cache와 workspace는 기본 OFF인 비교 경로다. cache는 [실행 성공 뒤 저장하는 계약](design/streamlite.md#공통-실행-계약)을 따르며 workspace는 작업 catalog와 최신 COW 사본을 문장 사이에 보유한다. 문장별 heap·색인 계산은 남는다. 이 작업본의 구현·회귀를 기본 브랜치 통합·배포나 비계측 성능·전체 메모리 개선의 근거로 쓰지 않는다. 새 backend·실제 동시 writer·영속 fanout stream의 완료와도 구분한다.
 
 | 현재 상태 | 대상 | 다음 판정 조건 |
 |---|---|---|
@@ -537,6 +537,7 @@ WAL 권고로 새로 부담하는 것은 redo·full-page image·공유 frame·�
 | 비교 후보 유지 | buffered COW와 동등한 조기 잠금·공통 개선 | 정리·복구 포함 같은 조건의 tail·공정성·전체 자원, WAL 권고의 반증 여부 |
 | 검토 중 | 공개 prepared API | binding·schema·소유권·예산 계약과 공개 범위 확정 |
 | 기준 코드에 없음, 후속 내부 구현·회귀 확인 | 제한 SQL 문장·준비 결과 cache, 기본 OFF | hit/miss·반복 없는 SQL·workspace 네 조건의 비계측 효과와 채택·제품 통합 판정 |
+| 후속 내부 구현·회귀 확인 | 거래별 catalog 재사용·최신 COW 사본 보유, 기본 OFF | cache/workspace 네 조건의 비계측 효과·최고 메모리·정리 포함 수명주기와 채택 판정 |
 | 요구 미충족 | 현재 메모리 우위·기존 큐 대비 속도·미사용 전용 비용 배제 | 원 소비 경로 메모리·정상/실패 계약별 비교와 lifecycle 비용 분리 |
 | 미검증 | 새 엔진의 총 편익·장기 INSERT/UPDATE/DELETE 효율 | SQLite 직접 ACK 대안의 기능·개발·검증·운영 비용, cleanup 포함 수명주기 비교 |
 

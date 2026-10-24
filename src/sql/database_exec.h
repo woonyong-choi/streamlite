@@ -16,6 +16,8 @@
 #include "sql/database.h"
 #include "database_internal.h"
 #include "database_cache.h"
+#include "database_workspace.h"
+#include "../storage/page_workspace.h"
 #include "sql/sql_eval.h"
 #include "sql/sql_statement.h"
 #include "storage/catalog.h"
@@ -59,6 +61,7 @@ typedef struct {
     page_list_t old_committed;   /* 게시된 상태가 가리키고 작업이 대체한 페이지. 게시 성공 뒤에만 놓는다 */
     size_t res_cat;              /* resident로 계상한 작업 카탈로그 몫 */
     size_t res_lists;            /* resident로 계상한 위 목록들의 상한 */
+    page_workspace_t pages;
 } work_state_t;
 
 struct database {
@@ -68,6 +71,8 @@ struct database {
     bool poisoned;
     int cache_mode;
     database_cache_t *cache;
+    int workspace_mode;
+    database_workspace_stats_t workspace_stats;
     /* 상주 메모리 회계(attach된 경우) */
     mem_ledger_t resident;
     size_t res_fixed;
@@ -401,6 +406,7 @@ heap_status_t configure_secondary(heap_batch_t *batch, const catalog_t *catalog,
                                          catalog_table_id_t table_id);
 void work_close(database_t *db, work_t *work);
 bool work_clone(database_t *db, work_t *work);
+bool work_reserve_catalog(database_t *db, const work_t *work, size_t peak);
 void work_settle(database_t *db, work_t *work, size_t peak);
 database_exec_status_t publish(database_t *db, work_t *work, catalog_table_id_t id,
                                       heap_batch_t *batch,

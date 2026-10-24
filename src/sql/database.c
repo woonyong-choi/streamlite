@@ -24,7 +24,7 @@ typedef struct {
 } resident_plan_t;
 
 /*
- * 쓰기 작업 안의 문장을 게시하지 않고 작업 카탈로그에 쌓는다. 데이터 페이지는 이미 새 자리에 쓰였다. 문장이 대체한
+ * 쓰기 작업 안의 문장을 게시하지 않고 작업 카탈로그에 쌓는다. 내부 workspace는 데이터 쓰기도 미룬다. 문장이 대체한
  * 페이지는 놓지 않고 목록에 보관한다(작업이 게시된 뒤에만 놓는다). 실패하면 이 문장의 새 페이지만 돌려주고 작업
  * 카탈로그와 목록은 그대로다. 호출자가 batch를 free한다.
  */
@@ -334,10 +334,12 @@ database_status_t database_attach_ledger(database_t *db, const mem_ledger_t *res
     if (db == NULL) return DATABASE_INVALID;
     if (!mem_ledger_enabled(resident)) return DATABASE_OK;
     if (mem_ledger_enabled(&db->resident)) return DATABASE_INVALID;
+    if (db->work.active && database_workspace_enabled(db)) return DATABASE_INVALID;
     database_cache_close(db);
     size_t fixed = sizeof(*db) + page_file_handle_bytes(db->file);
     size_t catalog = catalog_memory_bytes(db->catalog);
-    size_t lists = page_file_list_peak_bytes(page_file_control(db->file)->page_count);
+    size_t lists = page_file_list_peak_bytes(page_file_allocated_pages(db->file));
+    if (db->res_lists > lists) lists = db->res_lists;
     if (!mem_reserve(resident, MEM_SCOPE_RESIDENT, fixed + catalog + lists)) return DATABASE_NOMEM;
     mem_ledger_retain(resident);
     db->resident = *resident;
@@ -352,7 +354,8 @@ size_t database_resident_bytes(const database_t *db)
     if (db == NULL) return 0;
     database_cache_stats_t cache;
     database_cache_stats(db, &cache);
-    return db->res_fixed + db->res_catalog + db->res_lists + cache.bytes;
+    return db->res_fixed + db->res_catalog + db->res_lists + cache.bytes +
+           db->work.res_cat + db->work.res_lists + db->work.pages.bytes;
 }
 
 /*
@@ -578,17 +581,27 @@ heap_status_t configure_secondary(heap_batch_t *batch, const catalog_t *catalog,
 void work_close(database_t *db, work_t *work)
 {
     if (work->cat == NULL) return;
+    if (work->cat == db->work.cat) {
+        db->work.cat = NULL;
+        mem_release(&db->resident, MEM_SCOPE_RESIDENT, db->work.res_cat);
+        db->work.res_cat = 0;
+    }
     catalog_close(work->cat);
     q_release(db, work->charged);
     *work = (work_t){NULL, 0};
 }
 
-/* 게시된 카탈로그를 복제한다. 복제 동안의 순간 최대치를 먼저 reserve하고 끝나면 복제본 몫만 남긴다. */
+/* workspace는 앞선 private catalog를 재사용하고, 나머지는 복제 순간의 최고치를 먼저 reserve한다. */
 bool work_clone(database_t *db, work_t *work)
 {
     TB_SCOPE(bench_metadata, TB_METADATA);
+    if (db->work.inside && database_workspace_enabled(db) && db->work.cat != NULL) {
+        *work = (work_t){db->work.cat, 0};
+        return true;
+    }
     const catalog_t *base = base_catalog(db);
     size_t peak = catalog_clone_peak_bytes(base);
+    if (db->work.inside && !database_workspace_allows(db, db->work.res_cat, db->work.res_lists, peak)) return false;
     if (!q_reserve(db, peak)) return false;
     catalog_t *clone = NULL;
     if (catalog_clone(base, &clone) != CATALOG_OK) {
@@ -599,13 +612,28 @@ bool work_clone(database_t *db, work_t *work)
     assert(kept <= peak);
     q_release(db, peak - kept);
     *work = (work_t){clone, kept};
+    if (db->work.inside) db->workspace_stats.catalog_clones++;
     return true;
+}
+
+bool work_reserve_catalog(database_t *db, const work_t *work, size_t peak)
+{
+    size_t kept = work->cat == db->work.cat ? db->work.res_cat : work->charged;
+    if (db->work.inside && !database_workspace_allows(db, kept, db->work.res_lists, peak)) return false;
+    return q_reserve(db, peak);
 }
 
 /* 호출 뒤 카탈로그 크기에 맞춰 reserve를 정리한다. peak는 호출 전에 reserve한 순간 최대치다. */
 void work_settle(database_t *db, work_t *work, size_t peak)
 {
     size_t now = catalog_memory_bytes(work->cat);
+    if (work->cat == db->work.cat) {
+        size_t growth = now > db->work.res_cat ? now - db->work.res_cat : 0;
+        assert(growth >= work->charged && growth - work->charged <= peak);
+        q_release(db, peak - (growth - work->charged));
+        work->charged = growth;
+        return;
+    }
     if (now >= work->charged) {
         size_t growth = now - work->charged;
         assert(growth <= peak);
@@ -647,7 +675,7 @@ static void publish_discard(database_t *db, work_t *work, heap_batch_t *batch, r
 static bool stage_prepare(database_t *db, const catalog_t *cat, size_t new_pages, stage_plan_t *plan)
 {
     *plan = (stage_plan_t){db->work.res_cat, db->res_lists, db->work.res_lists, 0};
-    if (!mem_ledger_enabled(&db->resident)) return true;
+    if (!mem_ledger_enabled(&db->resident) && !database_workspace_enabled(db)) return true;
     size_t chain = catalog_encoded_bytes(cat) / (PAGE_BODY_BYTES - OVERFLOW_MIN_PAGE_BYTES) + 1;
     uint64_t pages = (uint64_t)page_file_allocated_pages(db->file) + new_pages + chain;
     if (pages > UINT32_MAX) pages = UINT32_MAX;
@@ -655,6 +683,7 @@ static bool stage_prepare(database_t *db, const catalog_t *cat, size_t new_pages
     size_t lists = page_file_list_peak_bytes((uint32_t)pages);
     plan->lists_bytes = lists > db->res_lists ? lists : db->res_lists;
     plan->work_lists_bytes = lists > db->work.res_lists ? lists : db->work.res_lists;
+    if (!database_workspace_allows(db, plan->cat_bytes, plan->work_lists_bytes, 0)) return false;
     size_t extra = plan->lists_bytes - db->res_lists + plan->work_lists_bytes - db->work.res_lists;
     if (plan->cat_bytes > db->work.res_cat) extra += plan->cat_bytes - db->work.res_cat;
     if (!mem_reserve(&db->resident, MEM_SCOPE_RESIDENT, extra)) return false;
@@ -664,7 +693,7 @@ static bool stage_prepare(database_t *db, const catalog_t *cat, size_t new_pages
 
 static void stage_finish(database_t *db, const stage_plan_t *plan, bool adopted)
 {
-    if (!mem_ledger_enabled(&db->resident)) return;
+    if (!mem_ledger_enabled(&db->resident) && !database_workspace_enabled(db)) return;
     if (adopted) {
         if (plan->cat_bytes < db->work.res_cat) {
             mem_release(&db->resident, MEM_SCOPE_RESIDENT, db->work.res_cat - plan->cat_bytes);
@@ -683,12 +712,13 @@ static database_exec_status_t stage_adopt(database_t *db, work_t *work, heap_bat
                                           size_t drop_count, result_t *success, result_t **out)
 {
     size_t old_total = finished->old_count + drop_count;
-    if (!list_reserve(&db->work.old_committed, old_total)) {
+    stage_plan_t plan;
+    if (!stage_prepare(db, work->cat, finished->new_count, &plan)) {
         publish_discard(db, work, batch, &success);
         return DATABASE_EXEC_NOMEM;
     }
-    stage_plan_t plan;
-    if (!stage_prepare(db, work->cat, finished->new_count, &plan)) {
+    if (!list_reserve(&db->work.old_committed, old_total)) {
+        stage_finish(db, &plan, false);
         publish_discard(db, work, batch, &success);
         return DATABASE_EXEC_NOMEM;
     }
@@ -701,7 +731,7 @@ static database_exec_status_t stage_adopt(database_t *db, work_t *work, heap_bat
         if (page_file_is_fresh(db->file, page)) page_file_release(db->file, page);
         else list_push(&db->work.old_committed, page);
     }
-    catalog_close(db->work.cat);
+    if (db->work.cat != work->cat) catalog_close(db->work.cat);
     db->work.cat = work->cat;
     q_release(db, work->charged);  /* 이 카탈로그는 이제 문장 몫이 아니라 상주 몫이다 */
     *work = (work_t){NULL, 0};
@@ -1099,6 +1129,7 @@ database_status_t database_work_begin(database_t *db)
     if (locked != DATABASE_OK) return locked;
     db->work = (work_state_t){0};
     db->work.active = true;
+    database_workspace_begin(db);
     return DATABASE_OK;
 }
 
@@ -1151,6 +1182,7 @@ database_work_result_t database_work_commit(database_t *db)
 
 static void work_reset(database_t *db)
 {
+    database_workspace_end(db);
     mem_release(&db->resident, MEM_SCOPE_RESIDENT, db->work.res_cat + db->work.res_lists);
     list_free(&db->work.old_committed);
     db->work = (work_state_t){0};

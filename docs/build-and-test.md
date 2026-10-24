@@ -32,6 +32,7 @@ make SANITIZE= BUILD_DIR=build-nosan test-database
 | `make test-value-varchar` | VARCHAR 경계 값과 UTF-8 판정 |
 | `make test-database` | SQL 문장 parser, heap 저장소, 문장 실행, SQLite 대조, I/O·할당 실패 주입, 메모리 한도 열기, 기본 키 색인 |
 | `make test-database-cache` | 내부 SQL template의 binding·스키마·퇴출·할당 실패·메모리 소유권과 SQLite 결과 대조 |
+| `make test-database-workspace` | 거래별 최신 COW 사본·catalog 재사용, 네 조건의 SQLite 결과, rollback·할당/I/O 실패·삭제/재사용·결과 수명 |
 | `make test-transaction` | 트랜잭션 상태 기계, writer 경합, commit 결과, 실패 주입 |
 | `make test-session` | 세션 메모리 예산과 결과 수명 |
 | `make test-ack-queue` | ACK 큐의 C API와 실패 주입 |
@@ -56,6 +57,17 @@ make SQL_TEMPLATE_CACHE=0 all
 ```
 
 `test-database-cache`는 기본 빌드에서도 내부 제어로 OFF와 ON을 대조하며 `test-all`에 포함한다. [database_cache.h](../src/sql/database_cache.h)의 제어·통계는 시험용 내부 인터페이스다. 공개 prepared handle이나 Python 설정으로 노출하지 않는다. cache hit도 binding 검사와 실행별 AST 복제를 수행하므로 lexer/parser를 건너뛴다는 사실만으로 지연·메모리 개선을 주장하지 않는다.
+
+### Transaction workspace
+
+`TXN_WORKSPACE`는 0과 1을 받는 내부 비교 빌드 설정이며 기본값은 0이다. 1은 [변경 누적과 실패 경계](design/streamlite.md#변경-누적과-실패-경계)의 catalog 재사용과 private COW page 보유를 켠다. 설정 변경은 객체와 공유 라이브러리 fingerprint에 반영한다. 파일 형식·내구 barrier와 기존 단일 writer 경계는 유지한다.
+
+```sh
+make TXN_WORKSPACE=1 SQL_TEMPLATE_CACHE=1 test-database-workspace test-transaction test-session test-ack-queue
+make TXN_WORKSPACE=0 SQL_TEMPLATE_CACHE=0 all
+```
+
+`test-database-workspace`는 기본 빌드에서도 내부 제어로 cache/workspace 네 조건을 검사하며 `test-all`에 포함한다. [database_workspace.h](../src/sql/database_workspace.h)의 제어·통계는 내부 시험용이며 Python·공개 C ABI에 추가하지 않는다. 작업이 열려 있으면 설정 변경과 resident ledger의 새 연결을 거절한다. 한도는 [시험용 설정](design/streamlite.md#공통-개선의-시험용-한도)을 따르며 query·result의 기존 한도와 전체 RSS를 뜻하지 않는다. 문장별 heap·색인 계산과 사본 탐색·복사 비용은 남는다. 시험의 쓰기 횟수·예약 최고치와 실패 주입은 성능 채택이나 물리 전원 장애의 증거가 아니다.
 
 ### 요청 단위 내부 계측
 
