@@ -2,15 +2,15 @@
 # 큐는 세션(session.o)으로 문장을 실행한다.
 # DB 코어(DATABASE_OBJS)는 큐 객체를 링크하지 않는다. 큐를 쓰는 바이너리만 QUEUE_OBJS를 더한다.
 
-QUEUE_OBJS = $(BUILD_DIR)/queue/ack_queue.o $(BUILD_DIR)/queue/ack_queue_sql.o
+QUEUE_OBJS = $(BUILD_DIR)/queue/ack_queue.o $(BUILD_DIR)/queue/ack_queue_sql.o $(BUILD_DIR)/queue/ack_queue_conditional.o
 QUEUE_TESTS = test_ack_queue test_ack_queue_fault test_totedb
 QUEUE_BINS = $(addprefix $(BUILD_DIR)/,$(QUEUE_TESTS))
 
 $(QUEUE_BINS): $(BUILD_DIR)/%: $(BUILD_DIR)/tests/%.o $(QUEUE_OBJS) $(BUILD_DIR)/sql/session.o $(DATABASE_OBJS)
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-test-ack-queue: $(QUEUE_BINS)
-	@set -e; for binary in $(QUEUE_BINS); do \
+test-ack-queue: $(QUEUE_BINS) $(BUILD_DIR)/test_ack_queue_conditional
+	@set -e; for binary in $(QUEUE_BINS) $(BUILD_DIR)/test_ack_queue_conditional; do \
 		$(TEST_RUNNER) --report "$(BUILD_DIR)/fault/$${binary##*/}.json" -- "$$binary"; \
 	done
 
@@ -18,11 +18,29 @@ test-ack-queue: $(QUEUE_BINS)
 
 .PHONY: test-ack-queue
 
+$(BUILD_DIR)/queue/ack_queue_probe.o: src/queue/ack_queue.c $(BUILD_FINGERPRINT)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Dmalloc=ackq_probe_malloc -c -o $@ $<
+
+$(BUILD_DIR)/queue/ack_queue_conditional_probe.o: src/queue/ack_queue_conditional.c $(BUILD_FINGERPRINT)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Dmalloc=ackq_probe_malloc -c -o $@ $<
+
+$(BUILD_DIR)/queue/ack_queue_sql_probe.o: src/queue/ack_queue_sql.c $(BUILD_FINGERPRINT)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Dsession_exec=ackq_probe_session_exec -c -o $@ $<
+
+$(BUILD_DIR)/test_ack_queue_conditional: $(BUILD_DIR)/tests/test_ack_queue_conditional.o $(BUILD_DIR)/queue/ack_queue_probe.o $(BUILD_DIR)/queue/ack_queue_conditional_probe.o $(BUILD_DIR)/queue/ack_queue_sql_probe.o $(BUILD_DIR)/sql/session.o $(DATABASE_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+test-ack-queue-conditional: $(BUILD_DIR)/test_ack_queue_conditional
+	$(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_ack_queue_conditional.json -- ./$<
+
+-include $(BUILD_DIR)/queue/ack_queue_probe.d $(BUILD_DIR)/queue/ack_queue_conditional_probe.d $(BUILD_DIR)/queue/ack_queue_sql_probe.d $(BUILD_DIR)/tests/test_ack_queue_conditional.d
+.PHONY: test-ack-queue-conditional
+
 # Python 어댑터가 쓰는 공유 라이브러리. 센티널(sanitizer)을 켜지 않은 최적화 빌드이며 DB 소스와 큐 소스를 한 번에 묶는다.
 TOTEDB_SHARED_EXT = $(if $(filter Darwin,$(UNAME_S)),dylib,so)
 TOTEDB_SHARED_LIB = $(BUILD_DIR)/lib/libtotedb.$(TOTEDB_SHARED_EXT)
 TOTEDB_SHARED_SRCS = $(patsubst $(BUILD_DIR)/%.o,$(SRC_DIR)/%.c,$(DATABASE_OBJS)) \
-                    src/sql/session.c src/queue/ack_queue.c src/queue/ack_queue_sql.c src/capi/totedb.c
+                    src/sql/session.c src/queue/ack_queue.c src/queue/ack_queue_sql.c src/queue/ack_queue_conditional.c src/capi/totedb.c
 
 $(TOTEDB_SHARED_LIB): $(TOTEDB_SHARED_SRCS) $(wildcard include/*.h include/*/*.h) $(wildcard src/queue/*.h src/sql/*.h src/storage/*.h) src/benchmark.h $(BUILD_FINGERPRINT)
 	@mkdir -p $(dir $@)

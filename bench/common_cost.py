@@ -164,7 +164,7 @@ def register(args: argparse.Namespace) -> dict[str, Any]:
         )
         for name in ("candidate", "candidate_on"):
             flags = next(line for line in builds[name]["fingerprint"].splitlines() if line.startswith("SHARED_CFLAGS="))
-            if flags.replace("-UTOTE_BENCHMARK -DTOTE_BENCHMARK=1", "-UTOTE_BENCHMARK") != reference_flags:
+            if not _conditional_flags_match(reference_flags, flags):
                 raise ValueError("conditional build flags differ from baseline")
     if not args.control and args.phase == "cache":
         for name in ("off", "on"):
@@ -406,6 +406,15 @@ def _filesystem() -> dict[str, Any]:
     info = plistlib.loads(_run(["diskutil", "info", "-plist", device], binary=True))
     names = ("FilesystemType", "DeviceIdentifier", "VolumeName", "MediaName", "SolidState", "DiskSize")
     return {name: info.get(name, "unavailable") for name in names}
+
+
+def _conditional_flags_match(reference: str, candidate: str) -> bool:
+    baseline_flag = "-DTOTE_ACKQ_CONDITIONAL=0"
+    candidate_flag = "-DTOTE_ACKQ_CONDITIONAL=1"
+    if reference.split().count(baseline_flag) != 1 or candidate.split().count(candidate_flag) != 1:
+        return False
+    normalized = candidate.replace("-UTOTE_BENCHMARK -DTOTE_BENCHMARK=1", "-UTOTE_BENCHMARK")
+    return normalized.replace(candidate_flag, baseline_flag) == reference
 
 
 def _build_identity(path: Path, *, instrumented: int) -> dict[str, Any]:

@@ -675,6 +675,10 @@ static void test_scalar_subquery_probes(void)
     expect_text(db, "SELECT id FROM t WHERE id = (SELECT id FROM t WHERE id = 1000)", "[0]");
     expect_text(db, "SELECT id FROM t WHERE id = (SELECT 17.0)", "[1] 17");
     expect_text(db, "SELECT id FROM t WHERE id = (SELECT 17.5)", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id < 0 UNION ALL SELECT id FROM t WHERE id < 0", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id = 17 UNION ALL SELECT id FROM t WHERE id < 0", "[1] 17");
+    expect_text(db, "SELECT id FROM t WHERE id < 0 UNION ALL SELECT id FROM t WHERE id = 17", "[1] 17");
+    expect_text(db, "SELECT id FROM t WHERE id < 0 UNION SELECT id FROM t WHERE id < 0", "[0]");
     expect_text(db, "SELECT count(*) FROM t a WHERE id = (SELECT a.id)", "[1] 64");
     expect_class(db, "SELECT id FROM t WHERE id = (SELECT id FROM t)", RESULT_E_SEMANTIC);
     expect_class(db, "UPDATE t SET state = 9 WHERE id = (SELECT id, state FROM t LIMIT 1)", RESULT_E_SEMANTIC);

@@ -69,6 +69,19 @@ make TXN_WORKSPACE=0 SQL_TEMPLATE_CACHE=0 all
 
 `test-database-workspace`는 기본 빌드에서도 내부 제어로 cache/workspace 네 조건을 검사하며 `test-all`에 포함한다. [database_workspace.h](../src/sql/database_workspace.h)의 제어·통계는 내부 시험용이며 Python·공개 C ABI에 추가하지 않는다. 작업이 열려 있으면 설정 변경과 resident ledger의 새 연결을 거절한다. 한도는 [시험용 설정](design/streamlite.md#공통-개선의-시험용-한도)을 따르며 query·result의 기존 한도와 전체 RSS를 뜻하지 않는다. 문장별 heap·색인 계산과 사본 탐색·복사 비용은 남는다. 시험의 쓰기 횟수·예약 최고치와 실패 주입은 성능 채택이나 물리 전원 장애의 증거가 아니다.
 
+### Conditional queue SQL
+
+`ACKQ_CONDITIONAL`은 0과 1을 받는 내부 비교 설정이며 기본값은 0이다. 1은 [조건부 claim·ACK 경로](design/streamlite.md#선택형-수명과-조건부-갱신)를 선택한다. 큐 미사용 SQL 코어에는 전용 hook을 추가하지 않는다. 공개 C/Python 설정·파일 형식·단일 writer 경계와 내구 barrier는 바꾸지 않는다.
+
+```sh
+make ACKQ_CONDITIONAL=1 test-ack-queue
+make ACKQ_CONDITIONAL=0 test-ack-queue-conditional
+```
+
+`test-ack-queue`는 `test-ack-queue-conditional`의 바이너리도 실행한다. 이 시험은 내부 제어로 cache/workspace 네 조건과 기존·조건부 경로를 함께 대조한다. queue SQL과 payload 할당의 시험 hook, 실제 파일 I/O 호출, query/result 예약을 관측한다. 정상·빈 후보·부분 배치·중복/stale/FAILED·상한·재개방·결과 수명·취소·payload OOM·query 예산 거절·writer timeout을 검사하며 시험 관측을 비계측 성능으로 해석하지 않는다.
+
+E3 비교의 baseline·candidate와 각 계측 ON은 같은 소스와 cache/workspace 설정으로 별도 빌드한다. 조건부 사전 등록은 정확한 `TOTE_ACKQ_CONDITIONAL=0`과 `=1`, 계측 플래그만 정규화하며 다른 차이는 거절한다. 원 cache/workspace 비교의 `validated_builds`와 수집·채택 기준은 유지한다. 실제 통과한 시험·소스·바이너리 해시를 담은 eligibility를 구현 commit에 연결해 등록한 뒤 별도 수집한다. 이 내부 구현이나 회귀만으로 채택하지 않는다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

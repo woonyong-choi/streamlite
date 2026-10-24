@@ -205,9 +205,19 @@ SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈
 
 [SQL 회귀](../../tests/test_database.c)는 두 상태 색인에서 각각 최소 ID를 구한 뒤 합친 최소 후보의 UPDATE·DELETE, 현재 binding과 닫기 뒤 반환 값의 수명을 검사한다. 6행 합성 입력의 변경 전 UPDATE·DELETE는 각각 전체 scan 6행·색인 조회 2회였고, 탐침을 추가한 경로는 각각 전체 scan 0행·색인 조회 3회다. 이는 특정 접근 경로의 관측이며 처리량 개선율이 아니다. [SQLite 대조](../../tests/test_database_sqlite.c)와 [할당·I/O 실패 시험](../../tests/test_database_fault.c)을 함께 적용한다. 이 선행 SQL 구현을 claim/ACK의 통합·lease/fence 회귀·실측 완료로 해석하지 않는다.
 
+로컬 [조건부 큐 경로](../../src/queue/ack_queue_conditional.c)는 `ACKQ_CONDITIONAL=1`에서 claim·claim_id와 ACK·fail을 연결한다. [내부 설정](../build-and-test.md#conditional-queue-sql)의 기본값은 0이다. claim은 기존 두 상태 색인에서 후보를 하나씩 구해 최소 ID를 선택한다. 빈 집합의 `COALESCE(MIN(id), -1)`도 전체 eligibility 조건과 함께 검사하므로 sentinel 행을 claim하지 않는다. fence·attempts 상한은 산술 갱신 전에 거절한다. 배치는 같은 write transaction과 시각 아래 최소 후보를 반복해서 처리하며, 앞서 새 lease를 받은 행을 다시 고르지 않는다.
+
+영향 행이 없으면 [기존 상태 조회](../../src/queue/ack_queue.c)만 수행해 빈 후보·상한·누락·ineligible·중복·stale 결과를 구분한다. mutation을 재실행하거나 최소 후보의 상한 오류를 건너뛰지 않는다. 같은 fence의 ACKED만 중복 ACK 성공이며 FAILED는 그대로 남긴다. 중복 fail은 첫 note를 보존한다. 0행 UPDATE는 연산의 dirty 표시를 이전 값으로 돌려 빈 claim·중복 ACK를 commit하지 않는다. SQL 실패는 기존 failed transaction과 명시적 rollback을 유지하고, SQL 성공 뒤 payload 복사 실패는 기존 호출자 transaction 소유권을 보존한다. UNKNOWN이면 claim 결과를 호출자에게 주지 않는 기존 경계도 유지한다.
+
+[조건부 회귀](../../tests/test_ack_queue_conditional.c)는 cache/workspace 네 조건에서 기존·조건부 경로를 함께 검사한다. 정상 claim은 SQL 3회에서 1회, 정상 ACK는 2회에서 1회로 줄었다. 같은 시험의 부분 배치는 4회에서 5회, 중복·stale ACK는 1회에서 2회, 빈 claim은 2회에서 3회로 늘었다. 전체 table scan은 없지만 부분 배치의 색인 조회는 4회에서 11회로 늘었다. 정상 claim의 문장별 query 예약 정점은 기존 40,425–62,730B, 후보 132,245–210,325B였고 고정 96KiB query 한도에서 후보는 NOMEM으로 거절했다. 이 값은 해당 합성 입력과 cache 상태의 요청 bytes이며 RSS나 보편적 메모리 비율이 아니다. SQL·binding 수, 가변 binding bytes, payload 복사 할당, query/result 예약, 색인 페이지, pread·pwrite·fsync와 wall/CPU 관측에는 시험 hook의 비용이 포함된다. 비계측 채택 근거로 사용하지 않는다. [게시 실패·강제 종료 시험](../../tests/test_ack_queue_fault.c)과 실제 C/Python 경로의 재개방도 별도로 검사하며 물리 전원 장애 보장은 추가하지 않는다.
+
+1·4·16·32개를 모두 가져오는 배치도 별도로 관측했다. cache/workspace OFF의 32개 배치는 SQL 34회에서 32회로 줄었지만 색인 조회는 34회에서 96회, 색인 페이지 관측은 358회에서 544회로 늘었다. 후보를 매 항목 다시 선택하는 비용을 단순 SQL 감소로 숨기지 않는다. 이 경로는 비교 후보이며 큰 배치의 성능 채택도 완료되지 않았다.
+
+빈 후보 회귀에서 SQL 코어의 빈 UNION 병합이 NULL 배열에 0 오프셋을 적용하는 UBSan 오류를 발견했다. [결과 병합](../../src/sql/database_select.c)은 실제 행이 있을 때만 배열을 복사하며, [일반 SQL 회귀](../../tests/test_database.c)에 빈·비어 있지 않은 양쪽 조합을 추가했다. 오류를 낸 바이너리·DB·로그를 보존하고 수정 후 네이티브 검증은 UBSan 오류 즉시 종료와 stderr 검사까지 적용했다. 오류가 남았던 최초 실행의 종료 코드 0을 통과 증거로 사용하지 않는다.
+
 ### 공통 계약의 검증 입력
 
-이 표는 각 구현이 확인할 기대 결과다. cache·workspace와 Python 큐 수명의 회귀·실패 검증은 앞의 시험 파일에 연결하며, stream 수명·조건부 SQL의 새 경로는 검증 전이다. 비계측 업무 결과와 성능 채택은 별도 수집으로 판정한다.
+이 표는 각 구현이 확인할 기대 결과다. cache·workspace·Python 큐 수명과 로컬 조건부 SQL의 회귀·실패 검증은 앞의 시험 파일에 연결하며, stream 수명은 구현 전이다. 조건부 SQL과 수명의 비계측 업무 결과·성능 채택은 별도 수집으로 판정한다.
 
 | 입력 | 기대 결과와 검사 경계 |
 |---|---|

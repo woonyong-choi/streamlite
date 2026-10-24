@@ -9,6 +9,10 @@
 /* 문장 하나의 최대 SQL 길이. 이름은 ACKQ_NAME_MAX 이하라 가장 긴 문장도 들어간다. */
 #define ACKQ_SQL_MAX 512u
 
+#ifndef TOTE_ACKQ_CONDITIONAL
+#define TOTE_ACKQ_CONDITIONAL 0
+#endif
+
 struct ackq {
     session_db_t *db;               /* 설치한 데이터베이스. 연산의 세션은 이 데이터베이스의 것이어야 한다 */
     char name[ACKQ_NAME_MAX + 1];
@@ -20,6 +24,7 @@ struct ackq {
     uint32_t begin_timeout_ms;
     uint64_t (*now_ms)(void *ctx);
     void *clock_ctx;
+    bool conditional_enabled;
 };
 
 /* 한 연산이 문장을 실행하는 세션. 세션에 열려 있던 트랜잭션(호출자의 것)이면 own이 false이고 commit하지 않는다. */
@@ -28,6 +33,24 @@ typedef struct {
     bool own;
     bool dirty;   /* 쓰기 문장을 실행했다. 자기 트랜잭션은 dirty일 때만 commit한다 */
 } ackq_scope_t;
+
+typedef struct {
+    uint64_t id;
+    int64_t now;
+    int64_t lease_until;
+} ackq_claim_request_t;
+
+typedef struct {
+    uint64_t id;
+    uint64_t fence;
+    ackq_state_t state;
+    const char *note;
+} ackq_finish_request_t;
+
+ackq_status_t ackq_conditional_claim(ackq_t *queue, ackq_scope_t *scope, const ackq_claim_request_t *request,
+                                      ackq_claim_t *item, bool *matched);
+ackq_status_t ackq_conditional_finish(ackq_t *queue, ackq_scope_t *scope, const ackq_finish_request_t *request,
+                                       bool *matched);
 
 uint64_t ackq_now(const ackq_t *queue);
 

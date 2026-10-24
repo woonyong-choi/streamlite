@@ -509,7 +509,9 @@ static database_exec_status_t combine_rows(select_ctx_t *acc, select_ctx_t *othe
     if (op == SQLSTMT_SET_UNION || op == SQLSTMT_SET_UNION_ALL) {
         status = select_rows_reserve(acc, acc->row_count + other->row_count);
         if (status != DATABASE_EXEC_OK) return status;
-        memcpy(acc->rows + acc->row_count, other->rows, other->row_count * sizeof(value_t *));
+        if (other->row_count > 0) {
+            memcpy(acc->rows + acc->row_count, other->rows, other->row_count * sizeof(value_t *));
+        }
         acc->row_count += other->row_count;
         other->row_count = 0;
         return op == SQLSTMT_SET_UNION ? select_dedupe(acc) : DATABASE_EXEC_OK;

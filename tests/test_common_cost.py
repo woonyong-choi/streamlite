@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bench"))
 
@@ -18,6 +19,22 @@ from common_cost import cases, collect, register, verify  # noqa: E402
 from common_cost_analysis import analyze, analyze_python, validate_native  # noqa: E402
 import common_cost  # noqa: E402
 import common_cost_analysis  # noqa: E402
+
+
+@pytest.mark.parametrize(
+    "candidate,expected",
+    [
+        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=1", True),
+        ("-UTOTE_BENCHMARK -DTOTE_BENCHMARK=1 -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=1", True),
+        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=0", False),
+        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=1 -DTOTE_TXN_WORKSPACE=1", False),
+        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=1 -DTOTE_ACKQ_CONDITIONAL=0", False),
+        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=2", False),
+    ],
+)
+def test_conditional_registration_allows_only_the_selected_queue_switch(candidate: str, expected: bool) -> None:
+    reference = "SHARED_CFLAGS=-O2 -UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=0"
+    assert common_cost._conditional_flags_match(reference, "SHARED_CFLAGS=-O2 " + candidate) is expected
 
 
 @pytest.fixture

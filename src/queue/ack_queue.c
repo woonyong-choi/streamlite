@@ -300,6 +300,7 @@ static ackq_status_t make_queue(session_t *session, const ackq_options_t *option
     queue->begin_timeout_ms = options->begin_timeout_ms;
     queue->now_ms = options->now_ms;
     queue->clock_ctx = options->clock_ctx;
+    queue->conditional_enabled = TOTE_ACKQ_CONDITIONAL != 0;
     *out = queue;
     return ACKQ_OK;
 }
@@ -625,27 +626,56 @@ static ackq_status_t claim_one(ackq_t *queue, ackq_scope_t *scope, const meta_t 
     return ACKQ_OK;
 }
 
+static ackq_status_t scan_claims(ackq_t *queue, ackq_scope_t *scope, int64_t now, topk_t *top)
+{
+    size_t max_items = top->cap;
+    /* 때가 된 READY와 시도 횟수가 남은 만료 LEASED에서 각각 가장 작은 id k개를 읽어 합친다 */
+    value_view_t ready[3] = {ackq_int(ACKQ_STATE_READY), ackq_int(now), ackq_int((int64_t)max_items)};
+    value_view_t leased[5] = {ackq_int(ACKQ_STATE_LEASED), ackq_int(now), ackq_int(queue->max_attempts),
+                              ackq_int(queue->max_attempts), ackq_int((int64_t)max_items)};
+    ackq_status_t status = scan_meta(queue, scope, " WHERE state = ? AND ready_at <= ? ORDER BY id LIMIT ?", ready, 3, top);
+    if (status == ACKQ_OK) {
+        status = scan_meta(queue, scope,
+                           " WHERE state = ? AND lease_until <= ? AND (? = 0 OR attempts < ?) ORDER BY id LIMIT ?",
+                           leased, 5, top);
+    }
+    return status;
+}
+
 static ackq_status_t claim_in(ackq_t *queue, ackq_scope_t *scope, size_t max_items, int64_t now, int64_t lease_until,
                               ackq_claim_t *items, size_t *count)
 {
     topk_t top = {calloc(max_items, sizeof(meta_t)), 0, max_items};
     if (top.items == NULL) return ACKQ_NOMEM;
-    /* 때가 된 READY와 시도 횟수가 남은 만료 LEASED에서 각각 가장 작은 id k개를 읽어 합친다 */
-    value_view_t ready[3] = {ackq_int(ACKQ_STATE_READY), ackq_int(now), ackq_int((int64_t)max_items)};
-    value_view_t leased[5] = {ackq_int(ACKQ_STATE_LEASED), ackq_int(now), ackq_int(queue->max_attempts),
-                              ackq_int(queue->max_attempts), ackq_int((int64_t)max_items)};
-    ackq_status_t status = scan_meta(queue, scope, " WHERE state = ? AND ready_at <= ? ORDER BY id LIMIT ?", ready, 3, &top);
-    if (status == ACKQ_OK) {
-        status = scan_meta(queue, scope,
-                           " WHERE state = ? AND lease_until <= ? AND (? = 0 OR attempts < ?) ORDER BY id LIMIT ?",
-                           leased, 5, &top);
-    }
+    ackq_status_t status = scan_claims(queue, scope, now, &top);
     for (size_t i = 0; status == ACKQ_OK && i < top.count; i++) {
         status = claim_one(queue, scope, &top.items[i], lease_until, &items[i]);
         if (status == ACKQ_OK) *count = i + 1;
     }
     free(top.items);
     return status;
+}
+
+static ackq_status_t claim_miss(ackq_t *queue, ackq_scope_t *scope, int64_t now)
+{
+    meta_t candidate;
+    topk_t top = {&candidate, 0, 1};
+    ackq_status_t status = scan_claims(queue, scope, now, &top);
+    if (status != ACKQ_OK || top.count == 0) return status;
+    return candidate.fence == INT64_MAX || candidate.attempts == INT64_MAX ? ACKQ_LIMIT : ACKQ_INTERNAL;
+}
+
+static ackq_status_t conditional_claim_in(ackq_t *queue, ackq_scope_t *scope, size_t max_items,
+                                          const ackq_claim_request_t *request, ackq_claim_t *items, size_t *count)
+{
+    for (size_t i = 0; i < max_items; i++) {
+        bool matched = false;
+        ackq_status_t status = ackq_conditional_claim(queue, scope, request, &items[i], &matched);
+        if (status != ACKQ_OK) return status;
+        if (!matched) return claim_miss(queue, scope, request->now);
+        *count = i + 1;
+    }
+    return ACKQ_OK;
 }
 
 ackq_status_t ackq_claim(ackq_t *queue, session_t *session, size_t max_items, uint64_t lease_ms,
@@ -661,10 +691,15 @@ ackq_status_t ackq_claim(ackq_t *queue, session_t *session, size_t max_items, ui
     ackq_scope_t scope;
     status = ackq_scope_open(queue, session, true, &scope);
     if (status != ACKQ_OK) return status;
-    status = claim_in(queue, &scope, max_items, now_value, lease_until, items, count);
+    if (queue->conditional_enabled) {
+        ackq_claim_request_t request = {0, now_value, lease_until};
+        status = conditional_claim_in(queue, &scope, max_items, &request, items, count);
+    } else {
+        status = claim_in(queue, &scope, max_items, now_value, lease_until, items, count);
+    }
     if (status == ACKQ_OK) status = ackq_scope_close(&scope, status);
     else ackq_scope_close(&scope, status);
-    /* commit이 실패하거나 불확실하면 claim은 없던 일이다. 가져온 항목을 호출자에게 주지 않는다. */
+    /* commit 결과가 불확실해도 호출자에게 claim을 넘기지 않는다. */
     if (status != ACKQ_OK) {
         ackq_claims_release(items, *count);
         *count = 0;
@@ -683,13 +718,20 @@ ackq_status_t ackq_claim_id(ackq_t *queue, session_t *session, uint64_t id, uint
     ackq_scope_t scope;
     status = ackq_scope_open(queue, session, true, &scope);
     if (status != ACKQ_OK) return status;
+    bool matched = false;
+    if (queue->conditional_enabled) {
+        ackq_claim_request_t request = {id, now_value, lease_until};
+        status = ackq_conditional_claim(queue, &scope, &request, item, &matched);
+    }
     meta_t meta;
-    status = fetch_meta(queue, &scope, id, &meta);
-    if (status == ACKQ_OK) {
+    if (status == ACKQ_OK && !matched) status = fetch_meta(queue, &scope, id, &meta);
+    if (status == ACKQ_OK && !matched) {
         claim_filter_t filter = {now_value, queue->max_attempts};
         bool due = meta.state == ACKQ_STATE_READY ? ready_due(&meta, &filter)
                                                   : meta.state == ACKQ_STATE_LEASED && lease_expired(&meta, &filter);
-        status = due ? claim_one(queue, &scope, &meta, lease_until, item) : ACKQ_STALE;
+        if (!due) status = ACKQ_STALE;
+        else if (!queue->conditional_enabled) status = claim_one(queue, &scope, &meta, lease_until, item);
+        else status = meta.fence == INT64_MAX || meta.attempts == INT64_MAX ? ACKQ_LIMIT : ACKQ_INTERNAL;
     }
     status = ackq_scope_close(&scope, status);
     if (status != ACKQ_OK) ackq_claims_release(item, 1);
@@ -729,13 +771,19 @@ static ackq_status_t finish_claim(ackq_t *queue, session_t *session, uint64_t id
     ackq_scope_t scope;
     ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
     if (status != ACKQ_OK) return status;
+    if (queue->conditional_enabled) {
+        ackq_finish_request_t request = {id, fence, target, note};
+        bool matched = false;
+        status = ackq_conditional_finish(queue, &scope, &request, &matched);
+        if (status != ACKQ_OK || matched) return ackq_scope_close(&scope, status);
+    }
     meta_t meta;
     status = fetch_meta(queue, &scope, id, &meta);
     if (status == ACKQ_OK) {
         if (meta.fence != (int64_t)fence) status = ACKQ_STALE;
         else if (meta.state == (int64_t)target) status = ACKQ_OK;
         else if (meta.state != ACKQ_STATE_LEASED) status = ACKQ_STALE;
-        else status = set_terminal(queue, &scope, id, target, note);
+        else status = queue->conditional_enabled ? ACKQ_INTERNAL : set_terminal(queue, &scope, id, target, note);
     }
     return ackq_scope_close(&scope, status);
 }
