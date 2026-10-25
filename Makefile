@@ -132,8 +132,9 @@ test-candidate-control: $(BUILD_DIR)/test_candidate_control
 	$(TEST_RUNNER) --report $(CANDIDATE_CONTROL_REPORT) -- ./$(BUILD_DIR)/test_candidate_control
 $(BUILD_DIR)/test_candidate_wal: $(BUILD_DIR)/tests/test_candidate_wal.o $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
 CANDIDATE_WITNESS_MODULE ?= $(BUILD_DIR)/storage/candidate_wal_witness.o
+CANDIDATE_SYSTEM_MODULE ?= $(BUILD_DIR)/storage/candidate_wal_system.o
 CANDIDATE_WITNESS_CHECKPOINT_MODULE ?= $(BUILD_DIR)/storage/candidate_wal_checkpoint.o
-CANDIDATE_WITNESS_OBJS = $(CANDIDATE_WITNESS_MODULE) $(BUILD_DIR)/storage/candidate_wal_system.o $(BUILD_DIR)/storage/candidate_catalog.o $(BUILD_DIR)/storage/candidate_allocation_format.o $(BUILD_DIR)/storage/candidate_page.o $(CANDIDATE_WITNESS_CHECKPOINT_MODULE) $(CANDIDATE_CHECKPOINT_OBJS) $(BUILD_DIR)/storage/candidate_control_format.o $(BUILD_DIR)/storage/candidate_digest.o
+CANDIDATE_WITNESS_OBJS = $(CANDIDATE_WITNESS_MODULE) $(CANDIDATE_SYSTEM_MODULE) $(BUILD_DIR)/storage/candidate_catalog.o $(BUILD_DIR)/storage/candidate_allocation_format.o $(BUILD_DIR)/storage/candidate_page.o $(CANDIDATE_WITNESS_CHECKPOINT_MODULE) $(CANDIDATE_CHECKPOINT_OBJS) $(BUILD_DIR)/storage/candidate_control_format.o $(BUILD_DIR)/storage/candidate_digest.o
 $(BUILD_DIR)/test_candidate_wal_checkpoint: $(BUILD_DIR)/tests/test_candidate_wal_checkpoint.o $(CANDIDATE_WITNESS_OBJS) $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
 CANDIDATE_WAL_CHECKPOINT_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_checkpoint.json
 CANDIDATE_WAL_CHECKPOINT_ARGS ?=
@@ -147,6 +148,12 @@ CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.js
 CANDIDATE_RECOVERY_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery.o
 CANDIDATE_RECOVERY_TERMINAL_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery_terminal.o
 CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
+$(BUILD_DIR)/test_candidate_checkpoint_state: $(BUILD_DIR)/tests/test_candidate_checkpoint_state.o $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_STATE_REPORT ?= $(BUILD_DIR)/fault/test_candidate_checkpoint_state.json
+.PHONY: test-candidate-checkpoint-state
+test-candidate-checkpoint-state: $(BUILD_DIR)/test_candidate_checkpoint_state
+	$(TEST_RUNNER) --report $(CANDIDATE_STATE_REPORT) -- ./$(BUILD_DIR)/test_candidate_checkpoint_state
 $(BUILD_DIR)/test_candidate_outcome_rebuild: $(BUILD_DIR)/tests/test_candidate_outcome_rebuild.o $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_REBUILD_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_rebuild.json

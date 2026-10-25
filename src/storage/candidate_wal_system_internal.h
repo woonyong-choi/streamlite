@@ -2,6 +2,7 @@
 #define STORAGE_CANDIDATE_WAL_SYSTEM_INTERNAL_H
 
 #include "storage/candidate_wal_system.h"
+#include "storage/candidate_control.h"
 
 typedef struct candidate_wal_system candidate_wal_system_t;
 candidate_wal_status_t candidate_system_create(const uint8_t uuid[16],
@@ -9,6 +10,8 @@ candidate_wal_status_t candidate_system_create(const uint8_t uuid[16],
 void candidate_system_close(candidate_wal_system_t **system);
 size_t candidate_system_resident_bytes(const candidate_wal_system_t *system);
 void candidate_system_begin(candidate_wal_system_t *system);
+candidate_wal_status_t candidate_system_bind_checkpoint(candidate_wal_system_t *system,
+    const candidate_control_state_t *anchor);
 candidate_wal_status_t candidate_system_image(candidate_wal_system_t *system, const candidate_wal_record_t *record);
 candidate_wal_status_t candidate_system_event(candidate_wal_system_t *system, const candidate_wal_record_t *record);
 candidate_wal_status_t candidate_system_finish(candidate_wal_system_t *system, uint64_t group,

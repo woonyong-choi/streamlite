@@ -138,7 +138,10 @@ static void empty_rebuild(void)
     render_plan(&a,p,"projection2",2); candidate_outcome_rebuild_close(&p); close_aborted(&a);
 }
 
-int main(int argc, char **argv)
+#ifndef CANDIDATE_REBUILD_LIMIT_TEST_MAIN
+#define CANDIDATE_REBUILD_LIMIT_TEST_MAIN main
+#endif
+int CANDIDATE_REBUILD_LIMIT_TEST_MAIN(int argc, char **argv)
 {
     setvbuf(stdout,NULL,_IONBF,0); alarm(90); CHECK(argc == 2);
     if (strcmp(argv[1],"capacity") == 0) capacity_rebuild();

@@ -69,7 +69,9 @@ candidate_wal_status_t candidate_wal_witness_analyze_checkpoint(candidate_wal_t 
     const candidate_witness_options_t *options, const candidate_control_state_t *anchor,
     candidate_wal_witness_t **out);
 candidate_witness_info_t candidate_wal_witness_info(const candidate_wal_witness_t *witness);
-/* 관측한 prefix의 상태이며 최초 이전 값·checkpoint·안전한 번호 발급/회수를 증명하지 않는다. */
+/* raw 분석은 관측한 prefix의 상태이며 최초 이전 값을 증명하지 않는다. */
+/* checkpoint 분석의 has_*와 숫자 상태는 선택 BEGIN에서 대조한 anchor로도 알려지며 events는 관측한 전이만 센다. */
+/* 두 모드 모두 회수된 이력의 seed나 안전한 번호 발급/회수를 증명하지 않는다. */
 candidate_witness_system_info_t candidate_wal_witness_system_info(const candidate_wal_witness_t *witness);
 /* 전체 scan 뒤 완성 group의 기록만 빌린다. 분석기를 닫으면 포인터도 무효다. */
 const candidate_witness_system_event_t *candidate_wal_witness_system_at(const candidate_wal_witness_t *witness, uint32_t index);

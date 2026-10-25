@@ -56,6 +56,24 @@ const candidate_witness_system_event_t *candidate_system_at(const candidate_wal_
 
 void candidate_system_begin(candidate_wal_system_t *s) { s->pending_count = 0; s->image_count = 0; }
 
+candidate_wal_status_t candidate_system_bind_checkpoint(candidate_wal_system_t *s,
+    const candidate_control_state_t *anchor)
+{
+    if (s == NULL || anchor == NULL) return CANDIDATE_WAL_INVALID;
+    candidate_witness_system_info_t *info = &s->info;
+    if (info->has_reservation && (info->transaction_highwater != anchor->transaction_highwater ||
+        info->page_highwater != anchor->page_highwater)) return CANDIDATE_WAL_CORRUPT;
+    if (info->has_epoch && (info->current_epoch != anchor->request_epoch ||
+        info->retention_floor != anchor->retention_floor)) return CANDIDATE_WAL_CORRUPT;
+    info->has_reservation = true;
+    info->transaction_highwater = anchor->transaction_highwater;
+    info->page_highwater = anchor->page_highwater;
+    info->has_epoch = true;
+    info->current_epoch = anchor->request_epoch;
+    info->retention_floor = anchor->retention_floor;
+    return CANDIDATE_WAL_OK;
+}
+
 candidate_wal_status_t candidate_system_image(candidate_wal_system_t *s, const candidate_wal_record_t *r)
 {
     if (r->payload_bytes != 8224) return CANDIDATE_WAL_CORRUPT;

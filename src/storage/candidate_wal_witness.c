@@ -520,6 +520,20 @@ candidate_wal_status_t candidate_witness_analyze_observed(candidate_wal_t *wal,
     return analyze_checkpoint(wal,options,anchor,observer,context,out);
 }
 
+candidate_wal_status_t candidate_witness_bind_checkpoint(candidate_wal_witness_t *w,
+    const candidate_control_state_t *anchor)
+{
+    if (w == NULL || anchor == NULL || w->system == NULL) return CANDIDATE_WAL_INVALID;
+    for (unsigned i = 0; i < w->info.transactions; i++) {
+        const candidate_witness_transaction_t *v = &w->transactions[i].value;
+        if (!v->has_admission) continue;
+        if (v->request_epoch > anchor->request_epoch) return CANDIDATE_WAL_CORRUPT;
+        if (v->state == CANDIDATE_WITNESS_UNFINISHED && v->request_epoch < anchor->retention_floor)
+            return CANDIDATE_WAL_CORRUPT;
+    }
+    return candidate_system_bind_checkpoint(w->system,anchor);
+}
+
 bool candidate_witness_checkpoint_at(const candidate_wal_witness_t *w, uint32_t index,
     candidate_checkpoint_transaction_t *out)
 {

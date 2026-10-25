@@ -58,12 +58,7 @@ static candidate_wal_status_t check_cut(scan_t *s)
     }
     if (matched != s->info.summary.transaction_count) return CANDIDATE_WAL_CORRUPT;
     for (unsigned i = 0; i < s->info.summary.dirty_count; i++) if (!s->dirty[i]) return CANDIDATE_WAL_CORRUPT;
-    candidate_witness_system_info_t system = candidate_wal_witness_system_info(s->witness);
-    if (system.has_reservation && (system.transaction_highwater != a->transaction_highwater || system.page_highwater != a->page_highwater))
-        return CANDIDATE_WAL_CORRUPT;
-    if (system.has_epoch && (system.current_epoch != a->request_epoch || system.retention_floor != a->retention_floor))
-        return CANDIDATE_WAL_CORRUPT;
-    return CANDIDATE_WAL_OK;
+    return candidate_witness_bind_checkpoint(s->witness,a);
 }
 
 static void mark_dirty(scan_t *s)
