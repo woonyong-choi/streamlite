@@ -149,6 +149,11 @@ CANDIDATE_CATALOG_REPORT ?= $(BUILD_DIR)/fault/test_candidate_catalog.json
 .PHONY: test-candidate-catalog
 test-candidate-catalog: $(BUILD_DIR)/test_candidate_catalog
 	$(TEST_RUNNER) --report $(CANDIDATE_CATALOG_REPORT) -- ./$(BUILD_DIR)/test_candidate_catalog
+$(BUILD_DIR)/test_candidate_allocation: $(BUILD_DIR)/tests/test_candidate_allocation.o $(BUILD_DIR)/storage/candidate_allocation.o $(BUILD_DIR)/storage/candidate_allocation_format.o $(BUILD_DIR)/storage/candidate_page.o $(BUILD_DIR)/storage/checksum.o
+CANDIDATE_ALLOCATION_REPORT ?= $(BUILD_DIR)/fault/test_candidate_allocation.json
+.PHONY: test-candidate-allocation
+test-candidate-allocation: $(BUILD_DIR)/test_candidate_allocation
+	$(TEST_RUNNER) --report $(CANDIDATE_ALLOCATION_REPORT) -- ./$(BUILD_DIR)/test_candidate_allocation
 CANDIDATE_PAGE_REPORT_PREFIX ?= $(BUILD_DIR)/fault/test_candidate_page
 .PHONY: test-candidate-pages
 test-candidate-pages: $(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal
@@ -197,7 +202,7 @@ test-result: $(BUILD_DIR)/test_result $(BUILD_DIR)/test_result_fault
 $(TEST_BINS) $(BUILD_DIR)/test_overflow_file $(BUILD_DIR)/test_value_sqlite $(BUILD_DIR)/test_candidate_wal $(BUILD_DIR)/test_candidate_wal_witness $(BUILD_DIR)/test_candidate_wal_files:
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal $(BUILD_DIR)/test_candidate_catalog $(BUILD_DIR)/test_candidate_control:
+$(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal $(BUILD_DIR)/test_candidate_catalog $(BUILD_DIR)/test_candidate_control $(BUILD_DIR)/test_candidate_allocation:
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD_DIR)/storage/record_fault.o: src/storage/record.c
@@ -423,6 +428,8 @@ clean:
 -include $(CANDIDATE_PAGE_OBJS:.o=.d)
 -include $(CANDIDATE_CONTROL_OBJS:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_catalog.d
+-include $(BUILD_DIR)/storage/candidate_allocation.d
+-include $(BUILD_DIR)/storage/candidate_allocation_format.d
 -include $(BUILD_DIR)/storage/candidate_wal_witness.d
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d

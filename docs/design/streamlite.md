@@ -361,7 +361,7 @@ abort는 transaction 표를 비가시 상태로 만드는 논리 동작이다. �
 
 publish는 검증된 기존 anchor의 반대 slot만 쓰고 fsync 후 메모리 선택을 갱신한다. 최신 slot의 의존성이 불량해 옛 anchor를 선택했다면 옛 slot을 보존하고 불량쪽에 더 큰 같은 parity 세대를 쓴다. 따라서 세대 간격은 1보다 클 수 있다. 관측한 두 slot의 highwater·epoch/floor·frontier·GC·WAL 위치는 퇴행시키지 않으며 redo 하한은 선택한 slot 하나가 아닌 두 유효 slot의 최솟값이다. info의 valid_mask는 CRC·형식 검증, verified_mask는 호출한 verifier의 성공을 뜻한다. redo 하한은 의존성 불량으로 선택하지 않은 구조 유효 slot도 포함해 보수적으로 계산한다. slot 참조와 로그를 실제로 회수하는 기능은 아직 없다. 쓰기 시도 뒤 오류·fsync 실패·관측한 경로 교체는 handle poison이며 성공/미적용을 응답하지 않는다. 짧은 쓰기 오류 뒤에도 header와 기존 0 padding이 합쳐 새 slot이 유효할 수 있으므로 재열기 결과를 미리 단정하지 않는다. 상위 DB fencing과 system 예약/epoch 전이·일반 재생/활성화는 후속 조정자의 책임이다.
 
-[page codec](../../include/storage/candidate_page.h)은 type 1을 version page, type 2를 overflow page로 정의한다. type 4 metadata 본문은 아래의 별도 codec이 검사하며 3·5의 본문은 아직 지원하지 않는다. version page 본문은 slot 수 u32·예약 u32 뒤 8B slot 표와 slot 순서의 조밀한 record다. slot offset은 page 시작 기준이며 빈 영역·겹침·뒤의 숨은 bytes를 허용하지 않는다. 슬롯은 최대 101개이며 실제 수용량은 각 record 길이로 제한한다. 기존 witness의 type 1–5 공통 header 검사만으로 이 본문 형식을 통과한 것은 아니다.
+[page codec](../../include/storage/candidate_page.h)은 type 1을 version page, type 2를 overflow page로 정의한다. type 4 metadata와 type 5 할당 본문은 아래의 별도 codec이 검사하며 type 3 본문은 아직 지원하지 않는다. version page 본문은 slot 수 u32·예약 u32 뒤 8B slot 표와 slot 순서의 조밀한 record다. slot offset은 page 시작 기준이며 빈 영역·겹침·뒤의 숨은 bytes를 허용하지 않는다. 슬롯은 최대 101개이며 실제 수용량은 각 record 길이로 제한한다. 기존 witness의 type 1–5 공통 header 검사만으로 이 본문 형식을 통과한 것은 아니다.
 
 live version의 72B header 뒤에는 저장 tag u32·예약 u32·논리 bytes u64·첫 PageRef 16B의 32B envelope를 둔다. tag 1은 PageRef 0과 inline bytes, tag 2는 양수 PageRef와 overflow를 사용한다. 단일 slot의 inline 최대는 8008B다. tombstone은 flags 1·payload 길이 0인 72B record이며 envelope가 없다. 다른 flag·예약 값은 unsupported다. codec은 즉시 자기 자신을 가리키는 이전 VersionRef를 거절하지만 전체 version 가시성·이전 chain cycle·transaction 표는 후속 MVCC 계층의 책임이다.
 
@@ -389,6 +389,12 @@ segment 끝의 padding은 남은 bytes 전부를 0으로 채우는 별도 영역
 | 10 COMMIT, 11 ABORT | transaction의 첫/마지막 record LSN·개수·chain digest, COMMIT에는 CSN·의존 physical group ID/끝 LSN 목록·요청 ID·operation/result digest·chunk 수 | commit과 모든 의존 group·결과가 유효해야 APPLIED, ABORT 뒤 COMMIT·중복 CSN·끊긴 chain 거절 |
 | 12 CHECKPOINT_BEGIN, 13 CHECKPOINT_CHUNK, 14 CHECKPOINT_END | checkpoint ID·redo 시작, dirty/active/outcome/할당 상태 chunk, 끝 count·digest | END가 내구화되고 control이 가리킨 완전 묶음만 시작점 |
 | 15 REQUEST_EPOCH, 16 ID_RESERVE | 요청 epoch/floor 변경 또는 transaction/page 번호의 새 highwater | 단조 증가·내구 순서 확인, 활성 요청을 넘는 floor 갱신 거절 |
+
+[할당 codec](../../include/storage/candidate_allocation.h)은 type 5 본문을 magic `SLAL` 4B·version/kind 각 u16로 시작한다. kind 1 root는 이 prefix 뒤 owner epoch·page highwater·GC horizon 각 u64·count/reserved 각 u32의 고정 40B와 직접 node PageRef를 둔다. kind 2 node는 prefix·ordinal/count 각 u32·예약 16B의 32B 뒤 최대 202개 기록을 담는다. 각 40B 기록은 page ID/generation 각 u64·상태/reserved 각 u32·release horizon/마지막 transition LSN 각 u64다. LIVE 1은 horizon 0, FREE 2는 양수 horizon을 사용한다. 정렬한 희소 표에 마지막 FREE도 남겨 재사용 뒤 generation을 1로 되돌리지 않는다. 새 번호는 generation 1, FREE 뒤 재할당은 이전 generation+1이며 소진은 LIMIT다.
+
+내부 비교 설정은 총 65,536개 lifetime page identity·최대 325개 직접 node 참조다. 8192B page 512MiB에 해당하는 identity 수이며 실제 data 파일 크기·quota나 고객 SLO가 아니다. 더 큰 표는 LIMIT로 거절한다. [loader](../../src/storage/candidate_allocation.c)는 전체 정렬·중복·highwater·horizon·page/transition LSN과 root/node 자신의 정확한 LIVE 세대를 대조한다. 이 빌드의 고정 소유 요청량은 2,626,736B이며 stack·loader·allocator overhead·RSS·전체 앱 cap은 별도다. 안정된 loader view는 caller 책임이고 부분 적재/OOM에는 표를 반환하지 않는다. FREE를 버려 공간을 줄이는 안은 generation 이력 단절 때문에 사용하지 않는다. 직접 root 참조와 같은 기록 형식을 buffered COW에도 적용한다.
+
+메모리 batch는 최대 64개 정렬한 서로 다른 ID를 받고 이전 상태·generation과 다음 highwater/GC horizon·LSN을 전부 확인한 뒤 반영한다. 하나라도 틀리면 전체 상태를 보존한다. 원 snapshot root/node의 FREE는 새 anchor를 load하기 전까지 거절한다. WAL의 양수 LSN은 엄격히 증가하고 COW snapshot은 LSN 0을 유지할 수 있다. COW의 내구 게시 순서는 별도 checkpoint ID/control 검증에 맡겨 가짜 WAL을 만들지 않는다. `find`/`at`는 원시 기록 사본만 반환하며 없는 ID는 안전한 발급·미적용의 증거가 아니다. batch 자체는 완전한 WAL system group·번호 예약 force·reader/fallback 참조 해제나 안전 horizon을 증명하지 않는다. 실제 삭제·발급·page redo·복구 활성화는 후속 조정자 의무다. [할당 시험](../../tests/test_candidate_allocation.c)은 이 산술/소유권 경계와 합성 파일 재열기를 검증한다.
 
 REQUEST_EPOCH와 ID_RESERVE는 대응 metadata page 변경과 같은 system physical group에 넣는다. 조정자는 그 PHYS_END까지 force한 뒤 floor 회수나 새 번호 발급을 허용한다. 단독 record가 append됐다는 이유로 예약·회수를 진행하지 않는다. 다른 process의 번호 예약도 같은 제어 gate에서 순서를 정한다.
 

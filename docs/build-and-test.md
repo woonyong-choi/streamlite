@@ -138,6 +138,14 @@ WAL fixture는 1MiB 응답의 version/overflow 131page에 metadata root/node 2pa
 UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-catalog TEST_TIMEOUT=120 CANDIDATE_CATALOG_REPORT=build-regression/fault/catalog-check.json
 ```
 
+[할당 snapshot 시험](../tests/test_candidate_allocation.c)은 type 5 root/node의 절단·단일 byte 손상·재서명 구조, 정렬/세대/LSN·root/node LIVE 자기 포함, 희소 표와 최대 65,536개 기록을 검사한다. 메모리 전이는 LIVE/FREE·새 번호·재사용·세대 소진과 다중 변경 중 실패의 전체 불변을 대조한다. loader/OOM·입력 options 변경·소유 해제, 별도 합성 파일의 fsync/close/reopen과 COW 0LSN도 확인한다. 최대 fixture는 326개 metadata page이며 512MiB의 실제 data를 적재한 시험은 아니다. 파일과 로그를 보존하며 native 90초·runner 120초를 유지한다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-allocation TEST_TIMEOUT=120 CANDIDATE_ALLOCATION_REPORT=build-regression/fault/allocation-check.json
+```
+
+이 모듈은 기본 라이브러리·SQL·ACK에 연결하지 않는다. 원시 할당 기록과 메모리 batch 성공은 durable ALLOC/FREE·ID 예약/epoch·checkpoint/WAL/data 정합·참조 해제·실제 회수·일반 복구의 증거가 아니다. 반복 실행에는 아직 없는 report 경로를 사용한다. [형식과 전이 경계](design/streamlite.md#page와-wal의-형식-불변식)를 함께 확인한다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.
