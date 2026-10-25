@@ -135,13 +135,20 @@ CANDIDATE_WAL_CHECKPOINT_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_checkpo
 CANDIDATE_WAL_CHECKPOINT_ARGS ?=
 CANDIDATE_REDO_OBJS = $(BUILD_DIR)/storage/candidate_redo.o $(CANDIDATE_WITNESS_OBJS) $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
 CANDIDATE_OUTCOME_CATALOG_MODULE ?= $(BUILD_DIR)/storage/candidate_catalog.o
-CANDIDATE_OUTCOME_OBJS = $(BUILD_DIR)/storage/candidate_outcome_witness.o $(BUILD_DIR)/storage/candidate_result.o $(CANDIDATE_OUTCOME_CATALOG_MODULE) $(filter-out $(BUILD_DIR)/storage/candidate_catalog.o,$(CANDIDATE_REDO_OBJS))
+CANDIDATE_OUTCOME_MODULE ?= $(BUILD_DIR)/storage/candidate_outcome_witness.o
+CANDIDATE_OUTCOME_OBJS = $(CANDIDATE_OUTCOME_MODULE) $(BUILD_DIR)/storage/candidate_result.o $(CANDIDATE_OUTCOME_CATALOG_MODULE) $(filter-out $(BUILD_DIR)/storage/candidate_catalog.o,$(CANDIDATE_REDO_OBJS))
 $(BUILD_DIR)/test_candidate_outcome_witness: $(BUILD_DIR)/tests/test_candidate_outcome_witness.o $(CANDIDATE_OUTCOME_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.json
 CANDIDATE_RECOVERY_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery.o
 CANDIDATE_RECOVERY_TERMINAL_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery_terminal.o
 CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
+$(BUILD_DIR)/test_candidate_aborted_result: $(BUILD_DIR)/tests/test_candidate_aborted_result.o $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_ABORTED_RESULT_REPORT ?= $(BUILD_DIR)/fault/test_candidate_aborted_result.json
+.PHONY: test-candidate-aborted-result
+test-candidate-aborted-result: $(BUILD_DIR)/test_candidate_aborted_result
+	$(TEST_RUNNER) --report $(CANDIDATE_ABORTED_RESULT_REPORT) -- ./$(BUILD_DIR)/test_candidate_aborted_result
 $(BUILD_DIR)/test_candidate_recovery: $(BUILD_DIR)/tests/test_candidate_recovery.o $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_RECOVERY_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery.json
@@ -158,6 +165,9 @@ test-candidate-recovery-terminal: $(BUILD_DIR)/test_candidate_recovery_terminal
 test-candidate-outcome-witness: $(BUILD_DIR)/test_candidate_outcome_witness
 	$(TEST_RUNNER) --report $(CANDIDATE_OUTCOME_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_witness
 $(CANDIDATE_OUTCOME_CATALOG_MODULE): src/storage/candidate_catalog.c $(BUILD_FINGERPRINT)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+$(CANDIDATE_OUTCOME_MODULE): src/storage/candidate_outcome_witness.c $(BUILD_FINGERPRINT)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 $(BUILD_DIR)/test_candidate_redo: $(BUILD_DIR)/tests/test_candidate_redo.o $(CANDIDATE_REDO_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
@@ -490,6 +500,7 @@ clean:
 -include $(BUILD_DIR)/storage/candidate_allocation_format.d
 -include $(CANDIDATE_WITNESS_MODULE:.o=.d)
 -include $(CANDIDATE_OUTCOME_CATALOG_MODULE:.o=.d)
+-include $(CANDIDATE_OUTCOME_MODULE:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_wal_system.d
 -include $(BUILD_DIR)/storage/candidate_checkpoint.d
 -include $(BUILD_DIR)/storage/candidate_checkpoint_format.d

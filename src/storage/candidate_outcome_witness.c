@@ -72,6 +72,12 @@ static bool same_request(const candidate_outcome_t *e, const candidate_witness_t
         memcmp(e->operation_digest, t->operation_digest, 32) == 0;
 }
 
+static bool resultless_abort(const candidate_outcome_t *e)
+{
+    /* catalog codec이 NULL 참조·0 bytes/chunks·빈 SHA-256을 이미 검증했다. */
+    return e->state == CANDIDATE_OUTCOME_ABORTED && e->result.page.id == 0;
+}
+
 static candidate_wal_status_t compare_terminal(const candidate_outcome_t *e,
     const candidate_witness_transaction_t *t)
 {
@@ -81,6 +87,7 @@ static candidate_wal_status_t compare_terminal(const candidate_outcome_t *e,
     bool is_commit = e->state == CANDIDATE_OUTCOME_COMMITTED;
     if (is_commit != (t->state == CANDIDATE_WITNESS_COMMIT)) return CANDIDATE_WAL_CORRUPT;
     if (e->csn != t->csn || e->terminal_end_lsn != t->terminal_end_lsn) return CANDIDATE_WAL_CORRUPT;
+    if (resultless_abort(e)) return CANDIDATE_WAL_OK;
     if (e->result_bytes != t->result_bytes || e->result_chunks != t->result_chunks) return CANDIDATE_WAL_CORRUPT;
     if (memcmp(e->result_digest, t->result_digest, 32) != 0) return CANDIDATE_WAL_CORRUPT;
     return CANDIDATE_WAL_OK;
@@ -107,7 +114,7 @@ static candidate_wal_status_t compare_entry(const candidate_outcome_t *e,
     if (e->declared_result_limit != admission->result_limit) return CANDIDATE_WAL_CORRUPT;
     candidate_wal_status_t status = compare_terminal(e, t);
     if (status != CANDIDATE_WAL_OK) return status;
-    if (e->state != CANDIDATE_OUTCOME_ADMITTED && admission->has_result)
+    if (e->state != CANDIDATE_OUTCOME_ADMITTED && !resultless_abort(e) && admission->has_result)
         if (!same_result(e->result, admission->result)) return CANDIDATE_WAL_CORRUPT;
     return CANDIDATE_WAL_OK;
 }

@@ -17,6 +17,7 @@ typedef struct {
 
 /* 안정된 복원 target과 WAL을 caller가 보유한다; 성공은 결과 대조이며 활성화/APPLIED가 아니다. */
 /* 전체 WAL force가 선행되어야 하며 stale metadata는 STALE, 불완전 tail은 TAIL, 실패 out은 NULL이다. */
+/* ABORT의 NULL 결과는 조각을 버린 final descriptor이며, 보존 결과는 완전한 chunk/본문을 대조한다. */
 candidate_wal_status_t candidate_outcome_witness_load(candidate_wal_t *wal,
     const candidate_outcome_witness_options_t *options, candidate_outcome_witness_t **out);
 /* MATCH는 대조한 상태를 빌리며 부재/만료를 NOT_APPLIED나 자동 재실행 권한으로 바꾸지 않는다. */

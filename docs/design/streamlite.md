@@ -478,7 +478,17 @@ version GC는 가장 오래된 snapshot, 실행 중인 탐색 pin, 아직 정리
 
 한 owning catalog를 읽은 뒤 의미 witness가 실제 읽는 같은 record에서 admission owner·선언한 결과 상한과 모든 RESULT_CHUNK의 VersionRef를 모은다. 각 보존 항목의 요청 ID·내용 digest·상태·CSN·terminal 끝·결과 길이·digest·chunk 수를 대조하고, 모든 보존 대상 admission이 표에 있는지 확인한다. 알려진 epoch/floor·highwater와 최종 visible CSN도 비교한다. 확정 항목의 본문은 한 번에 하나씩 owning copy로 읽어 SHA-256을 대조하고 즉시 해제한다. 선택한 checkpoint가 있으면 checkpoint-aware witness를 사용한다.
 
-WAL에 terminal이 있지만 표가 ADMITTED에 머물거나 보존 대상 항목이 빠졌으면 STALE이다. terminal이 없는 상태를 선반영한 metadata도 STALE이며 성공으로 노출하지 않는다. 서로 반대인 terminal·다른 본문 참조·길이·digest는 CORRUPT이고 불완전 transport tail은 TAIL이다. 모든 실패는 결과 객체를 반환하지 않는다. 이 모듈이 반환하는 MATCH는 대조한 원시 상태다. 부재·만료와 미완료 admission을 NOT_APPLIED·현재 owner의 IN_PROGRESS나 자동 재실행 권한으로 바꾸지 않는다.
+ABORT의 raw witness에 남은 RESULT_CHUNK는 terminal 이전의 관측이다. 일부 chunk만 남아도 ABORT는 유효하므로 관측한 전체 예정 길이와 수신 chunk 수를 그대로 final 결과로 복사하지 않는다. 복구 표 재구성의 기본값은 미확정 응답을 버린 결과 없는 ABORT다. 완성된 조각도 이 형태로 버릴 수 있으며 raw witness의 이력은 지우지 않는다. 이미 보존한 완전한 ABORT 응답은 계속 지원한다.
+
+| 영속 final descriptor | 결과 대조 |
+|---|---|
+| ABORTED·NULL VersionRef·0 bytes/chunks·SHA-256(empty) | 정확한 요청·admission·ABORT terminal 끝·CSN0을 대조하고 중간 chunk와 결과 필드를 같게 요구하지 않는다. 본문을 읽거나 조각을 반환하지 않는다 |
+| ABORTED·non-NULL VersionRef | 관측한 chunk의 길이·개수·digest·동일 VersionRef와 본문을 모두 대조한다. 일부 조각으로 전체 응답을 보존했다고 표시하면 CORRUPT다. 빈 응답도 non-NULL 참조와 빈 digest로 보존할 수 있다 |
+| COMMITTED | 기존 COMMIT·전체 chunk·본문 대조를 그대로 요구한다. ABORT 예외를 적용하지 않는다 |
+
+NULL ABORT의 정규 형식은 metadata codec이 검증한다. ABORT record 자체에는 결과 보존 선택이 없으므로 이 결과 대조만으로 누가 결과를 버리기로 했는지 증명하지 않는다. 선택한 final metadata가 실제 복원 이력과 일치하는지는 일반 복구의 물리 page/root 검증이 맡으며, retained descriptor의 임의 손상을 NULL로 고쳐 숨기는 수리는 하지 않는다. 모든 ABORT 결과를 무조건 버리는 안은 보존한 실패 응답을 잃고, 모든 ABORT를 raw chunk와 같게 요구하는 안은 부분 응답의 복구를 막으므로 제외한다. 향후 결과 보존 선택 자체의 별도 내구 증명이 필요하면 ABORT 형식과 비교 계약을 함께 바꿔야 한다. [ABORT 결과 시험](../../tests/test_candidate_aborted_result.c)은 WAL-backed final metadata, 0/부분/전체 chunk, 빈/보존 응답, 재열기·OOM과 terminal/참조/본문 손상을 대조한다.
+
+WAL에 terminal이 있지만 표가 ADMITTED에 머물거나 보존 대상 항목이 빠졌으면 STALE이다. terminal이 없는 상태를 선반영한 metadata도 STALE이며 성공으로 노출하지 않는다. 서로 반대인 terminal이나 위 결과 계약에 어긋난 참조·길이·digest는 CORRUPT이고 불완전 transport tail은 TAIL이다. 모든 실패는 결과 객체를 반환하지 않는다. 이 모듈이 반환하는 MATCH는 대조한 원시 상태다. 부재·만료와 미완료 admission을 NOT_APPLIED·현재 owner의 IN_PROGRESS나 자동 재실행 권한으로 바꾸지 않는다.
 
 이 대조는 모든 page의 물리 이력·전체 할당/도달성/pin, root 선택과 membership, 보존 종료 승인·안전한 회수, 미완료 거래의 내구 ABORT·metadata 재작성·DB 활성화를 대신하지 않는다. 일반 복구 조정자가 이 조건을 함께 검증하고 상태를 내구화한 뒤에만 아래 제품 조회 의미를 제공한다. [시험](../../tests/test_candidate_outcome_witness.c)은 metadata reader가 단독으로 받아들이는 반례, 실제 image 복원과 재열기, 1MiB 결과, 정확한 chunk 참조, OOM·읽기 실패의 부분 반환 차단을 확인한다. 이 입력에서 측정한 소유 요청량 최고3,747,808B는 transport·stack·allocator overhead·RSS와 별도다.
 
