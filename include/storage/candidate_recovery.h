@@ -1,0 +1,39 @@
+#ifndef STORAGE_CANDIDATE_RECOVERY_H
+#define STORAGE_CANDIDATE_RECOVERY_H
+
+#include "storage/candidate_outcome_witness.h"
+#include "storage/candidate_redo.h"
+
+typedef struct candidate_recovery candidate_recovery_t;
+typedef struct {
+    uint8_t uuid[16];
+    uint64_t owner_epoch;
+    const char *wal_prefix, *control_path, *data_path;
+    const candidate_wal_io_t *io;
+    const candidate_wal_memory_t *memory;
+} candidate_recovery_options_t;
+typedef struct {
+    candidate_control_state_t anchor;
+    candidate_redo_info_t redo;
+    uint32_t live_pages, free_pages;
+    uint64_t versions, wal_end_lsn;
+    size_t resident_bytes;
+} candidate_recovery_info_t;
+typedef struct {
+    candidate_catalog_lookup_t lookup;
+    candidate_outcome_t outcome;
+    candidate_page_result_t *body;
+} candidate_recovery_answer_t;
+
+/* 기존 후보 파일의 배타 잠금을 소유하고 resolved snapshot만 반환하며 SQL/ACK를 활성화하지 않는다. */
+/* stale 표·미완료 거래/그룹은 STALE이고 tail 수리·ABORT/metadata 재작성은 제공하지 않는다. */
+/* 실패는 부분 redo를 남길 수 있으나 *out은 NULL이며 같은 WAL로 재실행한다. */
+/* data/WAL/control의 기존 생성 내구성과 handle 호출 직렬화는 caller의 계약이다. */
+candidate_wal_status_t candidate_recovery_open(const candidate_recovery_options_t *options, candidate_recovery_t **out);
+/* answer는 사본이며 body는 caller가 candidate_page_result_close로 해제한다. 기존 answer는 caller가 먼저 해제한다. */
+candidate_wal_status_t candidate_recovery_query(candidate_recovery_t *recovery,
+    const candidate_catalog_query_t *query, candidate_recovery_answer_t *answer);
+candidate_recovery_info_t candidate_recovery_info(const candidate_recovery_t *recovery);
+candidate_wal_status_t candidate_recovery_close(candidate_recovery_t **recovery);
+
+#endif

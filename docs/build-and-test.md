@@ -187,6 +187,14 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-out
 
 native90초·runner120초와 아직 없는 report 경로를 사용한다. 기존 object/binary를 보존하려면 모든 재사용 dependency/fingerprint를 `--old-file`로 고정하고 `CANDIDATE_OUTCOME_CATALOG_MODULE`에 새 object 경로를 지정한다. witness/helper도 위의 명시적 module 옵션으로 보호한다. 전체 WAL force는 caller가 수행하며 이 target은 파일 수리·ABORT append·metadata 재작성·복구 membership·DB 활성화를 제공하지 않는다. 선택 checkpoint의 allocation root는 시험용 선언이고 전체 유효 DB의 증거가 아니다. [영속 요청 결과와 일반 복구의 경계](design/streamlite.md#영속-요청-id와-결과-조회)를 함께 확인한다.
 
+[배타 복구 시험](../tests/test_candidate_recovery.c)은 기존 data·WAL·control 파일의 잠금을 보유한 상태에서 실제 checkpoint 검증·redo·할당과 참조·terminal·결과 대조를 연결한다. 정상 snapshot과 1MiB 결과, 재열기 추가 쓰기 0회, 유효 FREE·세대 증가 재할당을 확인한다. dangling 참조·version 순환·근거 없는 FREE/세대·누락된 할당·잘못된 root·future frozen CSN, 미완료 거래/물리 묶음·부분 tail은 성공 handle을 반환하지 않는다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-recovery TEST_TIMEOUT=120 CANDIDATE_RECOVERY_REPORT=build-regression/fault/recovery-check.json
+```
+
+native90초·runner120초와 새 report 경로를 사용한다. 이전 자료를 보존할 때는 위와 같이 모든 재사용 dependency/fingerprint를 `--old-file`로 고정하고 전후 hash를 확인한다. 시험은 세 파일의 배타 잠금·fork·부분 write/short I/O·read/fsync 실패·각 OOM·callback 재진입·inode 교체, 쓰기 도중과 fsync 전후의 실제 process 종료 뒤 재실행을 대조한다. 최신 control 의존성 CORRUPT의 fallback과 UNSUPPORTED의 차단도 구분한다. fixture 생성에만 합성 control verifier를 쓰며 복구 진입점은 실제 검증기를 사용한다. 이 입력의 소유 요청량 최고8,926,720B는 stack·allocator overhead·RSS와 별도다. 기존 파일 생성의 내구성과 handle 호출 직렬화는 caller가 보장한다. 이 경계는 resolved snapshot만 열며 미완료 상태의 내구 정리·새 owner epoch·SQL catalog·DB 쓰기 활성화를 제공하지 않는다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

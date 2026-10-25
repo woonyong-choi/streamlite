@@ -482,6 +482,12 @@ WAL에 terminal이 있지만 표가 ADMITTED에 머물거나 보존 대상 항�
 
 이 대조는 모든 page의 물리 이력·전체 할당/도달성/pin, root 선택과 membership, 보존 종료 승인·안전한 회수, 미완료 거래의 내구 ABORT·metadata 재작성·DB 활성화를 대신하지 않는다. 일반 복구 조정자가 이 조건을 함께 검증하고 상태를 내구화한 뒤에만 아래 제품 조회 의미를 제공한다. [시험](../../tests/test_candidate_outcome_witness.c)은 metadata reader가 단독으로 받아들이는 반례, 실제 image 복원과 재열기, 1MiB 결과, 정확한 chunk 참조, OOM·읽기 실패의 부분 반환 차단을 확인한다. 이 입력에서 측정한 소유 요청량 최고3,747,808B는 transport·stack·allocator overhead·RSS와 별도다.
 
+[배타 복구 조정자](../../include/storage/candidate_recovery.h)는 기존 data·WAL·control 파일을 잠그고 닫을 때까지 보유한다. data는 디렉터리 fd·device/inode에 묶고 process와 경로를 검사한다. 실제 control verifier가 checkpoint-aware redo, 완료 group의 최종 PageRef/pageLSN과 lifetime snapshot, 모든 LIVE page의 typed 참조·version terminal·순환·overflow 길이, 영속 outcome과 본문을 순서대로 확인한다. 초기 generation1 LIVE/transition0은 첫 image의 bootstrap이며 이후 FREE·재사용은 관측한 ALLOC/FREE의 세대·horizon·group 끝과 일치해야 한다. 이 검증은 보수적으로 LIVE 참조를 유지하며 도달성/pin에 근거한 회수를 승인하지 않는다.
+
+현재 진입점은 이미 정리된 resolved snapshot에 한정한다. 미완료 거래/물리 묶음과 오래된 표는 STALE, 부분 tail은 TAIL이고 성공 handle을 반환하지 않는다. CORRUPT만 이전 control 후보를 검증하며 IO·NOMEM·LIMIT·UNSUPPORTED·STALE은 fallback으로 감추지 않는다. nonzero SQL catalog/type3은 UNSUPPORTED다. 실패 뒤 부분 redo target은 같은 보존 WAL로 다시 복구하며, 기존 파일 생성의 내구성과 handle 호출 직렬화는 caller가 보장한다. 반환한 결과 본문은 owning copy로 handle close 뒤에도 유지한다. callback 중 같은 handle close는 INVALID다.
+
+redo scratch·할당/이력 검증·outcome 검증의 수명을 나누며 [실파일 시험](../../tests/test_candidate_recovery.c)의 소유 요청량 최고8,926,720B는 stack·allocator overhead·RSS와 별도다. 유효 FREE/재할당·재열기 추가 쓰기 0회와 세 파일 잠금·실제 process 중단을 대조한다. 반복 scan·고정 hash 표·파일 잠금/metadata 조회·WAL/data barrier는 총비용에 포함한다. 미완료 상태의 crash-safe tail 수리·내구 ABORT/outcome 재작성·owner epoch 전환·새 checkpoint 활성화와 SQL/ACK 쓰기는 후속 일반 복구/통합 과업으로 남는다. 이 조정자의 MATCH는 대조된 원시 snapshot이며 제품 APPLIED나 실제 다중 writer·실측 우위의 증명이 아니다.
+
 같은 DB에서 durable commit 뒤 응답만 사라진 경우를 판별하기 위해 영속 요청 ID·결과 조회를 선택한다. 업무 key만 대조하는 안은 임의 SQL·여러 행의 결과 본문과 원자 commit을 일반적으로 복원하지 못하므로 이 후보의 기본 해결책으로 삼지 않는다. 영속 기록의 쓰기·보존 비용은 양쪽 비교에 포함한다. 이득이 사라지더라도 결과 보장을 한쪽에서만 빼지 않는다.
 
 내부 요청 ID는 `(DB UUID, 요청 epoch u64, 호출자 nonce 128bit)`다. process 재시작·PID·새 owner epoch가 이 ID의 의미를 바꾸지 않는다. operation digest는 미리 선언한 순서 있는 SQL bytes·타입/길이를 포함한 binding bytes·격리·내구 요청과 응답 형식을 SHA-256으로 계산한다. 선언과 다른 문장·binding·순서·응답 범위는 commit 전에 거절한다. hash를 인증 수단으로 사용하지 않는다. 동적 callback, 실행 결과에 따라 새 SQL을 정하는 대화형 거래, 외부 부작용의 자동 재실행은 지원하지 않는다. 이 제한 밖의 기존 SQL은 기존 의미로 실행하며, UNKNOWN은 업무 key와 별도 재조정으로 해결한다.
