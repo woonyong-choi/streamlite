@@ -17,6 +17,7 @@ struct candidate_recovery {
     candidate_wal_t *wal;
     candidate_control_t *control;
     candidate_outcome_witness_t *outcomes;
+    candidate_wal_witness_t *terminal_history;
     candidate_recovery_info_t info;
     uint8_t uuid[16];
     char name[NAME_MAX + 1];
@@ -24,7 +25,7 @@ struct candidate_recovery {
     dev_t device;
     ino_t inode;
     pid_t process_id;
-    bool is_busy, is_poisoned;
+    bool is_busy, is_poisoned, is_terminal_repair;
 };
 
 static void *allocate_default(void *context, size_t size) { (void)context; return malloc(size); }
@@ -110,6 +111,11 @@ static candidate_wal_status_t verify_anchor(void *context, const candidate_contr
     candidate_recovery_t *r = context;
     candidate_outcome_witness_close(&r->outcomes);
     r->info = (candidate_recovery_info_t){.anchor = *anchor};
+    if (r->is_terminal_repair) {
+        candidate_wal_witness_close(&r->terminal_history);
+        candidate_terminal_options_t request = {.anchor = anchor,.memory = &r->memory}; memcpy(request.uuid,r->uuid,16);
+        return candidate_terminal_prepare(r->wal,&request,&r->terminal_history);
+    }
     if (anchor->catalog_root.id != 0) return CANDIDATE_WAL_UNSUPPORTED;
     candidate_redo_options_t redo = {.checkpoint = anchor,.memory = &r->memory,
         .target = {r,read_target,write_target,sync_target}};
@@ -154,7 +160,7 @@ static candidate_wal_status_t open_data(candidate_recovery_t *r, const char *pat
     return check_file(r);
 }
 
-candidate_wal_status_t candidate_recovery_open(const candidate_recovery_options_t *options, candidate_recovery_t **out)
+static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *options, bool repairing, candidate_recovery_t **out)
 {
     if (out == NULL) return CANDIDATE_WAL_INVALID;
     *out = NULL;
@@ -175,6 +181,7 @@ candidate_wal_status_t candidate_recovery_open(const candidate_recovery_options_
     if (r == NULL) return CANDIDATE_WAL_NOMEM;
     memset(r,0,sizeof(*r)); r->memory = memory; r->io = io; memcpy(r->uuid,saved.uuid,16);
     r->process_id = getpid(); r->fd = -1; r->directory_fd = -1; r->is_busy = true;
+    r->is_terminal_repair = repairing;
     candidate_wal_status_t status = open_data(r,data_path);
     if (status == CANDIDATE_WAL_OK) {
         candidate_wal_options_t wo = {.owner_epoch = saved.owner_epoch,.io = &r->io,.memory = &r->memory}; memcpy(wo.uuid,r->uuid,16);
@@ -189,8 +196,36 @@ candidate_wal_status_t candidate_recovery_open(const candidate_recovery_options_
     r->info.resident_bytes = sizeof(*r) + candidate_wal_info(r->wal).resident_bytes;
     r->info.resident_bytes += candidate_control_info(r->control).resident_bytes;
     r->info.resident_bytes += candidate_outcome_witness_info(r->outcomes).resident_bytes;
+    r->info.resident_bytes += candidate_wal_witness_info(r->terminal_history).resident_bytes;
     r->is_busy = false; *out = r;
     return CANDIDATE_WAL_OK;
+}
+
+candidate_wal_status_t candidate_recovery_open(const candidate_recovery_options_t *options, candidate_recovery_t **out)
+{
+    return open_recovery(options,false,out);
+}
+
+candidate_wal_status_t candidate_recovery_resolve_terminals(const candidate_recovery_options_t *options,
+    candidate_recovery_terminal_info_t *out)
+{
+    if (out == NULL) return CANDIDATE_WAL_INVALID;
+    *out = (candidate_recovery_terminal_info_t){0};
+    if (options == NULL) return CANDIDATE_WAL_INVALID;
+    uint64_t owner_epoch = options->owner_epoch;
+    candidate_recovery_t *r = NULL; candidate_recovery_terminal_info_t info = {0};
+    candidate_wal_status_t status = open_recovery(options,true,&r);
+    if (status != CANDIDATE_WAL_OK) return status;
+    r->is_busy = true;
+    candidate_terminal_options_t request = {.owner_epoch = owner_epoch,.anchor = &r->info.anchor,.memory = &r->memory};
+    memcpy(request.uuid,r->uuid,16);
+    status = check_file(r);
+    if (status == CANDIDATE_WAL_OK) status = candidate_terminal_resolve(r->wal,&request,&r->terminal_history,&info);
+    if (status == CANDIDATE_WAL_OK) status = check_file(r);
+    r->is_busy = false;
+    if (candidate_recovery_close(&r) != CANDIDATE_WAL_OK && status == CANDIDATE_WAL_OK) status = CANDIDATE_WAL_IO;
+    if (status == CANDIDATE_WAL_OK) *out = info;
+    return status;
 }
 
 candidate_wal_status_t candidate_recovery_query(candidate_recovery_t *r,
@@ -237,6 +272,7 @@ candidate_wal_status_t candidate_recovery_close(candidate_recovery_t **out)
     if (r->fd >= 0 && close(r->fd) != 0) status = CANDIDATE_WAL_IO;
     if (r->directory_fd >= 0 && close(r->directory_fd) != 0) status = CANDIDATE_WAL_IO;
     candidate_outcome_witness_close(&r->outcomes);
+    candidate_wal_witness_close(&r->terminal_history);
     candidate_wal_memory_t memory = r->memory; memory.release(memory.context,r,sizeof(*r));
     return status;
 }

@@ -193,7 +193,15 @@ native90초·runner120초와 아직 없는 report 경로를 사용한다. 기존
 UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-recovery TEST_TIMEOUT=120 CANDIDATE_RECOVERY_REPORT=build-regression/fault/recovery-check.json
 ```
 
-native90초·runner120초와 새 report 경로를 사용한다. 이전 자료를 보존할 때는 위와 같이 모든 재사용 dependency/fingerprint를 `--old-file`로 고정하고 전후 hash를 확인한다. 시험은 세 파일의 배타 잠금·fork·부분 write/short I/O·read/fsync 실패·각 OOM·callback 재진입·inode 교체, 쓰기 도중과 fsync 전후의 실제 process 종료 뒤 재실행을 대조한다. 최신 control 의존성 CORRUPT의 fallback과 UNSUPPORTED의 차단도 구분한다. fixture 생성에만 합성 control verifier를 쓰며 복구 진입점은 실제 검증기를 사용한다. 이 입력의 소유 요청량 최고8,926,720B는 stack·allocator overhead·RSS와 별도다. 기존 파일 생성의 내구성과 handle 호출 직렬화는 caller가 보장한다. 이 경계는 resolved snapshot만 열며 미완료 상태의 내구 정리·새 owner epoch·SQL catalog·DB 쓰기 활성화를 제공하지 않는다.
+native90초·runner120초와 새 report 경로를 사용한다. 이전 자료를 보존할 때는 위와 같이 모든 재사용 dependency/fingerprint를 `--old-file`로 고정하고 전후 hash를 확인한다. 시험은 세 파일의 배타 잠금·fork·부분 write/short I/O·read/fsync 실패·각 OOM·callback 재진입·inode 교체, 쓰기 도중과 fsync 전후의 실제 process 종료 뒤 재실행을 대조한다. 최신 control 의존성 CORRUPT의 fallback과 UNSUPPORTED의 차단도 구분한다. fixture 생성에만 합성 control verifier를 쓰며 복구 진입점은 실제 검증기를 사용한다. 이 입력의 소유 요청량 최고8,926,728B는 stack·allocator overhead·RSS와 별도다. 기존 파일 생성의 내구성과 handle 호출 직렬화는 caller가 보장한다. 이 경계는 resolved snapshot만 열며 미완료 상태의 내구 정리·새 owner epoch·SQL catalog·DB 쓰기 활성화를 제공하지 않는다.
+
+[terminal 정리 시험](../tests/test_candidate_recovery_terminal.c)은 같은 배타 파일 소유권 아래 전체 WAL 검증·부분 transport tail 수리·ABORT append/force·재검증을 실행한다. admission만 남은 거래, 교차 거래·부분 결과 chunk·기존 COMMIT 보존, 같은 owner 재실행과 오래된 owner 거절을 확인한다. 부분 ENOSPC·prefix/final force 실패·truncate 실패·모든10할당 지점 OOM과 실제 process 종료3곳의 원 입력과 중간 WAL을 남긴다. data/control bytes는 전후 동일하고 결과표는 계속 STALE로 남긴다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-recovery-terminal TEST_TIMEOUT=120 CANDIDATE_TERMINAL_REPORT=build-regression/fault/terminal-check.json
+```
+
+native90초·runner120초와 새 report 경로를 사용한다. 보호할 object가 있으면 `CANDIDATE_RECOVERY_MODULE`과 `CANDIDATE_RECOVERY_TERMINAL_MODULE`에 새 object를 지정하고 모든 재사용 dependency/fingerprint를 `--old-file`로 고정한다. WAL 보존 사본은 segment inventory의 접두사 밖에 둔다. 이 target의 terminal receipt는 data/root/outcome의 정합·새 checkpoint 게시·DB 활성화나 제품 APPLIED 판정이 아니다.
 
 ### 공통 비용 수집
 

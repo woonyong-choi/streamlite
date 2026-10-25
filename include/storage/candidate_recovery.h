@@ -24,6 +24,10 @@ typedef struct {
     candidate_outcome_t outcome;
     candidate_page_result_t *body;
 } candidate_recovery_answer_t;
+typedef struct {
+    uint64_t checkpoint_id, before_end_lsn, after_end_lsn, repaired_tail_bytes;
+    uint32_t appended_aborts, existing_commits, existing_aborts;
+} candidate_recovery_terminal_info_t;
 
 /* 기존 후보 파일의 배타 잠금을 소유하고 resolved snapshot만 반환하며 SQL/ACK를 활성화하지 않는다. */
 /* stale 표·미완료 거래/그룹은 STALE이고 tail 수리·ABORT/metadata 재작성은 제공하지 않는다. */
@@ -35,5 +39,9 @@ candidate_wal_status_t candidate_recovery_query(candidate_recovery_t *recovery,
     const candidate_catalog_query_t *query, candidate_recovery_answer_t *answer);
 candidate_recovery_info_t candidate_recovery_info(const candidate_recovery_t *recovery);
 candidate_wal_status_t candidate_recovery_close(candidate_recovery_t **recovery);
+/* WAL terminal만 내구 정리하며 data/control 검증·재작성이나 DB 활성화를 제공하지 않는다. */
+/* 변경 시 owner는 선택 anchor보다 커야 하며 실패한 부분 append는 재열기로 확인한다; out은 실패 시0이다. */
+candidate_wal_status_t candidate_recovery_resolve_terminals(const candidate_recovery_options_t *options,
+    candidate_recovery_terminal_info_t *out);
 
 #endif

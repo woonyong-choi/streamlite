@@ -139,13 +139,21 @@ CANDIDATE_OUTCOME_OBJS = $(BUILD_DIR)/storage/candidate_outcome_witness.o $(BUIL
 $(BUILD_DIR)/test_candidate_outcome_witness: $(BUILD_DIR)/tests/test_candidate_outcome_witness.o $(CANDIDATE_OUTCOME_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.json
-CANDIDATE_RECOVERY_OBJS = $(BUILD_DIR)/storage/candidate_recovery.o $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
+CANDIDATE_RECOVERY_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery.o
+CANDIDATE_RECOVERY_TERMINAL_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery_terminal.o
+CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
 $(BUILD_DIR)/test_candidate_recovery: $(BUILD_DIR)/tests/test_candidate_recovery.o $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_RECOVERY_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery.json
 .PHONY: test-candidate-recovery
 test-candidate-recovery: $(BUILD_DIR)/test_candidate_recovery
 	$(TEST_RUNNER) --report $(CANDIDATE_RECOVERY_REPORT) -- ./$(BUILD_DIR)/test_candidate_recovery
+$(BUILD_DIR)/test_candidate_recovery_terminal: $(BUILD_DIR)/tests/test_candidate_recovery_terminal.o $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_TERMINAL_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_terminal.json
+.PHONY: test-candidate-recovery-terminal
+test-candidate-recovery-terminal: $(BUILD_DIR)/test_candidate_recovery_terminal
+	$(TEST_RUNNER) --report $(CANDIDATE_TERMINAL_REPORT) -- ./$(BUILD_DIR)/test_candidate_recovery_terminal
 .PHONY: test-candidate-outcome-witness
 test-candidate-outcome-witness: $(BUILD_DIR)/test_candidate_outcome_witness
 	$(TEST_RUNNER) --report $(CANDIDATE_OUTCOME_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_witness
@@ -489,6 +497,7 @@ clean:
 -include $(BUILD_DIR)/storage/candidate_redo.d
 -include $(BUILD_DIR)/storage/candidate_outcome_witness.d
 -include $(BUILD_DIR)/storage/candidate_recovery.d $(BUILD_DIR)/storage/candidate_recovery_state.d
+-include $(BUILD_DIR)/storage/candidate_recovery_terminal.d
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d
 -include $(DATABASE_OBJS:.o=.d) $(DATABASE_EXEC_FAULT_OBJS:.o=.d) $(BUILD_DIR)/sql/sql_statement_fault.d $(BUILD_DIR)/storage/heap_store_test.d

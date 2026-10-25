@@ -428,7 +428,10 @@ static void control_fallback(void)
     }
 }
 
-int main(void)
+#ifndef CANDIDATE_RECOVERY_TEST_MAIN
+#define CANDIDATE_RECOVERY_TEST_MAIN main
+#endif
+int CANDIDATE_RECOVERY_TEST_MAIN(void)
 {
     setvbuf(stdout,NULL,_IONBF,0); alarm(90); normal_and_rejections();
     fixture_t f = fixture(0,1048576); candidate_recovery_options_t request = options(&f); candidate_recovery_t *r = NULL;
