@@ -222,3 +222,13 @@ Task22의 상태/형식·18개 실패 oracle과 제한 상태 모형은 계약 �
 checkpoint23b의 실제 반례는 상대 prefix와 cwd가 바뀌면 append한 inode 대신 다른 파일을 force하고도 내구 LSN을 올리는 것이다. 디렉터리 fd를 create/open에서 한 번 획득하고 이후 openat·독립 directory stream·directory fsync를 그 fd에 고정한다. 절대 경로 문자열만 보존하는 안은 같은 경로의 디렉터리 별칭 변경을 배제하지 못하므로 선택하지 않는다. 각 segment의 device/inode와 열린 fd를 최대64개 보유해 inode 재사용의 ABA를 막고 경로 누락·교체를 관측하면 IO와 poison으로 차단한다. 작업 전후 대조와 force 성공 뒤 재검사 전에 durable watermark를 올리지 않는다. 외부 제자리 변경·악의적 namespace 교체의 원자적 배제는 지원하지 않는다.
 
 8개 cwd 조건·12개 inode 누락/교체 조건·fd 수명과 기존360절단/10237witness를 별도 prefix/report로 검증한다. 기존 build fingerprint·원 optimized/regression binary와 원자료는 덮지 않는다. 같은 source인 checksum/format object를 재사용하고 현재 파일 모듈과 시험만 새 output에 빌드하며 실제 Make의 재사용 인자를 근거에 남긴다. fd 보유·metadata 조회는 이후 비교 비용이다. 이번 수리는 거래 commit/영속 본문·복구 활성화·실제writer·제품 채택이 아니며, 끝나면 원래23과 모든 후속 요구/checkpoint를 그대로 진행한다.
+
+## Task 23d ordinary pages and result-body prerequisite
+
+원래23은 보통 version/overflow page에 본문을 보존해야 하지만 그 codec·reader가 없고 body tag/slot 표의 세부도 미정이었다. WAL inline 결과로 우회하지 않고 선행23d에 공통 page 형식과 bounded 소유 본문 복원을 구현한다. 원래23의 영속 ID/root·epoch/floor·ID 예약·내구 terminal·일반 복구 조정자/배타 소유권과24–39/모든 checkpoint를 유지한다. 새 product backend나 APPLIED API를 이 선행에 넣지 않는다.
+
+type1 version/type2 overflow, slot 수/예약8B·조밀한8B slot 표, 기존72B version 뒤 live envelope32B(tag/reserved·전체bytes·첫PageRef)를 선택한다. 한 version을 page마다 고정해 낭비하는 방식 대신 여러 slot을 같은 일반 page에 담고 즉시 자기 참조·범위/겹침을 검사한다. tag1 inline과 tag2 overflow를 구분하며 nonfinal chunk는8104B로 고정해1MiB 결과의 순회를 최대130overflow page로 한정한다. 이 cap은 결과 reader에 적용하며 일반 SQL 값의 기존 한도를 바꾸지 않는다. 전체 이전-version cycle/MVCC는25에 남는다. 이후 동등 buffered-COW도 같은 codec·payload/결과 형식을 재사용해 배치 비용을 한쪽에만 추가하지 않는다.
+
+외부 crypto 의존성을 추가하지 않는 내부 SHA-256을 NIST FIPS180-4/예제와 hashlib135입력으로 대조한다. page/slot/owner·정확한 전체 길이·cycle/EOF·digest가 맞기 전 owning 사본을 노출하지 않으며 OOM/loader 오류는 부분 출력을 버린다. custom allocator의 실제 bytes와 결과 수명을 검증하되 RSS·전체 앱 cap으로 바꾸지 않는다. 실제 WAL131image/3group/16참조의 force/reopen→합성 data fsync/reopen→본문 읽기는 단일 COMMIT fixture다. 이 결과를 control/할당/ID index·미완료/abort 일반 재생·복구 활성화로 확대하지 않는다. 현재 기본COW/ABI/형식3·SNAPSHOT과 기존원자료를 보존한다.
+
+이 일반 구현 경계에서 완료16–23c와 해당 checkpoint의 장문 기록만 Git623e9d5c의 정확한 goal ledger에 연결해 압축한다. Task6의 원본 coverage/요구 matrix와 모든 미완료 과업은 보존한다. 해시와 commit marker로 원문을 다시 읽을 수 있게 하고 목표 파일의 반복 읽기 비용을 줄이며 별도 맥락 사본은 만들지 않는다.

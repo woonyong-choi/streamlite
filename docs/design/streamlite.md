@@ -355,6 +355,14 @@ abort는 transaction 표를 비가시 상태로 만드는 논리 동작이다. �
 
 `PageRef`는 page ID와 generation의 u64 두 개다. `VersionRef`는 여기에 slot과 slot generation의 u32 두 개를 더한다. 0 참조는 없음이며 실제 ID·generation은 1부터 시작한다. transaction ID와 page/slot generation은 재사용하지 않는다. 예약 highwater를 내구화한 뒤 번호를 발급하고 재시작 때 남은 예약 구간은 건너뛴다. counter 소진은 LIMIT이며 wrap하지 않는다. owner epoch는 파일 복구 권한의 세대이고 transaction ID·요청 epoch와 다른 필드다.
 
+[page codec](../../include/storage/candidate_page.h)은 type 1을 version page, type 2를 overflow page로 정의한다. 3–5의 본문은 아직 지원하지 않는다. version page 본문은 slot 수 u32·예약 u32 뒤 8B slot 표와 slot 순서의 조밀한 record다. slot offset은 page 시작 기준이며 빈 영역·겹침·뒤의 숨은 bytes를 허용하지 않는다. 슬롯은 최대 101개이며 실제 수용량은 각 record 길이로 제한한다. 기존 witness의 type 1–5 공통 header 검사만으로 이 본문 형식을 통과한 것은 아니다.
+
+live version의 72B header 뒤에는 저장 tag u32·예약 u32·논리 bytes u64·첫 PageRef 16B의 32B envelope를 둔다. tag 1은 PageRef 0과 inline bytes, tag 2는 양수 PageRef와 overflow를 사용한다. 단일 slot의 inline 최대는 8008B다. tombstone은 flags 1·payload 길이 0인 72B record이며 envelope가 없다. 다른 flag·예약 값은 unsupported다. codec은 즉시 자기 자신을 가리키는 이전 VersionRef를 거절하지만 전체 version 가시성·이전 chain cycle·transaction 표는 후속 MVCC 계층의 책임이다.
+
+overflow 본문은 다음 PageRef 16B·chunk 길이 u32·예약 u32 뒤 bytes다. 마지막 전 chunk는 정확히 8104B이며 마지막은 1–8104B다. [본문 reader](../../src/storage/candidate_result.c)는 요청한 page/slot generation·transaction·전체 길이, 중복 page·cycle·EOF·초과 연결과 전체 SHA-256을 검사한 뒤에만 소유 사본을 반환한다. 선택한 응답은 최대 1MiB이며 이 제한은 일반 SQL 값 전체의 새 제한이 아니다. 할당·loader·digest 실패에는 부분 사본을 반환하지 않는다. frozen CSN 0의 raw bytes를 읽는 것과 그 version의 가시성·commit 판정은 구분한다.
+
+[내부 SHA-256](../../src/storage/candidate_digest.c)은 [FIPS 180-4](https://nvlpubs.nist.gov/nistpubs/FIPS/NIST.FIPS.180-4.pdf)의 계산 형식과 [NIST 예제](https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Standards-and-Guidelines/documents/examples/SHA256.pdf)를 참고한다. 외부 crypto 라이브러리를 추가하지 않고 본문 digest만 계산한다. 인증·FIPS 검증 모듈이나 전체 DB 복구 검증을 제공하지 않는다. [codec 시험](../../tests/test_candidate_page.c)과 [WAL/page 시험](../../tests/test_candidate_result_wal.c)은 이 범위의 실제 bytes를 검증하며 영속 ID metadata·epoch/floor·내구 abort·복구 소유권·정상 진입 허용은 별도 구현 대상이다.
+
 segment 끝의 padding은 남은 bytes 전부를 0으로 채우는 별도 영역이다. decoder는 잔여 영역 전체가 0이고 다음 segment의 번호·시작 LSN·header가 연속일 때만 이를 건너뛴다. 잘못된 record 길이를 padding으로 재해석하지 않는다. EOF의 미완료 tail은 다음 segment로 이어지는 정상 padding과 구분해 기록한다.
 
 | record type 번호 | 본문이 담는 값 | 완료 판정 |

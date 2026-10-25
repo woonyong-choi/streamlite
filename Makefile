@@ -135,6 +135,15 @@ CANDIDATE_WAL_FILES_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_files.json
 test-candidate-wal-files: $(BUILD_DIR)/test_candidate_wal_files
 	$(TEST_RUNNER) --report $(CANDIDATE_WAL_FILES_REPORT) -- ./$(BUILD_DIR)/test_candidate_wal_files
 
+CANDIDATE_PAGE_OBJS = $(BUILD_DIR)/storage/candidate_page.o $(BUILD_DIR)/storage/candidate_result.o $(BUILD_DIR)/storage/candidate_digest.o
+$(BUILD_DIR)/test_candidate_page: $(BUILD_DIR)/tests/test_candidate_page.o $(CANDIDATE_PAGE_OBJS) $(BUILD_DIR)/storage/checksum.o $(BUILD_DIR)/storage/record.o
+$(BUILD_DIR)/test_candidate_result_wal: $(BUILD_DIR)/tests/test_candidate_result_wal.o $(CANDIDATE_PAGE_OBJS) $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/candidate_wal_witness.o $(BUILD_DIR)/storage/checksum.o
+CANDIDATE_PAGE_REPORT_PREFIX ?= $(BUILD_DIR)/fault/test_candidate_page
+.PHONY: test-candidate-pages
+test-candidate-pages: $(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal
+	$(TEST_RUNNER) --report $(CANDIDATE_PAGE_REPORT_PREFIX)-codec.json -- ./$(BUILD_DIR)/test_candidate_page
+	$(TEST_RUNNER) --report $(CANDIDATE_PAGE_REPORT_PREFIX)-wal.json -- ./$(BUILD_DIR)/test_candidate_result_wal
+
 $(BUILD_DIR)/test_record: $(BUILD_DIR)/tests/test_record.o $(BUILD_DIR)/storage/record.o $(BUILD_DIR)/storage/record_page.o
 $(BUILD_DIR)/test_overflow: $(BUILD_DIR)/tests/test_overflow.o $(BUILD_DIR)/storage/overflow.o $(BUILD_DIR)/storage/checksum.o $(BUILD_DIR)/storage/record_page.o
 $(BUILD_DIR)/test_overflow_file: $(BUILD_DIR)/tests/test_overflow_file.o $(BUILD_DIR)/storage/overflow.o $(BUILD_DIR)/storage/checksum.o
@@ -175,6 +184,9 @@ test-result: $(BUILD_DIR)/test_result $(BUILD_DIR)/test_result_fault
 	$(TEST_RUNNER) --report $(BUILD_DIR)/fault/test_result_fault.json -- ./$(BUILD_DIR)/test_result_fault
 
 $(TEST_BINS) $(BUILD_DIR)/test_overflow_file $(BUILD_DIR)/test_value_sqlite $(BUILD_DIR)/test_candidate_wal $(BUILD_DIR)/test_candidate_wal_witness $(BUILD_DIR)/test_candidate_wal_files:
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal:
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD_DIR)/storage/record_fault.o: src/storage/record.c
@@ -397,6 +409,7 @@ clean:
 
 -include $(STORAGE_OBJS:.o=.d)
 -include $(CANDIDATE_WAL_OBJS:.o=.d)
+-include $(CANDIDATE_PAGE_OBJS:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_wal_witness.d
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d

@@ -114,6 +114,16 @@ make BUILD_DIR=build-regression test-candidate-wal-witness TEST_TIMEOUT=120 CAND
 
 기본 fixture prefix는 process ID를 포함하며 원본을 지우지 않는다. 반복 실행은 `CANDIDATE_WITNESS_REPORT`에 아직 없는 report 경로를 지정해 앞선 로그도 보존한다. native 90초·runner 120초를 유지한다. 분석은 파일과 transaction 상태를 고치지 않고 전체 scan 실패 시 부분 표를 반환하지 않는다. COMMIT witness는 본문 복원이나 APPLIED가 아니며 ALLOC/FREE·checkpoint·epoch/ID 예약과 실제 redo는 아직 지원하지 않는다. [내부 분석 계약](design/streamlite.md#checkpoint와-회수-순서)의 거절 범위와 남은 복구 의무를 함께 확인한다.
 
+[page codec과 본문 reader](../include/storage/candidate_page.h)는 일반 version/overflow page의 slot·generation·길이와 결과 bytes를 검사한다. 아래 target은 [codec 시험](../tests/test_candidate_page.c)과 [WAL/page fixture](../tests/test_candidate_result_wal.c)를 각각 실행한다.
+
+```sh
+make BUILD_DIR=build-regression test-candidate-pages TEST_TIMEOUT=120 CANDIDATE_PAGE_REPORT_PREFIX=build-regression/fault/pages-check
+```
+
+codec 시험은 page의 8192개 절단·8192개 단일 byte 손상, CRC를 다시 맞춘 29개 잘못된 구조와 1024개 탐색 입력, slot/inline/1MiB 경계·cycle·세대·OOM/loader 실패·소유권을 확인한다. 기존 record codec의 NULL·한글·내장 NUL·9000B BLOB도 그대로 복원한다. digest는 알려진 예제와 padding 경계·1MiB를 포함한 135개 입력으로 대조한다. 탐색에서 유효한 page는 다시 encode해 정확히 같은 bytes인지 확인하며, 이 유한 입력을 전체 가능한 손상의 증명으로 쓰지 않는다.
+
+WAL fixture는 1MiB 응답의 131page·3physical group·16결과 참조를 force/reopen한다. 완전한 단일 COMMIT witness와 WAL barrier를 확인한 뒤 새 합성 data 파일에 image를 복사하고, fsync/reopen한 page를 reader에 전달해 본문을 대조한다. 이 fixture의 data 파일은 일반 DB control/root·할당 표·ID index가 없는 시험 파일이다. 미완료·abort 거래의 일반 재생과 복구 활성화를 구현했다고 표시하지 않는다. 반복 실행은 아직 없는 report 접두사를 사용하며 합성 파일을 보존한다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.
