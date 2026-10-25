@@ -194,6 +194,44 @@ CANDIDATE_TERMINAL_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_terminal
 .PHONY: test-candidate-recovery-terminal
 test-candidate-recovery-terminal: $(BUILD_DIR)/test_candidate_recovery_terminal
 	$(TEST_RUNNER) --report $(CANDIDATE_TERMINAL_REPORT) -- ./$(BUILD_DIR)/test_candidate_recovery_terminal
+CANDIDATE_RECOVERY_PUBLISH_OBJS ?= $(BUILD_DIR)/storage/candidate_recovery_publish.o $(BUILD_DIR)/storage/candidate_recovery_inventory.o \
+	$(BUILD_DIR)/storage/candidate_recovery_groups.o $(BUILD_DIR)/storage/candidate_recovery_checkpoint.o
+CANDIDATE_PUBLISH_TEST_OBJS = $(BUILD_DIR)/tests/test_candidate_recovery_publish_fixture.o $(BUILD_DIR)/tests/test_candidate_recovery_publish_scenario.o
+$(BUILD_DIR)/test_candidate_recovery_publish: $(BUILD_DIR)/tests/test_candidate_recovery_publish.o $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+$(BUILD_DIR)/test_candidate_recovery_publish_faults: $(BUILD_DIR)/tests/test_candidate_recovery_publish_faults.o $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+$(BUILD_DIR)/test_candidate_recovery_publish_source: $(BUILD_DIR)/tests/test_candidate_recovery_publish_source.o $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_PUBLISH_TIMEOUT ?= 900
+CANDIDATE_PUBLISH_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_publish
+CANDIDATE_PUBLISH_CASES ?= f1-commit f1-abort f2-single f2-fallback f3-highwater f4-shared stale-root-carrier stale-root-alloc \
+	stale-root-carrier-retry stale-root-alloc-retry source-view
+CANDIDATE_PUBLISH_GATES ?= basic selection empty resolved sparse boundary segments faults
+CANDIDATE_PUBLISH_SOURCE_CASES ?= scan-lsn read-lsn pred-spoof delta-chain selection-repair cross-fallback redo-apply moved-end tail-15 \
+	append-mutate-a append-mutate-b strict-open
+# 고밀도 용량 사례는 수 분이 걸리므로 기본은 비우고 필요할 때만 지정한다.
+CANDIDATE_PUBLISH_DENSE_CASES ?=
+CANDIDATE_PUBLISH_SOURCE_DENSE_CASES ?=
+CANDIDATE_PUBLISH_DENSE_TIMEOUT ?= 1200
+.PHONY: test-candidate-recovery-publish test-candidate-recovery-publish-source
+test-candidate-recovery-publish: $(BUILD_DIR)/test_candidate_recovery_publish $(BUILD_DIR)/test_candidate_recovery_publish_faults \
+	test-candidate-recovery-publish-source
+	@for c in $(CANDIDATE_PUBLISH_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_PUBLISH_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish $$c || exit 1; done
+	@for c in $(CANDIDATE_PUBLISH_DENSE_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_DENSE_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_PUBLISH_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish $$c || exit 1; done
+	@for c in $(CANDIDATE_PUBLISH_GATES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_PUBLISH_REPORT)-gate-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish_faults $$c || exit 1; done
+test-candidate-recovery-publish-source: $(BUILD_DIR)/test_candidate_recovery_publish_source
+	@for c in $(CANDIDATE_PUBLISH_SOURCE_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_PUBLISH_REPORT)-source-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish_source $$c || exit 1; done
+	@for c in $(CANDIDATE_PUBLISH_SOURCE_DENSE_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_DENSE_TIMEOUT) \
+		--seed $(FAULT_SEED) --report $(CANDIDATE_PUBLISH_REPORT)-source-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish_source $$c \
+		|| exit 1; done
 .PHONY: test-candidate-outcome-witness
 test-candidate-outcome-witness: $(BUILD_DIR)/test_candidate_outcome_witness
 	$(TEST_RUNNER) --report $(CANDIDATE_OUTCOME_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_witness
@@ -543,6 +581,7 @@ clean:
 -include $(BUILD_DIR)/storage/candidate_outcome_witness.d
 -include $(BUILD_DIR)/storage/candidate_recovery.d $(BUILD_DIR)/storage/candidate_recovery_state.d
 -include $(BUILD_DIR)/storage/candidate_recovery_terminal.d
+-include $(CANDIDATE_RECOVERY_PUBLISH_OBJS:.o=.d)
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d
 -include $(DATABASE_OBJS:.o=.d) $(DATABASE_EXEC_FAULT_OBJS:.o=.d) $(BUILD_DIR)/sql/sql_statement_fault.d $(BUILD_DIR)/storage/heap_store_test.d

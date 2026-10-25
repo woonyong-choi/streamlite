@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "candidate_outcome_internal.h"
 #include "candidate_wal_witness_internal.h"
 #include "candidate_wal_tail_internal.h"
 
@@ -277,12 +278,11 @@ static const candidate_outcome_t *stored_outcome(const candidate_catalog_t *cata
     return NULL;
 }
 
-static candidate_wal_status_t rebuild_bounds(candidate_outcome_rebuild_t *p, const candidate_catalog_root_t *base,
+static candidate_wal_status_t check_bounds(candidate_outcome_rebuild_info_t *i, const candidate_catalog_root_t *base,
     const candidate_control_state_t *anchor, const candidate_wal_witness_t *history)
 {
     candidate_witness_info_t w = candidate_wal_witness_info(history);
     candidate_witness_system_info_t s = candidate_wal_witness_system_info(history);
-    candidate_outcome_rebuild_info_t *i = &p->info;
     i->current_epoch = s.has_epoch ? s.current_epoch : anchor->request_epoch;
     i->retention_floor = s.has_epoch ? s.retention_floor : anchor->retention_floor;
     i->transaction_highwater = s.has_reservation ? s.transaction_highwater : anchor->transaction_highwater;
@@ -308,11 +308,52 @@ static candidate_wal_status_t check_stored(const candidate_catalog_t *catalog, a
         const candidate_witness_transaction_t *t = candidate_wal_witness_find(history,e->transaction_id);
         if (a == NULL || t == NULL || !same_request(e,t) || e->admitting_owner_epoch != a->owner_epoch ||
             e->declared_result_limit != a->result_limit) return CANDIDATE_WAL_CORRUPT;
-        if (e->state != CANDIDATE_OUTCOME_ADMITTED) {
-            candidate_wal_status_t status = compare_entry(e,a,t); if (status != CANDIDATE_WAL_OK) return status;
-        }
+        if (e->state == CANDIDATE_OUTCOME_ADMITTED) continue;
+        candidate_wal_status_t status = compare_entry(e,a,t);
+        if (status != CANDIDATE_WAL_OK) return status;
     }
     return CANDIDATE_WAL_OK;
+}
+
+static candidate_wal_status_t check_stored_bodies(const candidate_catalog_t *catalog, const candidate_catalog_load_t *load)
+{
+    for (unsigned i = 0; i < candidate_catalog_root(catalog)->count; i++) {
+        const candidate_outcome_t *e = candidate_catalog_at(catalog,i);
+        if (e->state == CANDIDATE_OUTCOME_ADMITTED) continue;
+        candidate_wal_status_t status = read_body(load,e);
+        if (status != CANDIDATE_WAL_OK) return status;
+    }
+    return CANDIDATE_WAL_OK;
+}
+
+candidate_wal_status_t candidate_outcome_preview(candidate_wal_t *wal,
+    const candidate_outcome_witness_options_t *options, uint64_t owner_epoch)
+{
+    if (wal == NULL || options == NULL || options->checkpoint == NULL || owner_epoch == 0) return CANDIDATE_WAL_INVALID;
+    candidate_outcome_witness_options_t saved = *options; candidate_control_state_t anchor = *saved.checkpoint;
+    saved.checkpoint = &anchor;
+    candidate_wal_memory_t memory = {NULL,allocate_default,release_default};
+    if (saved.catalog.memory != NULL) memory = *saved.catalog.memory;
+    if (memory.allocate == NULL || memory.release == NULL) return CANDIDATE_WAL_INVALID;
+    saved.catalog.memory = &memory;
+    candidate_catalog_t *catalog = NULL; candidate_wal_witness_t *history = NULL;
+    admissions_t *admissions = memory.allocate(memory.context,sizeof(*admissions));
+    if (admissions == NULL) return CANDIDATE_WAL_NOMEM;
+    memset(admissions,0,sizeof(*admissions));
+    candidate_wal_status_t status = candidate_catalog_load(&saved.catalog,&catalog);
+    if (status == CANDIDATE_WAL_OK) {
+        candidate_witness_options_t request = {.memory = &memory,.enable_system_groups = true};
+        memcpy(request.uuid,saved.catalog.uuid,16);
+        status = candidate_witness_analyze_observed(wal,&request,&anchor,observe_admission,admissions,&history);
+        if (status == CANDIDATE_WAL_STOPPED && admissions->status != CANDIDATE_WAL_OK) status = admissions->status;
+    }
+    candidate_outcome_rebuild_info_t bounds = {.owner_epoch = owner_epoch};
+    if (status == CANDIDATE_WAL_OK) status = check_bounds(&bounds,candidate_catalog_root(catalog),&anchor,history);
+    if (status == CANDIDATE_WAL_OK) status = check_stored(catalog,admissions,history);
+    if (status == CANDIDATE_WAL_OK) status = check_stored_bodies(catalog,&saved.catalog);
+    candidate_wal_witness_close(&history); candidate_catalog_close(&catalog);
+    memory.release(memory.context,admissions,sizeof(*admissions));
+    return status;
 }
 
 static candidate_wal_status_t project_outcome(const candidate_outcome_t *old, const admission_t *a,
@@ -399,7 +440,7 @@ candidate_wal_status_t candidate_outcome_rebuild_load(candidate_wal_t *wal,
         if (info.transport.has_tail) status = CANDIDATE_WAL_TAIL;
         else if (info.unfinished != 0 || info.incomplete_group_lsn != 0 ||
             candidate_wal_info(wal).durable_end_lsn < info.transport.valid_end_lsn) status = CANDIDATE_WAL_STALE;
-        else status = rebuild_bounds(p,candidate_catalog_root(catalog),&anchor,history);
+        else status = check_bounds(&p->info,candidate_catalog_root(catalog),&anchor,history);
     }
     if (status == CANDIDATE_WAL_OK) status = check_stored(catalog,admissions,history);
     if (status == CANDIDATE_WAL_OK) status = rebuild_entries(p,&saved.source.catalog,catalog,admissions,history);

@@ -33,6 +33,18 @@ candidate_wal_status_t candidate_wal_tail_hash(uint8_t digest[32], const candida
     return status;
 }
 
+candidate_wal_status_t candidate_wal_view_add(candidate_wal_view_t *v, const candidate_wal_record_t *r)
+{
+    if (r->type == 3) { memcpy(v->group_digest,v->digest,32); v->group_lsn = r->lsn; }
+    return candidate_wal_tail_hash(v->digest,r);
+}
+
+bool candidate_wal_view_same(const candidate_wal_view_t *a, const candidate_wal_view_t *b)
+{
+    bool same = memcmp(a->digest,b->digest,32) == 0 && a->end_lsn == b->end_lsn && a->segments == b->segments;
+    return same && a->has_tail == b->has_tail && a->tail_bytes == b->tail_bytes;
+}
+
 static bool visit_tail(void *context, const candidate_wal_record_t *r)
 {
     tail_t *t = context;
@@ -42,7 +54,8 @@ static bool visit_tail(void *context, const candidate_wal_record_t *r)
     if (r->lsn == t->proof.begin_lsn && r->type == 3 && r->payload_bytes == 16) {
         t->found = true; t->group_id = read_le(r->payload); t->transaction_id = r->transaction_id; return true;
     }
-    if (!t->found || r->type < 4 || r->type > 7 || r->payload_bytes < 8 ||
+    bool is_member = (r->type >= 4 && r->type <= 7) || r->type == 15 || r->type == 16;
+    if (!t->found || !is_member || r->payload_bytes < 8 ||
         r->transaction_id != t->transaction_id || read_le(r->payload) != t->group_id) {
         t->status = CANDIDATE_WAL_CORRUPT; return false;
     }

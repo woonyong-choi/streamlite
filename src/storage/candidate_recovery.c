@@ -1,4 +1,5 @@
 #include "candidate_recovery_internal.h"
+#include "candidate_wal_internal.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -10,23 +11,6 @@
 #include <unistd.h>
 
 #define INTERRUPT_LIMIT 32u
-
-struct candidate_recovery {
-    candidate_wal_memory_t memory;
-    candidate_wal_io_t io;
-    candidate_wal_t *wal;
-    candidate_control_t *control;
-    candidate_outcome_witness_t *outcomes;
-    candidate_wal_witness_t *terminal_history;
-    candidate_recovery_info_t info;
-    uint8_t uuid[16];
-    char name[NAME_MAX + 1];
-    int fd, directory_fd;
-    dev_t device;
-    ino_t inode;
-    pid_t process_id;
-    bool is_busy, is_poisoned, is_terminal_repair, allow_group_tail;
-};
 
 static void *allocate_default(void *context, size_t size) { (void)context; return malloc(size); }
 static void release_default(void *context, void *p, size_t size) { (void)context; (void)size; free(p); }
@@ -46,7 +30,7 @@ static candidate_wal_status_t check_file(candidate_recovery_t *r)
     r->is_poisoned = true; return CANDIDATE_WAL_IO;
 }
 
-static candidate_wal_status_t page_offset(uint64_t id, uint64_t *offset)
+candidate_wal_status_t candidate_recovery_page_offset(uint64_t id, uint64_t *offset)
 {
     if (id == 0) return CANDIDATE_WAL_INVALID;
     if (id > (uint64_t)INT64_MAX / 8192) return CANDIDATE_WAL_LIMIT;
@@ -57,7 +41,7 @@ static candidate_wal_status_t read_target(void *context, uint64_t id, uint8_t by
 {
     candidate_recovery_t *r = context; uint64_t offset;
     candidate_wal_status_t status = check_file(r);
-    if (status == CANDIDATE_WAL_OK) status = page_offset(id,&offset);
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_page_offset(id,&offset);
     if (status != CANDIDATE_WAL_OK) return status;
     memset(bytes,0,8192); size_t at = 0; unsigned interrupted = 0;
     while (at < 8192) {
@@ -75,7 +59,7 @@ static candidate_wal_status_t write_target(void *context, uint64_t id, const uin
 {
     candidate_recovery_t *r = context; uint64_t offset;
     candidate_wal_status_t status = check_file(r);
-    if (status == CANDIDATE_WAL_OK) status = page_offset(id,&offset);
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_page_offset(id,&offset);
     if (status != CANDIDATE_WAL_OK) return status;
     size_t at = 0; unsigned interrupted = 0;
     while (at < 8192) {
@@ -161,7 +145,8 @@ static candidate_wal_status_t open_data(candidate_recovery_t *r, const char *pat
     return check_file(r);
 }
 
-static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *options, unsigned repair_mode, candidate_recovery_t **out)
+static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *options, unsigned repair_mode,
+    candidate_control_verify_t verify, candidate_recovery_t **out)
 {
     if (out == NULL) return CANDIDATE_WAL_INVALID;
     *out = NULL;
@@ -180,7 +165,7 @@ static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *
     if (uuid == 0 || saved.owner_epoch == 0) return CANDIDATE_WAL_INVALID;
     candidate_recovery_t *r = memory.allocate(memory.context,sizeof(*r));
     if (r == NULL) return CANDIDATE_WAL_NOMEM;
-    memset(r,0,sizeof(*r)); r->memory = memory; r->io = io; memcpy(r->uuid,saved.uuid,16);
+    memset(r,0,sizeof(*r)); r->memory = memory; r->io = io; memcpy(r->uuid,saved.uuid,16); r->owner_epoch = saved.owner_epoch;
     r->process_id = getpid(); r->fd = -1; r->directory_fd = -1; r->is_busy = true;
     r->is_terminal_repair = repair_mode != 0; r->allow_group_tail = repair_mode == 2;
     candidate_wal_status_t status = open_data(r,data_path);
@@ -188,23 +173,55 @@ static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *
         candidate_wal_options_t wo = {.owner_epoch = saved.owner_epoch,.io = &r->io,.memory = &r->memory}; memcpy(wo.uuid,r->uuid,16);
         status = candidate_wal_open(wal_path,&wo,&r->wal);
     }
+    if (status == CANDIDATE_WAL_OK) status = candidate_wal_pin(r->wal);
     if (status == CANDIDATE_WAL_OK) {
         candidate_control_options_t co = {.backend = CANDIDATE_CONTROL_WAL,.io = &r->io,.memory = &r->memory,
-            .verify = verify_anchor,.context = r}; memcpy(co.uuid,r->uuid,16);
+            .verify = verify == NULL ? verify_anchor : verify,.context = r}; memcpy(co.uuid,r->uuid,16);
         status = candidate_control_open(control_path,&co,&r->control);
     }
     if (status != CANDIDATE_WAL_OK) { r->is_busy = false; candidate_recovery_close(&r); *out = NULL; return status; }
-    r->info.resident_bytes = sizeof(*r) + candidate_wal_info(r->wal).resident_bytes;
-    r->info.resident_bytes += candidate_control_info(r->control).resident_bytes;
-    r->info.resident_bytes += candidate_outcome_witness_info(r->outcomes).resident_bytes;
-    r->info.resident_bytes += candidate_wal_witness_info(r->terminal_history).resident_bytes;
+    r->info.resident_bytes = candidate_recovery_resident_bytes(r);
     r->is_busy = false; *out = r;
     return CANDIDATE_WAL_OK;
 }
 
+size_t candidate_recovery_resident_bytes(const candidate_recovery_t *r)
+{
+    size_t bytes = sizeof(*r) + candidate_wal_info(r->wal).resident_bytes;
+    bytes += candidate_control_info(r->control).resident_bytes;
+    bytes += candidate_outcome_witness_info(r->outcomes).resident_bytes;
+    return bytes + candidate_wal_witness_info(r->terminal_history).resident_bytes;
+}
+
 candidate_wal_status_t candidate_recovery_open(const candidate_recovery_options_t *options, candidate_recovery_t **out)
 {
-    return open_recovery(options,0,out);
+    return open_recovery(options,0,NULL,out);
+}
+
+candidate_wal_status_t candidate_recovery_own(const candidate_recovery_options_t *options,
+    candidate_control_verify_t verify, candidate_recovery_t **out)
+{
+    return open_recovery(options,0,verify,out);
+}
+
+candidate_wal_status_t candidate_recovery_verify(void *recovery, const candidate_control_state_t *anchor)
+{
+    return verify_anchor(recovery,anchor);
+}
+
+candidate_wal_status_t candidate_recovery_check(candidate_recovery_t *r)
+{
+    return check_file(r);
+}
+
+candidate_redo_target_t candidate_recovery_target(candidate_recovery_t *r)
+{
+    return (candidate_redo_target_t){r,read_target,write_target,sync_target};
+}
+
+candidate_wal_status_t candidate_recovery_load(void *recovery, candidate_page_ref_t ref, uint8_t bytes[CANDIDATE_PAGE_BYTES])
+{
+    return load_target(recovery,ref,bytes);
 }
 
 static candidate_wal_status_t repair_recovery(const candidate_recovery_options_t *options,
@@ -215,7 +232,7 @@ static candidate_wal_status_t repair_recovery(const candidate_recovery_options_t
     if (options == NULL) return CANDIDATE_WAL_INVALID;
     uint64_t owner_epoch = options->owner_epoch;
     candidate_recovery_t *r = NULL; candidate_recovery_wal_info_t info = {0};
-    candidate_wal_status_t status = open_recovery(options,groups ? 2 : 1,&r);
+    candidate_wal_status_t status = open_recovery(options,groups ? 2 : 1,NULL,&r);
     if (status != CANDIDATE_WAL_OK) return status;
     r->is_busy = true;
     candidate_terminal_options_t request = {.owner_epoch = owner_epoch,.anchor = &r->info.anchor,.memory = &r->memory,

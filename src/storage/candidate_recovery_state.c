@@ -15,6 +15,7 @@ typedef struct {
     candidate_recovery_info_t info;
     candidate_wal_status_t status;
     uint32_t count, pending_count;
+    bool allows_unfinished;
     candidate_page_ref_t pending[CANDIDATE_WITNESS_PAGES];
     page_history_t pages[HISTORY_SLOTS];
 } state_t;
@@ -199,7 +200,8 @@ static candidate_wal_status_t check_versions(state_t *s, const uint8_t *bytes, c
         if (status != CANDIDATE_WAL_OK) return status;
         const candidate_witness_transaction_t *t = candidate_wal_witness_find(s->witness,v.transaction_id);
         if (t == NULL) return CANDIDATE_WAL_CORRUPT;
-        if (t->state == CANDIDATE_WITNESS_UNFINISHED) return CANDIDATE_WAL_STALE;
+        bool is_unfinished_preview = s->allows_unfinished && v.frozen_csn == 0;
+        if (t->state == CANDIDATE_WITNESS_UNFINISHED && !is_unfinished_preview) return CANDIDATE_WAL_STALE;
         if (v.frozen_csn != 0 && (t->state != CANDIDATE_WITNESS_COMMIT || v.frozen_csn != t->csn)) return CANDIDATE_WAL_CORRUPT;
         status = check_version_chain(s,ref);
         if (status == CANDIDATE_WAL_OK) status = check_payload(s,&v);
@@ -270,20 +272,20 @@ static candidate_wal_status_t check_pages(state_t *s)
     return CANDIDATE_WAL_OK;
 }
 
-candidate_wal_status_t candidate_recovery_validate(candidate_wal_t *wal,
-    const candidate_control_state_t *anchor, const candidate_catalog_load_t *load,
-    candidate_recovery_info_t *info)
+static candidate_wal_status_t validate(candidate_wal_t *wal, const candidate_control_state_t *anchor,
+    const candidate_catalog_load_t *load, candidate_recovery_info_t *info, bool allows_unfinished)
 {
     candidate_wal_memory_t memory = *load->memory;
     state_t *s = memory.allocate(memory.context,sizeof(*s));
     if (s == NULL) return CANDIDATE_WAL_NOMEM;
-    memset(s,0,sizeof(*s)); s->load = *load; s->info = *info;
+    memset(s,0,sizeof(*s)); s->load = *load; s->info = *info; s->allows_unfinished = allows_unfinished;
     candidate_witness_options_t options = {.memory = &memory,.enable_system_groups = true}; memcpy(options.uuid,load->uuid,16);
     candidate_wal_status_t status = candidate_witness_analyze_observed(wal,&options,anchor,observe_pages,s,&s->witness);
     if (status == CANDIDATE_WAL_STOPPED && s->status != CANDIDATE_WAL_OK) status = s->status;
     if (status == CANDIDATE_WAL_OK) {
         candidate_witness_info_t witness = candidate_wal_witness_info(s->witness);
-        if (witness.unfinished != 0 || witness.incomplete_group_lsn != 0) status = CANDIDATE_WAL_STALE;
+        bool is_resolved = witness.unfinished == 0 && witness.incomplete_group_lsn == 0;
+        if (!is_resolved && !allows_unfinished) status = CANDIDATE_WAL_STALE;
         s->info.wal_end_lsn = witness.transport.valid_end_lsn;
     }
     if (status == CANDIDATE_WAL_OK) {
@@ -296,4 +298,18 @@ candidate_wal_status_t candidate_recovery_validate(candidate_wal_t *wal,
     candidate_allocation_close(&s->allocation); candidate_wal_witness_close(&s->witness);
     memory.release(memory.context,s,sizeof(*s));
     return status;
+}
+
+candidate_wal_status_t candidate_recovery_validate(candidate_wal_t *wal,
+    const candidate_control_state_t *anchor, const candidate_catalog_load_t *load,
+    candidate_recovery_info_t *info)
+{
+    return validate(wal,anchor,load,info,false);
+}
+
+candidate_wal_status_t candidate_recovery_validate_preview(candidate_wal_t *wal,
+    const candidate_control_state_t *anchor, const candidate_catalog_load_t *load,
+    candidate_recovery_info_t *info)
+{
+    return validate(wal,anchor,load,info,true);
 }

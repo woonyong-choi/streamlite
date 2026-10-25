@@ -33,6 +33,21 @@ typedef struct {
     uint64_t discarded_group_lsn, discarded_valid_end_lsn, discarded_tail_bytes;
     uint32_t removed_segments;
 } candidate_recovery_wal_info_t;
+/* maintenance_pages·data_file_bytes는 게시 전 재고 시점이고 allocation_pages는 carrier를 뺀 staging page다. */
+/* reserved_pages는 새로 예약한 ID, reused_reserved_pages는 실제 재사용한 이전 예약 ID이며 둘 다 carrier 준비를 포함할 수 있다. */
+typedef struct {
+    candidate_recovery_wal_info_t repair;
+    uint64_t checkpoint_id, page_highwater_before, page_highwater_after;
+    uint64_t reserved_pages, reused_reserved_pages, wal_bytes_appended;
+    uint64_t protected_pages, protected_bytes, maintenance_pages, data_file_bytes;
+    uint32_t outcomes, nodes, new_nodes, reused_nodes, allocation_pages, system_groups, events;
+    bool has_staging, has_publication;
+} candidate_recovery_publication_t;
+/* 게시 뒤 data file 크기, LIVE type5 page, 이번 호출의 새 ALLOC page, carrier 준비 page 전부(root와 필요한 allocation node)와 보호 outcome page 수다. */
+/* allocated_pages는 reserved_pages+reused_reserved_pages이고 allocation_pages+carrier_pages와 같다. */
+typedef struct {
+    uint64_t data_file_bytes, maintenance_pages, allocated_pages, carrier_pages, protected_pages;
+} candidate_recovery_extent_t;
 
 /* 기존 후보 파일의 배타 잠금을 소유하고 resolved snapshot만 반환하며 SQL/ACK를 활성화하지 않는다. */
 /* stale 표·미완료 거래/그룹은 STALE이고 tail 수리·ABORT/metadata 재작성은 제공하지 않는다. */
@@ -52,5 +67,11 @@ candidate_wal_status_t candidate_recovery_resolve_terminals(const candidate_reco
 /* data/control은 보존하며 ready handle은 없다. 실패 receipt는0이지만 제거/ABORT 효과가 남을 수 있다. */
 candidate_wal_status_t candidate_recovery_repair_wal(const candidate_recovery_options_t *options,
     candidate_recovery_wal_info_t *out);
+/* 기존 후보 파일을 소유해 tail/terminal 수리, redo, 결과 재구성, metadata 게시와 checkpoint·control 게시를 수행한다. */
+/* 성공 시에만 검증한 handle을 반환하며 SQL/ACK·writer 활성화는 아니다. 실패 시 *out은 NULL이고 효과와 control 게시는 불확실할 수 있다. */
+/* 변경이 필요하면 owner는 선택 anchor보다 커야 하며 같은 owner로 이미 게시된 상태는 쓰기 없이 다시 연다. */
+candidate_wal_status_t candidate_recovery_recover(const candidate_recovery_options_t *options, candidate_recovery_t **out);
+candidate_recovery_publication_t candidate_recovery_publication(const candidate_recovery_t *recovery);
+candidate_recovery_extent_t candidate_recovery_publication_extent(const candidate_recovery_t *recovery);
 
 #endif
