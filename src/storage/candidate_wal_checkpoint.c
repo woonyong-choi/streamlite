@@ -8,6 +8,8 @@ typedef struct {
     candidate_wal_witness_t *witness;
     const candidate_checkpoint_t *checkpoint;
     candidate_wal_visitor_t visitor;
+    candidate_wal_visitor_t observer;
+    void *observer_context;
     candidate_checkpoint_info_t info;
     candidate_wal_status_t status;
     uint64_t group_begin, last_checkpoint, highest_owner;
@@ -136,6 +138,7 @@ static candidate_wal_status_t checkpoint_record(scan_t *s, const candidate_wal_r
 static bool visit(void *context, const candidate_wal_record_t *r)
 {
     scan_t *s = context;
+    if (s->observer != NULL && !s->observer(s->observer_context,r)) return false;
     if (r->owner_epoch > s->highest_owner) s->highest_owner = r->owner_epoch;
     if (r->type >= 12 && r->type <= 14) {
         s->status = checkpoint_record(s,r); return s->status == CANDIDATE_WAL_OK;
@@ -152,9 +155,10 @@ static bool visit(void *context, const candidate_wal_record_t *r)
 
 candidate_wal_status_t candidate_witness_checkpoint_scan(candidate_wal_t *wal,
     candidate_wal_witness_t *witness, const candidate_checkpoint_t *checkpoint,
-    candidate_wal_visitor_t visitor, candidate_wal_info_t *transport)
+    candidate_wal_visitor_t visitor, candidate_wal_visitor_t observer, void *context, candidate_wal_info_t *transport)
 {
-    scan_t scan = {.witness=witness,.checkpoint=checkpoint,.visitor=visitor,.info=candidate_checkpoint_info(checkpoint)};
+    scan_t scan = {.witness=witness,.checkpoint=checkpoint,.visitor=visitor,.observer=observer,
+        .observer_context=context,.info=candidate_checkpoint_info(checkpoint)};
     candidate_wal_status_t status = candidate_wal_scan(wal,visit,&scan,transport);
     if (status == CANDIDATE_WAL_STOPPED && scan.status != CANDIDATE_WAL_OK) return scan.status;
     if (status == CANDIDATE_WAL_OK && !scan.has_end) return CANDIDATE_WAL_CORRUPT;

@@ -423,8 +423,29 @@ static bool visit_record(void *context, const candidate_wal_record_t *r)
 static void *allocate_default(void *context, size_t size) { (void)context; return malloc(size); }
 static void release_default(void *context, void *p, size_t size) { (void)context; (void)size; free(p); }
 
+typedef struct {
+    candidate_wal_witness_t *witness;
+    candidate_wal_visitor_t observer;
+    void *context;
+    bool has_observer_stop;
+} observed_t;
+
+static bool observe_forward(void *context, const candidate_wal_record_t *record)
+{
+    observed_t *o=context;
+    if (o->observer==NULL || o->observer(o->context,record)) return true;
+    o->has_observer_stop=true; return false;
+}
+
+static bool visit_observed(void *context, const candidate_wal_record_t *record)
+{
+    observed_t *o=context;
+    return observe_forward(o,record) && visit_record(o->witness,record);
+}
+
 static candidate_wal_status_t analyze(candidate_wal_t *wal,
-    const candidate_witness_options_t *options, const candidate_checkpoint_t *checkpoint, candidate_wal_witness_t **out)
+    const candidate_witness_options_t *options, const candidate_checkpoint_t *checkpoint,
+    candidate_wal_visitor_t observer, void *context, candidate_wal_witness_t **out)
 {
     if (out == NULL) return CANDIDATE_WAL_INVALID;
     *out = NULL;
@@ -445,9 +466,10 @@ static candidate_wal_status_t analyze(candidate_wal_t *wal,
         if (status != CANDIDATE_WAL_OK) { allocator.release(allocator.context, w, sizeof(*w)); return status; }
         w->info.resident_bytes += candidate_system_resident_bytes(w->system);
     }
-    candidate_wal_status_t status = checkpoint == NULL ? candidate_wal_scan(wal, visit_record, w, &w->info.transport) :
-        candidate_witness_checkpoint_scan(wal, w, checkpoint, visit_record, &w->info.transport);
-    if (status == CANDIDATE_WAL_STOPPED) status = w->status;
+    observed_t observed={.witness=w,.observer=observer,.context=context};
+    candidate_wal_status_t status = checkpoint == NULL ? candidate_wal_scan(wal, visit_observed, &observed, &w->info.transport) :
+        candidate_witness_checkpoint_scan(wal, w, checkpoint, visit_record, observe_forward, &observed, &w->info.transport);
+    if (status == CANDIDATE_WAL_STOPPED && !observed.has_observer_stop) status = w->status;
     if (status != CANDIDATE_WAL_OK) { candidate_wal_witness_close(&w); return status; }
     w->info.unfinished = w->active;
     w->info.incomplete_group_lsn = w->pending.first_lsn;
@@ -458,11 +480,12 @@ static candidate_wal_status_t analyze(candidate_wal_t *wal,
 candidate_wal_status_t candidate_wal_witness_analyze(candidate_wal_t *wal,
     const candidate_witness_options_t *options, candidate_wal_witness_t **out)
 {
-    return analyze(wal, options, NULL, out);
+    return analyze(wal, options, NULL, NULL, NULL, out);
 }
 
-candidate_wal_status_t candidate_wal_witness_analyze_checkpoint(candidate_wal_t *wal,
-    const candidate_witness_options_t *options, const candidate_control_state_t *anchor, candidate_wal_witness_t **out)
+static candidate_wal_status_t analyze_checkpoint(candidate_wal_t *wal,
+    const candidate_witness_options_t *options, const candidate_control_state_t *anchor,
+    candidate_wal_visitor_t observer, void *context, candidate_wal_witness_t **out)
 {
     if (out == NULL) return CANDIDATE_WAL_INVALID;
     *out = NULL;
@@ -477,10 +500,24 @@ candidate_wal_status_t candidate_wal_witness_analyze_checkpoint(candidate_wal_t 
     candidate_checkpoint_t *checkpoint = NULL;
     candidate_wal_witness_t *witness = NULL;
     candidate_wal_status_t status = candidate_checkpoint_load(wal, &state, &memory, &checkpoint);
-    if (status == CANDIDATE_WAL_OK) status = analyze(wal, &saved, checkpoint, &witness);
+    if (status == CANDIDATE_WAL_OK) status = analyze(wal, &saved, checkpoint, observer, context, &witness);
     candidate_checkpoint_close(&checkpoint);
     if (status == CANDIDATE_WAL_OK) *out = witness;
     return status;
+}
+
+candidate_wal_status_t candidate_wal_witness_analyze_checkpoint(candidate_wal_t *wal,
+    const candidate_witness_options_t *options, const candidate_control_state_t *anchor, candidate_wal_witness_t **out)
+{
+    return analyze_checkpoint(wal,options,anchor,NULL,NULL,out);
+}
+
+candidate_wal_status_t candidate_witness_analyze_observed(candidate_wal_t *wal,
+    const candidate_witness_options_t *options, const candidate_control_state_t *anchor,
+    candidate_wal_visitor_t observer, void *context, candidate_wal_witness_t **out)
+{
+    if (anchor==NULL) return analyze(wal,options,NULL,observer,context,out);
+    return analyze_checkpoint(wal,options,anchor,observer,context,out);
 }
 
 bool candidate_witness_checkpoint_at(const candidate_wal_witness_t *w, uint32_t index,

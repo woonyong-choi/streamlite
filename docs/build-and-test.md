@@ -171,6 +171,14 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-wal
 
 일반 profile과 `max` profile은 각각 native90초·runner120초를 적용한다. 최대 입력은 실제8192개 image·4096개 거래·96chunk가17개 WAL segment에 걸치며64개 활성 거래와 한도를 넘는 입력도 별도로 대조한다. 최대 입력의 root 값은 capacity 시험용 선언이며 유효 DB를 연 증거가 아니다. 최고 소유 요청량2,108,056B는 반환 시1,681,736B로 줄며 transport·stack·allocator/RSS는 별도다. 기존 binary·object/fingerprint를 보호할 때는 새 `CANDIDATE_WITNESS_MODULE` 경로와 모든 재사용 dependency의 `--old-file` pin·전후 해시를 함께 사용한다. 구 options 구조로 컴파일한 object를 새 witness에 연결하지 않고 현재 header에 맞춘 시험 object를 사용한다. 기존 `analyze`의 기본/system 동작은 유지하며 data redo·결과 복원·일반 복구 활성화는 이 target의 범위가 아니다.
 
+[물리 redo 시험](../tests/test_candidate_redo.c)은 실제 WAL과 새 data 파일에서 image·delta, PageRef/previousLSN·group 끝, ABORT/미완료 거래의 구조 보존과 미완성 group 배제를 확인한다. 정상·중간 결과에서의 재실행,14개 위치의 torn page, CRC를 다시 맞춘 잘못된 UUID/형식/ID/generation/pageLSN, 모든 작은 record prefix와 불완전 tail, read/부분 write/sync/WAL force 실패, 다중 scan 변경·OOM·입력 사본을 대조한다. 쓰기 도중과 data fsync 전후의 실제 자식 process 종료5곳에서 재실행한다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-redo TEST_TIMEOUT=120 CANDIDATE_REDO_REPORT=build-regression/fault/redo-check.json
+```
+
+native90초·runner120초를 유지하고 새 target/report를 사용한다. 이 시험은 callback에 열린 test fd를 연결하며 WAL durable LSN이 pageLSN 이상인 뒤에만 pwrite하는지 확인한다. 복원한 allocation/catalog snapshot은 기존 owning reader로 다시 읽고520개 page·두 segment도 대조한다. workspace7,866,584B와 close 뒤0은 transport·stack·allocator/RSS와 별도다. 전체65536-ID 한도 채움이나 물리 power-cut·DB 활성화의 증거로 쓰지 않는다. 보호할 이전 object/binary가 있으면 `CANDIDATE_WITNESS_MODULE`과 `CANDIDATE_WITNESS_CHECKPOINT_MODULE`에 새 경로를 지정하고 모든 재사용 dependency/fingerprint를 `--old-file`로 고정해 전후 해시를 대조한다. 기본 library·SQL·ACK에는 연결하지 않는다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.
