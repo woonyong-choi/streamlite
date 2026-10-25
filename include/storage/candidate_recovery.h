@@ -28,6 +28,11 @@ typedef struct {
     uint64_t checkpoint_id, before_end_lsn, after_end_lsn, repaired_tail_bytes;
     uint32_t appended_aborts, existing_commits, existing_aborts;
 } candidate_recovery_terminal_info_t;
+typedef struct {
+    candidate_recovery_terminal_info_t terminals;
+    uint64_t discarded_group_lsn, discarded_valid_end_lsn, discarded_tail_bytes;
+    uint32_t removed_segments;
+} candidate_recovery_wal_info_t;
 
 /* 기존 후보 파일의 배타 잠금을 소유하고 resolved snapshot만 반환하며 SQL/ACK를 활성화하지 않는다. */
 /* stale 표·미완료 거래/그룹은 STALE이고 tail 수리·ABORT/metadata 재작성은 제공하지 않는다. */
@@ -43,5 +48,9 @@ candidate_wal_status_t candidate_recovery_close(candidate_recovery_t **recovery)
 /* 변경 시 owner는 선택 anchor보다 커야 하며 실패한 부분 append는 재열기로 확인한다; out은 실패 시0이다. */
 candidate_wal_status_t candidate_recovery_resolve_terminals(const candidate_recovery_options_t *options,
     candidate_recovery_terminal_info_t *out);
+/* 검증한 마지막 미완료 물리 그룹을 제거한 뒤 WAL terminal을 내구 정리한다. */
+/* data/control은 보존하며 ready handle은 없다. 실패 receipt는0이지만 제거/ABORT 효과가 남을 수 있다. */
+candidate_wal_status_t candidate_recovery_repair_wal(const candidate_recovery_options_t *options,
+    candidate_recovery_wal_info_t *out);
 
 #endif

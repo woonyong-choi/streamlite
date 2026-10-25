@@ -113,7 +113,11 @@ BASIC_TESTS = test_record test_record_fault test_overflow test_overflow_fault te
               test_pk_tree test_text_tree
 TEST_BINS = $(addprefix $(BUILD_DIR)/,$(BASIC_TESTS))
 
-CANDIDATE_WAL_OBJS = $(BUILD_DIR)/storage/candidate_wal.o $(BUILD_DIR)/storage/candidate_wal_format.o
+CANDIDATE_WAL_TAIL_MODULE ?= $(BUILD_DIR)/storage/candidate_wal_tail.o
+CANDIDATE_WAL_OBJS = $(BUILD_DIR)/storage/candidate_wal.o $(BUILD_DIR)/storage/candidate_wal_format.o $(CANDIDATE_WAL_TAIL_MODULE) $(BUILD_DIR)/storage/candidate_digest.o
+$(CANDIDATE_WAL_TAIL_MODULE): src/storage/candidate_wal_tail.c $(BUILD_FINGERPRINT)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 CANDIDATE_CONTROL_OBJS = $(BUILD_DIR)/storage/candidate_control.o $(BUILD_DIR)/storage/candidate_control_format.o
 CANDIDATE_CHECKPOINT_OBJS = $(BUILD_DIR)/storage/candidate_checkpoint.o $(BUILD_DIR)/storage/candidate_checkpoint_format.o
 $(BUILD_DIR)/test_candidate_checkpoint: $(BUILD_DIR)/tests/test_candidate_checkpoint.o $(CANDIDATE_CHECKPOINT_OBJS) $(CANDIDATE_CONTROL_OBJS) $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/candidate_digest.o $(BUILD_DIR)/storage/checksum.o
@@ -143,6 +147,12 @@ CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.js
 CANDIDATE_RECOVERY_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery.o
 CANDIDATE_RECOVERY_TERMINAL_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery_terminal.o
 CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
+$(BUILD_DIR)/test_candidate_recovery_wal: $(BUILD_DIR)/tests/test_candidate_recovery_wal.o $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_RECOVERY_WAL_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_wal.json
+.PHONY: test-candidate-recovery-wal
+test-candidate-recovery-wal: $(BUILD_DIR)/test_candidate_recovery_wal
+	$(TEST_RUNNER) --report $(CANDIDATE_RECOVERY_WAL_REPORT) -- ./$(BUILD_DIR)/test_candidate_recovery_wal
 $(BUILD_DIR)/test_candidate_aborted_result: $(BUILD_DIR)/tests/test_candidate_aborted_result.o $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_ABORTED_RESULT_REPORT ?= $(BUILD_DIR)/fault/test_candidate_aborted_result.json
@@ -501,6 +511,7 @@ clean:
 -include $(CANDIDATE_WITNESS_MODULE:.o=.d)
 -include $(CANDIDATE_OUTCOME_CATALOG_MODULE:.o=.d)
 -include $(CANDIDATE_OUTCOME_MODULE:.o=.d)
+-include $(CANDIDATE_WAL_TAIL_MODULE:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_wal_system.d
 -include $(BUILD_DIR)/storage/candidate_checkpoint.d
 -include $(BUILD_DIR)/storage/candidate_checkpoint_format.d

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "candidate_wal_witness_internal.h"
+#include "candidate_wal_tail_internal.h"
 
 static void write_le(uint8_t *p, uint64_t value, unsigned size)
 {
@@ -16,7 +17,7 @@ candidate_wal_status_t candidate_terminal_prepare(candidate_wal_t *wal,
     memcpy(request.uuid,options->uuid,16);
     candidate_wal_status_t status = candidate_wal_witness_analyze_checkpoint(wal,&request,options->anchor,out);
     if (status != CANDIDATE_WAL_OK) return status;
-    if (candidate_wal_witness_info(*out).incomplete_group_lsn == 0) return CANDIDATE_WAL_OK;
+    if (options->allow_group_tail || candidate_wal_witness_info(*out).incomplete_group_lsn == 0) return CANDIDATE_WAL_OK;
     candidate_wal_witness_close(out); return CANDIDATE_WAL_STALE;
 }
 
@@ -39,6 +40,49 @@ static candidate_wal_status_t append_aborts(candidate_wal_t *wal, const candidat
     return CANDIDATE_WAL_OK;
 }
 
+typedef struct { uint8_t digest[32]; candidate_wal_status_t status; } proof_hash_t;
+
+static bool observe_hash(void *context, const candidate_wal_record_t *record)
+{
+    proof_hash_t *hash = context;
+    hash->status = candidate_wal_tail_hash(hash->digest,record); return hash->status == CANDIDATE_WAL_OK;
+}
+
+candidate_wal_status_t candidate_terminal_repair_wal(candidate_wal_t *wal,
+    const candidate_terminal_options_t *options, candidate_wal_witness_t **history,
+    candidate_recovery_wal_info_t *out)
+{
+    candidate_wal_witness_close(history);
+    candidate_witness_options_t request = {.memory = options->memory,.enable_system_groups = true};
+    memcpy(request.uuid,options->uuid,16); proof_hash_t hash = {0};
+    candidate_wal_status_t status = candidate_witness_analyze_observed(wal,&request,options->anchor,observe_hash,&hash,history);
+    if (status == CANDIDATE_WAL_STOPPED && hash.status != CANDIDATE_WAL_OK) status = hash.status;
+    if (status != CANDIDATE_WAL_OK) return status;
+    candidate_witness_info_t before = candidate_wal_witness_info(*history);
+    candidate_recovery_wal_info_t info = {0};
+    if (before.incomplete_group_lsn != 0) {
+        if (options->owner_epoch <= options->anchor->owner_epoch) return CANDIDATE_WAL_STALE;
+        if (before.incomplete_group_lsn < options->anchor->checkpoint_end) return CANDIDATE_WAL_CORRUPT;
+        candidate_wal_tail_proof_t proof = {.begin_lsn = before.incomplete_group_lsn,
+            .end_lsn = before.transport.valid_end_lsn,.tail_bytes = before.transport.tail_bytes,.has_tail = before.transport.has_tail};
+        memcpy(proof.digest,hash.digest,32);
+        status = candidate_wal_discard_group_tail(wal,&proof);
+        if (status != CANDIDATE_WAL_OK) return status;
+        info.discarded_group_lsn = proof.begin_lsn; info.discarded_valid_end_lsn = proof.end_lsn;
+        info.discarded_tail_bytes = proof.tail_bytes;
+        info.removed_segments = before.transport.segments - candidate_wal_info(wal).segments;
+        candidate_wal_witness_close(history);
+        candidate_terminal_options_t strict = *options; strict.allow_group_tail = false;
+        status = candidate_terminal_prepare(wal,&strict,history);
+        if (status != CANDIDATE_WAL_OK) return status;
+        candidate_witness_info_t after = candidate_wal_witness_info(*history);
+        if (after.commits != before.commits || after.aborts != before.aborts) return CANDIDATE_WAL_CORRUPT;
+    }
+    status = candidate_terminal_resolve(wal,options,history,&info.terminals);
+    if (status == CANDIDATE_WAL_OK) *out = info;
+    return status;
+}
+
 candidate_wal_status_t candidate_terminal_resolve(candidate_wal_t *wal,
     const candidate_terminal_options_t *options, candidate_wal_witness_t **history,
     candidate_recovery_terminal_info_t *out)
@@ -56,7 +100,7 @@ candidate_wal_status_t candidate_terminal_resolve(candidate_wal_t *wal,
     status = candidate_terminal_prepare(wal,options,history);
     if (status != CANDIDATE_WAL_OK) return status;
     candidate_witness_info_t after = candidate_wal_witness_info(*history);
-    if (after.unfinished != 0 || after.transport.has_tail) return CANDIDATE_WAL_STALE;
+    if (after.unfinished != 0 || after.incomplete_group_lsn != 0 || after.transport.has_tail) return CANDIDATE_WAL_STALE;
     if (after.commits != before.commits || after.aborts != before.aborts + before.unfinished) return CANDIDATE_WAL_CORRUPT;
     if (candidate_wal_info(wal).durable_end_lsn < after.transport.valid_end_lsn) return CANDIDATE_WAL_STALE;
     *out = (candidate_recovery_terminal_info_t){.checkpoint_id = options->anchor->checkpoint_id,

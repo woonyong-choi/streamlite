@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "storage/checksum.h"
+#include "candidate_wal_tail_internal.h"
 
 #define MAX_SEGMENTS (CANDIDATE_WAL_MAX_BYTES / CANDIDATE_WAL_SEGMENT_BYTES)
 #define INTERRUPT_LIMIT 32u
@@ -605,6 +606,47 @@ candidate_wal_status_t candidate_wal_repair_tail(candidate_wal_t *w)
     w->info.tail_bytes = 0;
     w->needs_force_all = true;
     return CANDIDATE_WAL_OK;
+}
+
+static candidate_wal_status_t remove_segments(candidate_wal_t *w, unsigned keep)
+{
+    if (w->active_fd != w->lock_fd) {
+        int fd = w->active_fd; w->active_fd = -1;
+        if (close(fd) != 0) return poison(w);
+    }
+    while (w->info.segments > keep + 1) {
+        unsigned id = w->info.segments - 1; char name[NAME_MAX + 1];
+        if (!has_owned_files(w) || !segment_name(w,id,name)) return poison(w);
+        if (unlinkat(w->directory_fd,name,0) != 0) return poison(w);
+        int fd = w->files[id].fd; w->files[id].is_bound = false; w->info.segments--;
+        if (close(fd) != 0 || sync_directory(w) != CANDIDATE_WAL_OK) return poison(w);
+    }
+    return CANDIDATE_WAL_OK;
+}
+
+candidate_wal_status_t candidate_wal_discard_group_tail(candidate_wal_t *w, const candidate_wal_tail_proof_t *proof)
+{
+    candidate_wal_status_t status = check_access(w);
+    if (status != CANDIDATE_WAL_OK) return status;
+    if (proof == NULL) return CANDIDATE_WAL_INVALID;
+    candidate_wal_tail_proof_t saved = *proof;
+    status = candidate_wal_tail_check(w,&saved);
+    if (status != CANDIDATE_WAL_OK) return status;
+    unsigned keep = (unsigned)(saved.begin_lsn / CANDIDATE_WAL_SEGMENT_BYTES);
+    uint64_t offset = saved.begin_lsn % CANDIDATE_WAL_SEGMENT_BYTES;
+    if (offset < 64 || keep >= w->info.segments) return CANDIDATE_WAL_CORRUPT;
+    status = remove_segments(w,keep);
+    if (status != CANDIDATE_WAL_OK) return status;
+    int fd = open_segment(w,keep,O_RDWR);
+    if (fd < 0) return poison(w);
+    w->active_fd = fd;
+    if (!has_owned_files(w) || w->io.ftruncate(fd,(off_t)offset) != 0) return poison(w);
+    if (sync_fd(w,fd) != CANDIDATE_WAL_OK || !has_owned_files(w)) return poison(w);
+    w->position = saved.begin_lsn; w->info.valid_end_lsn = saved.begin_lsn;
+    w->info.durable_end_lsn = 0; w->info.has_tail = false; w->info.tail_bytes = 0;
+    w->needs_force_all = true;
+    candidate_wal_info_t info;
+    return candidate_wal_scan(w,NULL,NULL,&info);
 }
 
 candidate_wal_info_t candidate_wal_info(const candidate_wal_t *w)

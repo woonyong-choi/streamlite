@@ -25,7 +25,7 @@ struct candidate_recovery {
     dev_t device;
     ino_t inode;
     pid_t process_id;
-    bool is_busy, is_poisoned, is_terminal_repair;
+    bool is_busy, is_poisoned, is_terminal_repair, allow_group_tail;
 };
 
 static void *allocate_default(void *context, size_t size) { (void)context; return malloc(size); }
@@ -113,7 +113,8 @@ static candidate_wal_status_t verify_anchor(void *context, const candidate_contr
     r->info = (candidate_recovery_info_t){.anchor = *anchor};
     if (r->is_terminal_repair) {
         candidate_wal_witness_close(&r->terminal_history);
-        candidate_terminal_options_t request = {.anchor = anchor,.memory = &r->memory}; memcpy(request.uuid,r->uuid,16);
+        candidate_terminal_options_t request = {.anchor = anchor,.memory = &r->memory,.allow_group_tail = r->allow_group_tail};
+        memcpy(request.uuid,r->uuid,16);
         return candidate_terminal_prepare(r->wal,&request,&r->terminal_history);
     }
     if (anchor->catalog_root.id != 0) return CANDIDATE_WAL_UNSUPPORTED;
@@ -160,7 +161,7 @@ static candidate_wal_status_t open_data(candidate_recovery_t *r, const char *pat
     return check_file(r);
 }
 
-static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *options, bool repairing, candidate_recovery_t **out)
+static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *options, unsigned repair_mode, candidate_recovery_t **out)
 {
     if (out == NULL) return CANDIDATE_WAL_INVALID;
     *out = NULL;
@@ -181,7 +182,7 @@ static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *
     if (r == NULL) return CANDIDATE_WAL_NOMEM;
     memset(r,0,sizeof(*r)); r->memory = memory; r->io = io; memcpy(r->uuid,saved.uuid,16);
     r->process_id = getpid(); r->fd = -1; r->directory_fd = -1; r->is_busy = true;
-    r->is_terminal_repair = repairing;
+    r->is_terminal_repair = repair_mode != 0; r->allow_group_tail = repair_mode == 2;
     candidate_wal_status_t status = open_data(r,data_path);
     if (status == CANDIDATE_WAL_OK) {
         candidate_wal_options_t wo = {.owner_epoch = saved.owner_epoch,.io = &r->io,.memory = &r->memory}; memcpy(wo.uuid,r->uuid,16);
@@ -203,29 +204,49 @@ static candidate_wal_status_t open_recovery(const candidate_recovery_options_t *
 
 candidate_wal_status_t candidate_recovery_open(const candidate_recovery_options_t *options, candidate_recovery_t **out)
 {
-    return open_recovery(options,false,out);
+    return open_recovery(options,0,out);
+}
+
+static candidate_wal_status_t repair_recovery(const candidate_recovery_options_t *options,
+    bool groups, candidate_recovery_wal_info_t *out)
+{
+    if (out == NULL) return CANDIDATE_WAL_INVALID;
+    *out = (candidate_recovery_wal_info_t){0};
+    if (options == NULL) return CANDIDATE_WAL_INVALID;
+    uint64_t owner_epoch = options->owner_epoch;
+    candidate_recovery_t *r = NULL; candidate_recovery_wal_info_t info = {0};
+    candidate_wal_status_t status = open_recovery(options,groups ? 2 : 1,&r);
+    if (status != CANDIDATE_WAL_OK) return status;
+    r->is_busy = true;
+    candidate_terminal_options_t request = {.owner_epoch = owner_epoch,.anchor = &r->info.anchor,.memory = &r->memory,
+        .allow_group_tail = groups};
+    memcpy(request.uuid,r->uuid,16);
+    status = check_file(r);
+    if (status == CANDIDATE_WAL_OK) {
+        if (groups) status = candidate_terminal_repair_wal(r->wal,&request,&r->terminal_history,&info);
+        else status = candidate_terminal_resolve(r->wal,&request,&r->terminal_history,&info.terminals);
+    }
+    if (status == CANDIDATE_WAL_OK) status = check_file(r);
+    r->is_busy = false;
+    if (candidate_recovery_close(&r) != CANDIDATE_WAL_OK && status == CANDIDATE_WAL_OK) status = CANDIDATE_WAL_IO;
+    if (status == CANDIDATE_WAL_OK) *out = info;
+    return status;
 }
 
 candidate_wal_status_t candidate_recovery_resolve_terminals(const candidate_recovery_options_t *options,
     candidate_recovery_terminal_info_t *out)
 {
     if (out == NULL) return CANDIDATE_WAL_INVALID;
-    *out = (candidate_recovery_terminal_info_t){0};
-    if (options == NULL) return CANDIDATE_WAL_INVALID;
-    uint64_t owner_epoch = options->owner_epoch;
-    candidate_recovery_t *r = NULL; candidate_recovery_terminal_info_t info = {0};
-    candidate_wal_status_t status = open_recovery(options,true,&r);
-    if (status != CANDIDATE_WAL_OK) return status;
-    r->is_busy = true;
-    candidate_terminal_options_t request = {.owner_epoch = owner_epoch,.anchor = &r->info.anchor,.memory = &r->memory};
-    memcpy(request.uuid,r->uuid,16);
-    status = check_file(r);
-    if (status == CANDIDATE_WAL_OK) status = candidate_terminal_resolve(r->wal,&request,&r->terminal_history,&info);
-    if (status == CANDIDATE_WAL_OK) status = check_file(r);
-    r->is_busy = false;
-    if (candidate_recovery_close(&r) != CANDIDATE_WAL_OK && status == CANDIDATE_WAL_OK) status = CANDIDATE_WAL_IO;
-    if (status == CANDIDATE_WAL_OK) *out = info;
+    *out = (candidate_recovery_terminal_info_t){0}; candidate_recovery_wal_info_t info;
+    candidate_wal_status_t status = repair_recovery(options,false,&info);
+    if (status == CANDIDATE_WAL_OK) *out = info.terminals;
     return status;
+}
+
+candidate_wal_status_t candidate_recovery_repair_wal(const candidate_recovery_options_t *options,
+    candidate_recovery_wal_info_t *out)
+{
+    return repair_recovery(options,true,out);
 }
 
 candidate_wal_status_t candidate_recovery_query(candidate_recovery_t *r,
