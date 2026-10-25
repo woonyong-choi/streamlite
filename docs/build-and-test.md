@@ -179,6 +179,14 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-red
 
 native90초·runner120초를 유지하고 새 target/report를 사용한다. 이 시험은 callback에 열린 test fd를 연결하며 WAL durable LSN이 pageLSN 이상인 뒤에만 pwrite하는지 확인한다. 복원한 allocation/catalog snapshot은 기존 owning reader로 다시 읽고520개 page·두 segment도 대조한다. workspace7,866,584B와 close 뒤0은 transport·stack·allocator/RSS와 별도다. 전체65536-ID 한도 채움이나 물리 power-cut·DB 활성화의 증거로 쓰지 않는다. 보호할 이전 object/binary가 있으면 `CANDIDATE_WITNESS_MODULE`과 `CANDIDATE_WITNESS_CHECKPOINT_MODULE`에 새 경로를 지정하고 모든 재사용 dependency/fingerprint를 `--old-file`로 고정해 전후 해시를 대조한다. 기본 library·SQL·ACK에는 연결하지 않는다.
 
+[결과 대조 시험](../tests/test_candidate_outcome_witness.c)은 물리 redo로 복원한 metadata와 전체 보존 WAL·실제 결과 본문을 연결한다. COMMIT·ABORT·미완료 admission과 빈 결과, 1MiB 결과·16chunk를 대조한다. metadata 단독 reader가 받아들이는 위조 상태·terminal 위치·digest·VersionRef·owner·상한·ID·내용과 오래된 ADMITTED 표를 구분한다. 서로 다른 VersionRef를 가리키도록 frame/거래 CRC를 다시 맞춘 chunk, 누락된 표·실제 REQUEST_EPOCH와 만료, 미동기화 재열기·terminal 없는 prefix·불완전 tail, allocator 입력 변경·각 OOM·본문 뒤쪽 I/O 실패를 검사한다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-outcome-witness TEST_TIMEOUT=120 CANDIDATE_OUTCOME_REPORT=build-regression/fault/outcome-check.json
+```
+
+native90초·runner120초와 아직 없는 report 경로를 사용한다. 기존 object/binary를 보존하려면 모든 재사용 dependency/fingerprint를 `--old-file`로 고정하고 `CANDIDATE_OUTCOME_CATALOG_MODULE`에 새 object 경로를 지정한다. witness/helper도 위의 명시적 module 옵션으로 보호한다. 전체 WAL force는 caller가 수행하며 이 target은 파일 수리·ABORT append·metadata 재작성·복구 membership·DB 활성화를 제공하지 않는다. 선택 checkpoint의 allocation root는 시험용 선언이고 전체 유효 DB의 증거가 아니다. [영속 요청 결과와 일반 복구의 경계](design/streamlite.md#영속-요청-id와-결과-조회)를 함께 확인한다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

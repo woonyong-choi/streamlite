@@ -474,6 +474,14 @@ version GC는 가장 오래된 snapshot, 실행 중인 탐색 pin, 아직 정리
 
 ### 영속 요청 ID와 결과 조회
 
+[결과 대조 계층](../../include/storage/candidate_outcome_witness.h)은 복원한 metadata의 COMMITTED와 실제 WAL의 COMMIT이 일치하는지 확인한다. metadata codec과 본문 reader의 개별 성공만으로 확정 결과를 노출하면 terminal 불일치를 놓친다. caller는 안정된 복원 target과 처음부터 보존된 WAL을 보유하고 전체 유효 prefix를 force한다. 이 모듈은 SQL·ACK의 기본 경로에 연결하지 않는다.
+
+한 owning catalog를 읽은 뒤 의미 witness가 실제 읽는 같은 record에서 admission owner·선언한 결과 상한과 모든 RESULT_CHUNK의 VersionRef를 모은다. 각 보존 항목의 요청 ID·내용 digest·상태·CSN·terminal 끝·결과 길이·digest·chunk 수를 대조하고, 모든 보존 대상 admission이 표에 있는지 확인한다. 알려진 epoch/floor·highwater와 최종 visible CSN도 비교한다. 확정 항목의 본문은 한 번에 하나씩 owning copy로 읽어 SHA-256을 대조하고 즉시 해제한다. 선택한 checkpoint가 있으면 checkpoint-aware witness를 사용한다.
+
+WAL에 terminal이 있지만 표가 ADMITTED에 머물거나 보존 대상 항목이 빠졌으면 STALE이다. terminal이 없는 상태를 선반영한 metadata도 STALE이며 성공으로 노출하지 않는다. 서로 반대인 terminal·다른 본문 참조·길이·digest는 CORRUPT이고 불완전 transport tail은 TAIL이다. 모든 실패는 결과 객체를 반환하지 않는다. 이 모듈이 반환하는 MATCH는 대조한 원시 상태다. 부재·만료와 미완료 admission을 NOT_APPLIED·현재 owner의 IN_PROGRESS나 자동 재실행 권한으로 바꾸지 않는다.
+
+이 대조는 모든 page의 물리 이력·전체 할당/도달성/pin, root 선택과 membership, 보존 종료 승인·안전한 회수, 미완료 거래의 내구 ABORT·metadata 재작성·DB 활성화를 대신하지 않는다. 일반 복구 조정자가 이 조건을 함께 검증하고 상태를 내구화한 뒤에만 아래 제품 조회 의미를 제공한다. [시험](../../tests/test_candidate_outcome_witness.c)은 metadata reader가 단독으로 받아들이는 반례, 실제 image 복원과 재열기, 1MiB 결과, 정확한 chunk 참조, OOM·읽기 실패의 부분 반환 차단을 확인한다. 이 입력에서 측정한 소유 요청량 최고3,747,808B는 transport·stack·allocator overhead·RSS와 별도다.
+
 같은 DB에서 durable commit 뒤 응답만 사라진 경우를 판별하기 위해 영속 요청 ID·결과 조회를 선택한다. 업무 key만 대조하는 안은 임의 SQL·여러 행의 결과 본문과 원자 commit을 일반적으로 복원하지 못하므로 이 후보의 기본 해결책으로 삼지 않는다. 영속 기록의 쓰기·보존 비용은 양쪽 비교에 포함한다. 이득이 사라지더라도 결과 보장을 한쪽에서만 빼지 않는다.
 
 내부 요청 ID는 `(DB UUID, 요청 epoch u64, 호출자 nonce 128bit)`다. process 재시작·PID·새 owner epoch가 이 ID의 의미를 바꾸지 않는다. operation digest는 미리 선언한 순서 있는 SQL bytes·타입/길이를 포함한 binding bytes·격리·내구 요청과 응답 형식을 SHA-256으로 계산한다. 선언과 다른 문장·binding·순서·응답 범위는 commit 전에 거절한다. hash를 인증 수단으로 사용하지 않는다. 동적 callback, 실행 결과에 따라 새 SQL을 정하는 대화형 거래, 외부 부작용의 자동 재실행은 지원하지 않는다. 이 제한 밖의 기존 SQL은 기존 의미로 실행하며, UNKNOWN은 업무 key와 별도 재조정으로 해결한다.

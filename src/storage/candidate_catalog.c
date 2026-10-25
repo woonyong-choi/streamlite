@@ -333,6 +333,10 @@ candidate_catalog_lookup_t candidate_catalog_lookup(const candidate_catalog_t *c
 }
 
 const candidate_catalog_root_t *candidate_catalog_root(const candidate_catalog_t *c) { return c == NULL ? NULL : &c->root; }
+const candidate_outcome_t *candidate_catalog_at(const candidate_catalog_t *c, uint32_t ordinal)
+{
+    return c == NULL || ordinal >= c->root.count ? NULL : &c->entries[ordinal];
+}
 size_t candidate_catalog_resident_bytes(const candidate_catalog_t *c) { return c == NULL ? 0 : sizeof(*c); }
 
 void candidate_catalog_close(candidate_catalog_t **out)

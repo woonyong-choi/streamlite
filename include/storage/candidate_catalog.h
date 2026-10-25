@@ -74,6 +74,8 @@ candidate_wal_status_t candidate_catalog_load(const candidate_catalog_load_t *re
 candidate_catalog_lookup_t candidate_catalog_lookup(const candidate_catalog_t *catalog,
     const candidate_catalog_query_t *request, const candidate_outcome_t **out);
 const candidate_catalog_root_t *candidate_catalog_root(const candidate_catalog_t *catalog);
+/* 완전한 owning snapshot의 ordinal이며 범위 밖은 NULL이다; 포인터는 catalog를 빌린다. */
+const candidate_outcome_t *candidate_catalog_at(const candidate_catalog_t *catalog, uint32_t ordinal);
 size_t candidate_catalog_resident_bytes(const candidate_catalog_t *catalog);
 void candidate_catalog_close(candidate_catalog_t **catalog);
 

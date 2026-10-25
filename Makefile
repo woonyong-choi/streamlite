@@ -134,6 +134,17 @@ $(BUILD_DIR)/test_candidate_wal_checkpoint: $(BUILD_DIR)/tests/test_candidate_wa
 CANDIDATE_WAL_CHECKPOINT_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_checkpoint.json
 CANDIDATE_WAL_CHECKPOINT_ARGS ?=
 CANDIDATE_REDO_OBJS = $(BUILD_DIR)/storage/candidate_redo.o $(CANDIDATE_WITNESS_OBJS) $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
+CANDIDATE_OUTCOME_CATALOG_MODULE ?= $(BUILD_DIR)/storage/candidate_catalog.o
+CANDIDATE_OUTCOME_OBJS = $(BUILD_DIR)/storage/candidate_outcome_witness.o $(BUILD_DIR)/storage/candidate_result.o $(CANDIDATE_OUTCOME_CATALOG_MODULE) $(filter-out $(BUILD_DIR)/storage/candidate_catalog.o,$(CANDIDATE_REDO_OBJS))
+$(BUILD_DIR)/test_candidate_outcome_witness: $(BUILD_DIR)/tests/test_candidate_outcome_witness.o $(CANDIDATE_OUTCOME_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.json
+.PHONY: test-candidate-outcome-witness
+test-candidate-outcome-witness: $(BUILD_DIR)/test_candidate_outcome_witness
+	$(TEST_RUNNER) --report $(CANDIDATE_OUTCOME_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_witness
+$(CANDIDATE_OUTCOME_CATALOG_MODULE): src/storage/candidate_catalog.c $(BUILD_FINGERPRINT)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
 $(BUILD_DIR)/test_candidate_redo: $(BUILD_DIR)/tests/test_candidate_redo.o $(CANDIDATE_REDO_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
 CANDIDATE_REDO_REPORT ?= $(BUILD_DIR)/fault/test_candidate_redo.json
 .PHONY: test-candidate-redo
@@ -463,11 +474,13 @@ clean:
 -include $(BUILD_DIR)/storage/candidate_allocation.d
 -include $(BUILD_DIR)/storage/candidate_allocation_format.d
 -include $(CANDIDATE_WITNESS_MODULE:.o=.d)
+-include $(CANDIDATE_OUTCOME_CATALOG_MODULE:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_wal_system.d
 -include $(BUILD_DIR)/storage/candidate_checkpoint.d
 -include $(BUILD_DIR)/storage/candidate_checkpoint_format.d
 -include $(BUILD_DIR)/storage/candidate_wal_checkpoint.d
 -include $(BUILD_DIR)/storage/candidate_redo.d
+-include $(BUILD_DIR)/storage/candidate_outcome_witness.d
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d
 -include $(DATABASE_OBJS:.o=.d) $(DATABASE_EXEC_FAULT_OBJS:.o=.d) $(BUILD_DIR)/sql/sql_statement_fault.d $(BUILD_DIR)/storage/heap_store_test.d
