@@ -242,3 +242,13 @@ type1 version/type2 overflow, slot 수/예약8B·조밀한8B slot 표, 기존72B
 첫metadata50954/본문34096/WAL892검사와10개 당시source/binary archive를 보존하고 하한 공간·abort/ref 반례를 추가한 최종50978/34096/892검사를 fatalUBSan으로 수행한다. 기존build-regression의 아직 없던 page/catalog object와 전용binary만 생성하고 기존build의23d object/binary·원fingerprint·원자료를 보존한다. 실제133page/4group/16참조의 단일COMMIT WAL/data fsync·close/reopen과 독립 Python byte/CRC 재구성은 fixture 검증이다. metadata 결과가 없어도 callback을 재실행하지 않으며 일반 복구/실제writer/총비용 우위로 확대하지 않는다.
 
 23c/23d/23e의 세 경계 뒤 추가checkpoint23e를 원래23 앞에 삽입한다. 이 task-boundary commit 뒤 멈추고 다음 continuation은 해당tracking-only checkpoint만 수행한다. 원래23/after23/24–39와 모든 원checkpoint·WAL 권고·동등COW의 복구/checkpoint/정리 총비교·다중writer/제품/stream 요구를 보존한다. Vault·소비자·원격발행·기본backend/ABI/형식3/SNAPSHOT은 이 경계의 변경 대상이 아니다.
+
+## Task 23f control prerequisite
+
+checkpoint23e가 남긴 원래23의 control 구현은 실제로 없다. 선행23f에 두8192B slot의 codec과 소유 파일·anchor 선택/내구 게시를 둔다. 기존control/형식3을 재사용하거나 live 파일을 변환하지 않는다. 새SLCT 형식1은192B header·전체page CRC·UUID/backend·slot/generation·checkpoint/redo·highwater/epoch/floor/frontier·outcome/할당/선택SQL root·GC horizon을 가진다. WAL backend1은 checkpoint LSN을, COW backend2는0LSN과 게시 checkpoint ID를 사용해 비교COW에 가짜WAL 비용을 넣지 않는다. 이 COW 형식은 comparator나 제품 구현 완료가 아니다.
+
+디렉터리fd·control inode·flock을 보유하며 경로 누락/교체와fork를 차단한다. create는 새16384B 파일만 만들어 fsync/dirfsync하고 초기 anchor는 없다. open은 높은 세대부터 필수 verifier로 실제 의존성을 검사하도록 한다. CORRUPT만 이전 anchor를 검토하고 IO/OOM/LIMIT/UNSUPPORTED는 fallback 성공으로 바꾸지 않는다. verifier의 실제 checkpoint/WAL/data 정합 검사는 후속 조정자 책임이며 이번 시험은 합성 의존성 oracle로 제한한다. control 선택은 정상 DB 개방이나 APPLIED를 제공하지 않는다.
+
+게시에는 검증된 anchor의 반대 slot만 사용하고 generation은 관측한 최댓값보다 큰 해당 parity 번호를 부여한다. 최신 anchor의 의존성이 불량해 옛slot을 선택했다면 그 옛slot을 덮지 않고 불량쪽에 최대generation+2로 게시할 수 있다. fallback 뒤에도 관측한 높은slot의 highwater/epoch 등을 퇴행시키지 않는다. 구조상 유효한 두slot의 redo 하한을 모두 보존한다. generation 간격은 정상이며 control generation/checkpoint ID 소진은 LIMIT다. write 시도 뒤 실패나 fsync 불확정은 handle poison이고 NOT_APPLIED가 아니다. 실제 DB fencing·정리/로그 삭제·예약/epoch 전이·일반 재생/활성화는 원래23/후속 과업에 남는다. allocator callback이 options를 바꾸기 전에 설정을 복사하고 이전 source의 실패와 현재 성공을 별도로 대조한다.
+
+기존 build-regression의 새 control object/전용 시험만 만들고 원 fingerprint/checksum과 원자료를 보존한다. 최초 성공 source5개와 binary/object4개, 보강 성공 source/binary5개와 두 후속 source/binary 묶음은 각각 archive로 유지하고 새 오류·소진·종료·options snapshot 반례는 별도 report에 둔다. 불확정 짧은 쓰기여도 header와 기존0padding이 합쳐 유효한 새slot이 될 수 있는 조건을 보존한다. 합성 파일은 삭제하지 않고 control 쓰기 전·쓰기 뒤/force 전·force 뒤/응답 전 종료, 성공 확인 뒤 SIGKILL·재열기와 독립 byte/CRC를 대조한다. 원래Task23/after23/after24와24–39의 모든 목표/checkpoint를 보존하며 이 task-boundary에서 멈춘다.

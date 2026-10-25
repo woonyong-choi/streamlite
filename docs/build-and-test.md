@@ -84,6 +84,14 @@ E3 비교의 baseline·candidate와 각 계측 ON은 같은 소스와 cache/work
 
 ### 비교용 WAL 파일
 
+[후보 control](../include/storage/candidate_control.h)의 codec·실파일 시험은 두 slot의 CRC/형식·단조 상태·필수 의존성 verifier와 fallback을 검사한다. verifier는 시험용 합성 oracle이며 checkpoint/WAL/data 정합이나 일반 복구를 구현했다고 표시하지 않는다. 파일은 별도 합성 경로에 남기고 기존 DB를 열거나 변환하지 않는다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-control TEST_TIMEOUT=120 CANDIDATE_CONTROL_REPORT=build-regression/fault/control-check.json
+```
+
+[control 시험](../tests/test_candidate_control.c)은 slot의 8192개 절단·8192개 단일 byte 손상과 재서명 반례, 파일 길이·UUID/backend·slot 위치·highwater 퇴행, 짧은/0바이트 I/O·EINTR·읽기/동기화 실패·OOM을 대조한다. 의존성 CORRUPT와 IO를 구분하고 fallback을 보존한 세대 증가·미확정 쓰기 뒤 재열기·cwd/경로 교체·재진입·fork, 쓰기 전·쓰기 뒤/fsync 전·fsync 뒤/응답 전 종료와 성공 확인 뒤 SIGKILL을 확인한다. generation/checkpoint ID 소진은 LIMIT다. allocator callback이 입력 options를 바꿔도 입장 때 복사한 UUID/backend/verifier를 사용한다. control의 파일 동기화와 실제 DB의 복구 활성화·내구 결과 판정은 별도다.
+
 [candidate WAL](../include/storage/candidate_wal.h)은 내부 비교용 format1 transport다. 기본 라이브러리·SQL·ACK의 object 목록에는 넣지 않는다. [codec](../src/storage/candidate_wal_format.c)은 record의 길이·padding·CRC32C·UUID·LSN을 검사하고 [파일 모듈](../src/storage/candidate_wal.c)은 4MiB segment와 명시적 force·재시작 scan·tail 수리를 제공한다. transport는 record 본문과 거래 의미를 판정하지 않는다. 아래의 witness·본문 reader·metadata catalog가 각각 검증하며 내구 결과 판정과 일반 복구 활성화는 아직 구현 대상이다.
 
 ```sh

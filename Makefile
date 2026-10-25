@@ -114,6 +114,12 @@ BASIC_TESTS = test_record test_record_fault test_overflow test_overflow_fault te
 TEST_BINS = $(addprefix $(BUILD_DIR)/,$(BASIC_TESTS))
 
 CANDIDATE_WAL_OBJS = $(BUILD_DIR)/storage/candidate_wal.o $(BUILD_DIR)/storage/candidate_wal_format.o
+CANDIDATE_CONTROL_OBJS = $(BUILD_DIR)/storage/candidate_control.o $(BUILD_DIR)/storage/candidate_control_format.o
+$(BUILD_DIR)/test_candidate_control: $(BUILD_DIR)/tests/test_candidate_control.o $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/checksum.o
+CANDIDATE_CONTROL_REPORT ?= $(BUILD_DIR)/fault/test_candidate_control.json
+.PHONY: test-candidate-control
+test-candidate-control: $(BUILD_DIR)/test_candidate_control
+	$(TEST_RUNNER) --report $(CANDIDATE_CONTROL_REPORT) -- ./$(BUILD_DIR)/test_candidate_control
 $(BUILD_DIR)/test_candidate_wal: $(BUILD_DIR)/tests/test_candidate_wal.o $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
 $(BUILD_DIR)/test_candidate_wal_witness: $(BUILD_DIR)/tests/test_candidate_wal_witness.o $(BUILD_DIR)/storage/candidate_wal_witness.o $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
 $(BUILD_DIR)/test_candidate_wal_files: $(BUILD_DIR)/tests/test_candidate_wal_files.o $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
@@ -191,7 +197,7 @@ test-result: $(BUILD_DIR)/test_result $(BUILD_DIR)/test_result_fault
 $(TEST_BINS) $(BUILD_DIR)/test_overflow_file $(BUILD_DIR)/test_value_sqlite $(BUILD_DIR)/test_candidate_wal $(BUILD_DIR)/test_candidate_wal_witness $(BUILD_DIR)/test_candidate_wal_files:
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal $(BUILD_DIR)/test_candidate_catalog:
+$(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal $(BUILD_DIR)/test_candidate_catalog $(BUILD_DIR)/test_candidate_control:
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD_DIR)/storage/record_fault.o: src/storage/record.c
@@ -415,6 +421,7 @@ clean:
 -include $(STORAGE_OBJS:.o=.d)
 -include $(CANDIDATE_WAL_OBJS:.o=.d)
 -include $(CANDIDATE_PAGE_OBJS:.o=.d)
+-include $(CANDIDATE_CONTROL_OBJS:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_catalog.d
 -include $(BUILD_DIR)/storage/candidate_wal_witness.d
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
