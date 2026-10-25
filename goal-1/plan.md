@@ -232,3 +232,13 @@ type1 version/type2 overflow, slot 수/예약8B·조밀한8B slot 표, 기존72B
 외부 crypto 의존성을 추가하지 않는 내부 SHA-256을 NIST FIPS180-4/예제와 hashlib135입력으로 대조한다. page/slot/owner·정확한 전체 길이·cycle/EOF·digest가 맞기 전 owning 사본을 노출하지 않으며 OOM/loader 오류는 부분 출력을 버린다. custom allocator의 실제 bytes와 결과 수명을 검증하되 RSS·전체 앱 cap으로 바꾸지 않는다. 실제 WAL131image/3group/16참조의 force/reopen→합성 data fsync/reopen→본문 읽기는 단일 COMMIT fixture다. 이 결과를 control/할당/ID index·미완료/abort 일반 재생·복구 활성화로 확대하지 않는다. 현재 기본COW/ABI/형식3·SNAPSHOT과 기존원자료를 보존한다.
 
 이 일반 구현 경계에서 완료16–23c와 해당 checkpoint의 장문 기록만 Git623e9d5c의 정확한 goal ledger에 연결해 압축한다. Task6의 원본 coverage/요구 matrix와 모든 미완료 과업은 보존한다. 해시와 commit marker로 원문을 다시 읽을 수 있게 하고 목표 파일의 반복 읽기 비용을 줄이며 별도 맥락 사본은 만들지 않는다.
+
+## Task 23e metadata prerequisite and closure boundary
+
+원래23에 필요한 outcome metadata 형식·조회가 없으므로 최소 선행23e에서 ordinary type4의 root/node와 bounded 읽기 표를 구현한다. root는 고정72B 뒤 최대90개 직접 PageRef, node는32B 뒤 최대46개176B outcome을 둔다. transaction ID 순서와 요청 키/CSN 유일성을 검사하며 CSN을 transaction 시작 순서로 강제하지 않는다. 연결 리스트의 앞부분 재작성 비용을 COW에 추가하지 않고 두 후보가 같은 codec·payload/결과 형식을 재사용한다. 전체4096개·epoch당1024개·최대4epoch와1MiB/64KiB 결과 상한은 기존 내부 비교 설정이며 고객SLO나 durable quota 구현 주장이 아니다.
+
+전체 metadata를 검증한 뒤 한 번의788,000B 소유 할당으로 조회 표를 노출한다. loader/stack·본문 사본·allocator/RSS·전체 앱 cap은 별도다. raw MATCH와 없는/보존 밖/내용 불일치/잘못된 ID/조회 불가는 APPLIED·NOT_APPLIED·현 owner의IN_PROGRESS를 판정하지 않는다. 안정된 loader view 확보·실제 control/할당 이력·system ID 예약/epoch 전이·내구terminal 게시와 일반 복구 조정자는 원래23의 미완료 의무다. 숫자와 상태의 자체 일관성 검사로 이 의무를 대체하지 않는다.
+
+첫metadata50954/본문34096/WAL892검사와10개 당시source/binary archive를 보존하고 하한 공간·abort/ref 반례를 추가한 최종50978/34096/892검사를 fatalUBSan으로 수행한다. 기존build-regression의 아직 없던 page/catalog object와 전용binary만 생성하고 기존build의23d object/binary·원fingerprint·원자료를 보존한다. 실제133page/4group/16참조의 단일COMMIT WAL/data fsync·close/reopen과 독립 Python byte/CRC 재구성은 fixture 검증이다. metadata 결과가 없어도 callback을 재실행하지 않으며 일반 복구/실제writer/총비용 우위로 확대하지 않는다.
+
+23c/23d/23e의 세 경계 뒤 추가checkpoint23e를 원래23 앞에 삽입한다. 이 task-boundary commit 뒤 멈추고 다음 continuation은 해당tracking-only checkpoint만 수행한다. 원래23/after23/24–39와 모든 원checkpoint·WAL 권고·동등COW의 복구/checkpoint/정리 총비교·다중writer/제품/stream 요구를 보존한다. Vault·소비자·원격발행·기본backend/ABI/형식3/SNAPSHOT은 이 경계의 변경 대상이 아니다.

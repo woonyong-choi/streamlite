@@ -6,6 +6,7 @@
 #include <unistd.h>
 
 #include "storage/candidate_digest.h"
+#include "storage/candidate_catalog.h"
 #include "storage/candidate_page.h"
 #include "storage/candidate_wal_witness.h"
 
@@ -67,17 +68,43 @@ static uint64_t emit_group(chain_t *c, unsigned group, unsigned first, unsigned 
     CHECK(candidate_wal_info(c->wal).valid_end_lsn == end); return end;
 }
 
+static uint64_t emit_metadata(chain_t *c, const uint8_t digest[32])
+{
+    uint64_t end = candidate_wal_info(c->wal).valid_end_lsn + 112 + 2 * 8320 + 120;
+    candidate_catalog_root_t root = {.owner_epoch = 7, .current_epoch = 1, .retention_floor = 1,
+        .transaction_highwater = 9, .page_highwater = 133, .visible_csn = 1,
+        .retained_bytes = 133u * 8192u, .count = 1, .pages = {{133,1}}};
+    candidate_catalog_node_t node = {.ordinal = 0, .count = 1};
+    node.entries[0] = (candidate_outcome_t){.epoch = 1, .transaction_id = 9, .state = CANDIDATE_OUTCOME_COMMITTED,
+        .csn = 1, .terminal_end_lsn = end + 16 * 208 + 312, .result = {{1,1},0,7}, .result_bytes = 1048576,
+        .result_chunks = 16, .declared_result_limit = 1048576, .admitting_owner_epoch = 7};
+    memset(node.entries[0].operation_digest, 0x5c, 32); memcpy(node.entries[0].result_digest, digest, 32);
+    uint8_t begin[16] = {0}; write_le(begin, 4, 8); write_le(begin + 8, 2, 4); write_le(begin + 12, 2, 4);
+    candidate_wal_record_t r = emit(c, 3, begin, sizeof(begin)); uint32_t crc = candidate_wal_witness_crc(0, &r);
+    for (unsigned id = 132; id <= 133; id++) {
+        candidate_page_location_t l = {.ref = {id,1}, .lsn = end}; memcpy(l.uuid, uuid, 16);
+        uint8_t image[32 + 8192] = {0}; write_le(image, 4, 8); write_le(image + 8, id, 8); write_le(image + 16, 1, 8);
+        if (id == 132) OK(candidate_catalog_encode_root(&l, &root, image + 32, 8192));
+        else OK(candidate_catalog_encode_node(&l, &node, image + 32, 8192));
+        r = emit(c, 4, image, sizeof(image)); crc = candidate_wal_witness_crc(crc, &r);
+    }
+    uint8_t finish[24] = {0}; write_le(finish, 4, 8); write_le(finish + 8, 2, 4);
+    write_le(finish + 12, 2, 4); write_le(finish + 16, crc, 4); emit(c, 8, finish, sizeof(finish));
+    CHECK(candidate_wal_info(c->wal).valid_end_lsn == end); return end;
+}
+
 static uint64_t emit_result(chain_t *c, const uint8_t *body, const uint8_t digest[32])
 {
     uint8_t admit[64] = {0}; write_le(admit, 1, 8); memset(admit + 24, 0x5c, 32); write_le(admit + 56, 1048576, 8);
     emit(c, 1, admit, sizeof(admit)); const uint8_t begin[16] = {0}; emit(c, 2, begin, sizeof(begin));
     unsigned pages = 1 + (1048576 + 8103) / 8104;
-    uint64_t ends[3]; unsigned first = 1;
+    uint64_t ends[4]; unsigned first = 1;
     for (unsigned group = 1; group <= 3; group++) {
         unsigned count = pages - first + 1 < 64 ? pages - first + 1 : 64;
         ends[group - 1] = emit_group(c, group, first, count, pages, body); first += count;
     }
     CHECK(first == pages + 1);
+    ends[3] = emit_metadata(c, digest);
     for (unsigned i = 0; i < 16; i++) {
         uint8_t chunk[112] = {0}; write_le(chunk, 1, 8); write_le(chunk + 24, i, 4);
         write_le(chunk + 28, 16, 4); write_le(chunk + 32, 1048576, 8); memcpy(chunk + 40, digest, 32);
@@ -85,12 +112,12 @@ static uint64_t emit_result(chain_t *c, const uint8_t *body, const uint8_t diges
         write_le(chunk + 96, (uint64_t)i * 65536, 8); write_le(chunk + 104, 65536, 4);
         emit(c, 9, chunk, sizeof(chunk));
     }
-    uint8_t commit[152 + 3 * 16] = {0};
+    uint8_t commit[152 + 4 * 16] = {0};
     write_le(commit, c->first, 8); write_le(commit + 8, c->last, 8); write_le(commit + 16, c->records, 8);
     write_le(commit + 24, c->crc, 4); write_le(commit + 32, 1, 8); write_le(commit + 40, 1, 8);
     memset(commit + 64, 0x5c, 32); memcpy(commit + 96, digest, 32);
-    write_le(commit + 128, 1048576, 8); write_le(commit + 136, 16, 4); write_le(commit + 148, 3, 4);
-    for (unsigned i = 0; i < 3; i++) { write_le(commit + 152 + i * 16, i + 1, 8); write_le(commit + 160 + i * 16, ends[i], 8); }
+    write_le(commit + 128, 1048576, 8); write_le(commit + 136, 16, 4); write_le(commit + 148, 4, 4);
+    for (unsigned i = 0; i < 4; i++) { write_le(commit + 152 + i * 16, i + 1, 8); write_le(commit + 160 + i * 16, ends[i], 8); }
     emit(c, 10, commit, sizeof(commit));
     return candidate_wal_info(c->wal).valid_end_lsn;
 }
@@ -101,7 +128,7 @@ static bool replay_image(void *context, const candidate_wal_record_t *record)
     replay_t *target = context;
     if (record->type != 4) return true;
     uint64_t id = read_le(record->payload + 8, 8);
-    CHECK(id == ++target->pages && id <= 131);
+    CHECK(id == ++target->pages && id <= 133);
     CHECK(candidate_wal_info(target->wal).durable_end_lsn >= read_le(record->payload + 72, 8));
     CHECK(pwrite(target->fd, record->payload + 32, 8192, (off_t)((id - 1) * 8192)) == 8192);
     return true;
@@ -110,7 +137,7 @@ static bool replay_image(void *context, const candidate_wal_record_t *record)
 static candidate_wal_status_t load_file(void *context, candidate_page_ref_t ref, uint8_t page[8192])
 {
     int fd = *(int *)context;
-    if (ref.id == 0 || ref.id > 131) return CANDIDATE_WAL_IO;
+    if (ref.id == 0 || ref.id > 133) return CANDIDATE_WAL_IO;
     return pread(fd, page, 8192, (off_t)((ref.id - 1) * 8192)) == 8192 ? CANDIDATE_WAL_OK : CANDIDATE_WAL_IO;
 }
 
@@ -131,25 +158,36 @@ int main(void)
     candidate_witness_options_t wo = {0}; memcpy(wo.uuid, uuid, 16);
     candidate_wal_witness_t *witness = NULL; OK(candidate_wal_witness_analyze(wal, &wo, &witness));
     candidate_witness_info_t info = candidate_wal_witness_info(witness);
-    CHECK(info.commits == 1 && info.complete_groups == 3 && info.unfinished == 0);
+    CHECK(info.commits == 1 && info.complete_groups == 4 && info.unfinished == 0);
     const candidate_witness_transaction_t *transaction = candidate_wal_witness_find(witness, 9);
     CHECK(transaction != NULL && transaction->result_bytes == 1048576 && transaction->result_chunks == 16);
     CHECK(memcmp(transaction->result_digest, digest, 32) == 0);
     CHECK(candidate_wal_info(wal).durable_end_lsn == 0); OK(candidate_wal_force(wal, transaction->terminal_end_lsn));
     int fd = open(data, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600); CHECK(fd >= 0);
     replay_t replay = {wal, fd, 0}; candidate_wal_info_t scanned;
-    OK(candidate_wal_scan(wal, replay_image, &replay, &scanned)); CHECK(replay.pages == 131);
+    OK(candidate_wal_scan(wal, replay_image, &replay, &scanned)); CHECK(replay.pages == 133);
     CHECK(fsync(fd) == 0); CHECK(close(fd) == 0); fd = open(data, O_RDONLY | O_CLOEXEC | O_NOFOLLOW); CHECK(fd >= 0);
-    candidate_result_read_t request = {.ref = {{1,1},0,7}, .transaction_id = 9, .result_bytes = 1048576,
-        .load = load_file, .context = &fd}; memcpy(request.uuid, uuid, 16); memcpy(request.digest, digest, 32);
+    candidate_catalog_load_t catalog_request = {.root = {132,1}, .load = load_file, .context = &fd}; memcpy(catalog_request.uuid, uuid, 16);
+    candidate_catalog_t *catalog = NULL; OK(candidate_catalog_load(&catalog_request, &catalog));
+    candidate_catalog_query_t query = {.epoch = 1}; memcpy(query.uuid, uuid, 16); memset(query.operation_digest, 0x5c, 32);
+    const candidate_outcome_t *found = NULL; CHECK(candidate_catalog_lookup(catalog, &query, &found) == CANDIDATE_CATALOG_MATCH);
+    CHECK(found->state == CANDIDATE_OUTCOME_COMMITTED && found->transaction_id == 9 && found->csn == 1);
+    CHECK(found->terminal_end_lsn == transaction->terminal_end_lsn && found->terminal_end_lsn == end);
+    CHECK(found->result_chunks == transaction->result_chunks && found->result_bytes == transaction->result_bytes);
+    CHECK(memcmp(found->result_digest, transaction->result_digest, 32) == 0);
+    candidate_result_read_t request = {.ref = found->result, .transaction_id = found->transaction_id, .result_bytes = found->result_bytes,
+        .load = load_file, .context = &fd}; memcpy(request.uuid, uuid, 16); memcpy(request.digest, found->result_digest, 32);
     candidate_page_result_t *result = NULL; OK(candidate_page_read_result(&request, &result));
     CHECK(candidate_page_result_size(result) == 1048576);
     CHECK(memcmp(candidate_page_result_bytes(result), body, 1048576) == 0);
     memset(body, 0, 1048576); CHECK(candidate_page_result_bytes(result)[1] == 1);
-    candidate_page_result_close(&result); candidate_wal_witness_close(&witness);
+    query.operation_digest[0] ^= 1; CHECK(candidate_catalog_lookup(catalog, &query, &found) == CANDIDATE_CATALOG_CONTENT_MISMATCH && found == NULL);
+    query.nonce[0] = 1; CHECK(candidate_catalog_lookup(catalog, &query, &found) == CANDIDATE_CATALOG_NOT_FOUND);
+    query.epoch = 2; CHECK(candidate_catalog_lookup(catalog, &query, &found) == CANDIDATE_CATALOG_INVALID_ID);
+    candidate_catalog_close(&catalog); candidate_page_result_close(&result); candidate_wal_witness_close(&witness);
     CHECK(close(fd) == 0); OK(candidate_wal_close(&wal)); free(body);
-    printf("FIXTURE wal %s pages=131 groups=3 chunks=16 end=%llu\n", prefix, (unsigned long long)end);
-    printf("FIXTURE data %s bytes=%u\n", data, 131u * 8192u);
+    printf("FIXTURE wal %s pages=133 groups=4 chunks=16 end=%llu\n", prefix, (unsigned long long)end);
+    printf("FIXTURE data %s bytes=%u\n", data, 133u * 8192u);
     printf("PASS result WAL/page roundtrip checks=%u; fixture replay only, no general recovery activation\n", checks);
     return 0;
 }

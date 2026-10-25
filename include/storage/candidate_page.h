@@ -33,6 +33,12 @@ typedef struct {
     candidate_page_ref_t overflow;
 } candidate_page_version_t;
 
+/* 공통 header·CRC·padding만 처리하며 종류별 본문 유효성은 제공하지 않는다. */
+candidate_wal_status_t candidate_page_encode_body(const candidate_page_location_t *location,
+    uint16_t type, const uint8_t *body, size_t size, uint8_t *out, size_t capacity);
+candidate_wal_status_t candidate_page_decode_header(const uint8_t uuid[16], const uint8_t *bytes,
+    size_t size, candidate_page_info_t *out);
+
 /* encoder 실패 시 out은 그대로다. version의 bytes는 입력에서 빌린다. */
 candidate_wal_status_t candidate_page_encode_versions(const candidate_page_location_t *location,
     const candidate_page_version_t *versions, size_t count, uint8_t *out, size_t capacity);

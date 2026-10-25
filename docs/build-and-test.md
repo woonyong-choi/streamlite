@@ -84,7 +84,7 @@ E3 비교의 baseline·candidate와 각 계측 ON은 같은 소스와 cache/work
 
 ### 비교용 WAL 파일
 
-[candidate WAL](../include/storage/candidate_wal.h)은 내부 비교용 format1 transport다. 기본 라이브러리·SQL·ACK의 object 목록에는 넣지 않는다. [codec](../src/storage/candidate_wal_format.c)은 record의 길이·padding·CRC32C·UUID·LSN을 검사하고 [파일 모듈](../src/storage/candidate_wal.c)은 4MiB segment와 명시적 force·재시작 scan·tail 수리를 제공한다. record 본문과 transaction/group/commit의 의미 판정·영속 요청 결과 조회는 별도 구현 대상이다.
+[candidate WAL](../include/storage/candidate_wal.h)은 내부 비교용 format1 transport다. 기본 라이브러리·SQL·ACK의 object 목록에는 넣지 않는다. [codec](../src/storage/candidate_wal_format.c)은 record의 길이·padding·CRC32C·UUID·LSN을 검사하고 [파일 모듈](../src/storage/candidate_wal.c)은 4MiB segment와 명시적 force·재시작 scan·tail 수리를 제공한다. transport는 record 본문과 거래 의미를 판정하지 않는다. 아래의 witness·본문 reader·metadata catalog가 각각 검증하며 내구 결과 판정과 일반 복구 활성화는 아직 구현 대상이다.
 
 ```sh
 make BUILD_DIR=build-regression test-candidate-wal TEST_TIMEOUT=120 CANDIDATE_WAL_REPORT_PREFIX=build-regression/fault/wal-check
@@ -122,7 +122,13 @@ make BUILD_DIR=build-regression test-candidate-pages TEST_TIMEOUT=120 CANDIDATE_
 
 codec 시험은 page의 8192개 절단·8192개 단일 byte 손상, CRC를 다시 맞춘 29개 잘못된 구조와 1024개 탐색 입력, slot/inline/1MiB 경계·cycle·세대·OOM/loader 실패·소유권을 확인한다. 기존 record codec의 NULL·한글·내장 NUL·9000B BLOB도 그대로 복원한다. digest는 알려진 예제와 padding 경계·1MiB를 포함한 135개 입력으로 대조한다. 탐색에서 유효한 page는 다시 encode해 정확히 같은 bytes인지 확인하며, 이 유한 입력을 전체 가능한 손상의 증명으로 쓰지 않는다.
 
-WAL fixture는 1MiB 응답의 131page·3physical group·16결과 참조를 force/reopen한다. 완전한 단일 COMMIT witness와 WAL barrier를 확인한 뒤 새 합성 data 파일에 image를 복사하고, fsync/reopen한 page를 reader에 전달해 본문을 대조한다. 이 fixture의 data 파일은 일반 DB control/root·할당 표·ID index가 없는 시험 파일이다. 미완료·abort 거래의 일반 재생과 복구 활성화를 구현했다고 표시하지 않는다. 반복 실행은 아직 없는 report 접두사를 사용하며 합성 파일을 보존한다.
+WAL fixture는 1MiB 응답의 version/overflow 131page에 metadata root/node 2page를 더한 133page·4physical group·16결과 참조를 force/reopen한다. 완전한 단일 COMMIT witness와 WAL barrier를 확인한 뒤 새 합성 data 파일에 image를 복사하고 fsync/reopen한다. catalog에서 요청 ID·operation digest로 raw outcome을 찾고 terminal 참조를 witness와 대조한 뒤, 그 VersionRef로 본문 bytes를 읽는다. 이 data 파일은 일반 DB control·할당 이력·system 예약/epoch 전이와 복구 활성화가 없는 시험 파일이다. 미완료·abort 거래의 일반 재생이나 APPLIED 판정으로 확대하지 않는다. 반복 실행은 아직 없는 report 접두사를 사용하며 합성 파일을 보존한다.
+
+[요청 metadata 시험](../tests/test_candidate_catalog.c)은 root/node의 절단·손상·예약/형식, nonce 0·빈 결과·세 상태, 최대 4epoch/4096개·epoch당 1024개, 중복 ID·내용 불일치·없는/만료/미래/다른 UUID를 확인한다. 전체 91개 page의 각 loader 실패와 OOM에는 catalog를 노출하지 않으며 소유 할당 해제도 대조한다. 4096개 표를 fsync/close/reopen해 읽지만 이 표 자체는 결과 본문이나 내구 게시를 증명하지 않는다. 형식과 반환 의미는 [page와 WAL 불변식](design/streamlite.md#page와-wal의-형식-불변식)에 있다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-catalog TEST_TIMEOUT=120 CANDIDATE_CATALOG_REPORT=build-regression/fault/catalog-check.json
+```
 
 ### 공통 비용 수집
 

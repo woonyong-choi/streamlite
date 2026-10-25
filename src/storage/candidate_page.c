@@ -64,6 +64,19 @@ static void encode_header(const candidate_page_location_t *location, uint16_t ty
     write_le(out + 52, checksum(out), 4);
 }
 
+candidate_wal_status_t candidate_page_encode_body(const candidate_page_location_t *location,
+    uint16_t type, const uint8_t *body, size_t size, uint8_t *out, size_t capacity)
+{
+    if (!is_location(location) || out == NULL) return CANDIDATE_WAL_INVALID;
+    if (type < 1 || type > 5) return CANDIDATE_WAL_UNSUPPORTED;
+    if (size > CANDIDATE_PAGE_BYTES - 64 || capacity < CANDIDATE_PAGE_BYTES) return CANDIDATE_WAL_LIMIT;
+    if (size > 0 && body == NULL) return CANDIDATE_WAL_INVALID;
+    uint8_t page[CANDIDATE_PAGE_BYTES] = {0};
+    if (size > 0) memcpy(page + 64, body, size);
+    encode_header(location, type, size, page);
+    memcpy(out, page, sizeof(page)); return CANDIDATE_WAL_OK;
+}
+
 static bool is_self_previous(const candidate_page_version_t *v,
     candidate_page_ref_t page, unsigned slot)
 {
@@ -212,7 +225,7 @@ static candidate_wal_status_t decode_overflow(const uint8_t *p, const candidate_
     return CANDIDATE_WAL_OK;
 }
 
-candidate_wal_status_t candidate_page_decode(const uint8_t uuid[16], const uint8_t *bytes,
+candidate_wal_status_t candidate_page_decode_header(const uint8_t uuid[16], const uint8_t *bytes,
     size_t size, candidate_page_info_t *out)
 {
     if (uuid == NULL || bytes == NULL || out == NULL) return CANDIDATE_WAL_INVALID;
@@ -231,7 +244,17 @@ candidate_wal_status_t candidate_page_decode(const uint8_t uuid[16], const uint8
     if (checksum(bytes) != read_le(bytes + 52, 4)) return CANDIDATE_WAL_CORRUPT;
     if (!is_zero(bytes + 64 + info.body_bytes, CANDIDATE_PAGE_BYTES - 64 - info.body_bytes))
         return CANDIDATE_WAL_CORRUPT;
-    candidate_wal_status_t status;
+    if (info.type < 1 || info.type > 5) return CANDIDATE_WAL_UNSUPPORTED;
+    *out = info; return CANDIDATE_WAL_OK;
+}
+
+candidate_wal_status_t candidate_page_decode(const uint8_t uuid[16], const uint8_t *bytes,
+    size_t size, candidate_page_info_t *out)
+{
+    if (out == NULL) return CANDIDATE_WAL_INVALID;
+    candidate_page_info_t info;
+    candidate_wal_status_t status = candidate_page_decode_header(uuid, bytes, size, &info);
+    if (status != CANDIDATE_WAL_OK) return status;
     if (info.type == 1) status = decode_versions(bytes, &info);
     else if (info.type == 2) status = decode_overflow(bytes, &info);
     else return CANDIDATE_WAL_UNSUPPORTED;
