@@ -5,6 +5,7 @@
 
 #include "storage/checksum.h"
 #include "candidate_wal_system_internal.h"
+#include "candidate_wal_witness_internal.h"
 
 typedef struct {
     candidate_witness_transaction_t value;
@@ -422,8 +423,8 @@ static bool visit_record(void *context, const candidate_wal_record_t *r)
 static void *allocate_default(void *context, size_t size) { (void)context; return malloc(size); }
 static void release_default(void *context, void *p, size_t size) { (void)context; (void)size; free(p); }
 
-candidate_wal_status_t candidate_wal_witness_analyze(candidate_wal_t *wal,
-    const candidate_witness_options_t *options, candidate_wal_witness_t **out)
+static candidate_wal_status_t analyze(candidate_wal_t *wal,
+    const candidate_witness_options_t *options, const candidate_checkpoint_t *checkpoint, candidate_wal_witness_t **out)
 {
     if (out == NULL) return CANDIDATE_WAL_INVALID;
     *out = NULL;
@@ -444,13 +445,53 @@ candidate_wal_status_t candidate_wal_witness_analyze(candidate_wal_t *wal,
         if (status != CANDIDATE_WAL_OK) { allocator.release(allocator.context, w, sizeof(*w)); return status; }
         w->info.resident_bytes += candidate_system_resident_bytes(w->system);
     }
-    candidate_wal_status_t status = candidate_wal_scan(wal, visit_record, w, &w->info.transport);
+    candidate_wal_status_t status = checkpoint == NULL ? candidate_wal_scan(wal, visit_record, w, &w->info.transport) :
+        candidate_witness_checkpoint_scan(wal, w, checkpoint, visit_record, &w->info.transport);
     if (status == CANDIDATE_WAL_STOPPED) status = w->status;
     if (status != CANDIDATE_WAL_OK) { candidate_wal_witness_close(&w); return status; }
     w->info.unfinished = w->active;
     w->info.incomplete_group_lsn = w->pending.first_lsn;
     *out = w;
     return CANDIDATE_WAL_OK;
+}
+
+candidate_wal_status_t candidate_wal_witness_analyze(candidate_wal_t *wal,
+    const candidate_witness_options_t *options, candidate_wal_witness_t **out)
+{
+    return analyze(wal, options, NULL, out);
+}
+
+candidate_wal_status_t candidate_wal_witness_analyze_checkpoint(candidate_wal_t *wal,
+    const candidate_witness_options_t *options, const candidate_control_state_t *anchor, candidate_wal_witness_t **out)
+{
+    if (out == NULL) return CANDIDATE_WAL_INVALID;
+    *out = NULL;
+    if (wal == NULL || options == NULL || anchor == NULL) return CANDIDATE_WAL_INVALID;
+    candidate_witness_options_t saved = *options;
+    candidate_control_state_t state = *anchor;
+    if (!saved.enable_system_groups) return CANDIDATE_WAL_INVALID;
+    if (memcmp(saved.uuid, state.uuid, 16) != 0) return CANDIDATE_WAL_UNSUPPORTED;
+    candidate_wal_memory_t memory = {NULL, allocate_default, release_default};
+    if (saved.memory != NULL) memory = *saved.memory;
+    saved.memory = &memory;
+    candidate_checkpoint_t *checkpoint = NULL;
+    candidate_wal_witness_t *witness = NULL;
+    candidate_wal_status_t status = candidate_checkpoint_load(wal, &state, &memory, &checkpoint);
+    if (status == CANDIDATE_WAL_OK) status = analyze(wal, &saved, checkpoint, &witness);
+    candidate_checkpoint_close(&checkpoint);
+    if (status == CANDIDATE_WAL_OK) *out = witness;
+    return status;
+}
+
+bool candidate_witness_checkpoint_at(const candidate_wal_witness_t *w, uint32_t index,
+    candidate_checkpoint_transaction_t *out)
+{
+    if (w == NULL || out == NULL || index >= w->info.transactions) return false;
+    const transaction_t *t = &w->transactions[index];
+    const candidate_witness_transaction_t *v = &t->value;
+    *out = (candidate_checkpoint_transaction_t){v->transaction_id,v->first_lsn,v->last_lsn,
+        v->terminal_end_lsn,v->csn,t->owner_epoch,(candidate_checkpoint_state_t)(v->state + 1)};
+    return true;
 }
 
 candidate_witness_info_t candidate_wal_witness_info(const candidate_wal_witness_t *w)

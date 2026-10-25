@@ -3,6 +3,7 @@
 
 #include "storage/candidate_wal.h"
 #include "storage/candidate_wal_system.h"
+#include "storage/candidate_control.h"
 
 #define CANDIDATE_WITNESS_TRANSACTIONS 4096u
 #define CANDIDATE_WITNESS_GROUPS 4096u
@@ -62,6 +63,11 @@ uint32_t candidate_wal_witness_crc(uint32_t crc, const candidate_wal_record_t *r
 /* 전체 scan 성공 뒤에만 분석 결과를 반환하며 파일·거래 상태를 변경하지 않는다. */
 candidate_wal_status_t candidate_wal_witness_analyze(candidate_wal_t *wal,
     const candidate_witness_options_t *options, candidate_wal_witness_t **out);
+/* system 모드에서 전체 보존 WAL과 checkpoint의 BEGIN 시점 상태를 대조하며 일반 복구를 활성화하지 않는다. */
+/* 잘린 과거 이력·data/root/참조 완전성·내구 발급·APPLIED는 이 entry의 검증 범위가 아니다. */
+candidate_wal_status_t candidate_wal_witness_analyze_checkpoint(candidate_wal_t *wal,
+    const candidate_witness_options_t *options, const candidate_control_state_t *anchor,
+    candidate_wal_witness_t **out);
 candidate_witness_info_t candidate_wal_witness_info(const candidate_wal_witness_t *witness);
 /* 관측한 prefix의 상태이며 최초 이전 값·checkpoint·안전한 번호 발급/회수를 증명하지 않는다. */
 candidate_witness_system_info_t candidate_wal_witness_system_info(const candidate_wal_witness_t *witness);

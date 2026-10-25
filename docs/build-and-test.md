@@ -162,6 +162,15 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-che
 
 native90초·runner120초와 원 파일/report를 보존한다. 재사용 control·transport·format·digest·checksum object와 fingerprint는 각각 `--old-file`로 고정하고 전후 해시를 확인한다. 일반 재현 명령은 해당 build 영역의 기존 파일을 보호하지 않으므로 보존할 실행에는 이 pin과 아직 없는 report 경로가 필요하다. 이 target은 기본 library에 연결하지 않으며 WAL reader는 append·force·tail 수리·로그 회수를 하지 않는다. [checkpoint 형식과 미완료 복구 경계](design/streamlite.md#checkpoint와-회수-순서)를 함께 확인한다.
 
+[checkpoint 이력 대조 시험](../tests/test_candidate_wal_checkpoint.c)은 명시적 checkpoint-aware 진입점에서 실제 WAL의 BEGIN 시점 거래와 dirty PageRef·완성 group 위치를 확인한다. 원시 snapshot reader가 받아들이는 phantom·누락 활성 거래·위조 terminal/owner/highwater·dirty 위치를 거절한다. 정상 거래와 system 갱신의 chunk 사이 삽입, 새 owner의 복구 ABORT, 두 scan 사이의 CRC를 다시 맞춘 BEGIN/CHUNK/END 변경, END 뒤 오류·세 할당 지점 OOM·입력 사본을 검사한다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-wal-checkpoint TEST_TIMEOUT=120 CANDIDATE_WAL_CHECKPOINT_REPORT=build-regression/fault/checkpoint-history-check.json
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-wal-checkpoint TEST_TIMEOUT=120 CANDIDATE_WAL_CHECKPOINT_ARGS=max CANDIDATE_WAL_CHECKPOINT_REPORT=build-regression/fault/checkpoint-history-max.json
+```
+
+일반 profile과 `max` profile은 각각 native90초·runner120초를 적용한다. 최대 입력은 실제8192개 image·4096개 거래·96chunk가17개 WAL segment에 걸치며64개 활성 거래와 한도를 넘는 입력도 별도로 대조한다. 최대 입력의 root 값은 capacity 시험용 선언이며 유효 DB를 연 증거가 아니다. 최고 소유 요청량2,108,056B는 반환 시1,681,736B로 줄며 transport·stack·allocator/RSS는 별도다. 기존 binary·object/fingerprint를 보호할 때는 새 `CANDIDATE_WITNESS_MODULE` 경로와 모든 재사용 dependency의 `--old-file` pin·전후 해시를 함께 사용한다. 구 options 구조로 컴파일한 object를 새 witness에 연결하지 않고 현재 header에 맞춘 시험 object를 사용한다. 기존 `analyze`의 기본/system 동작은 유지하며 data redo·결과 복원·일반 복구 활성화는 이 target의 범위가 아니다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.
