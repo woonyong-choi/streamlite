@@ -154,6 +154,14 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-all
 
 이 모듈은 기본 라이브러리·SQL·ACK에 연결하지 않는다. 원시 할당 기록과 메모리 batch 성공은 durable ALLOC/FREE·ID 예약/epoch·checkpoint/WAL/data 정합·참조 해제·실제 회수·일반 복구의 증거가 아니다. 반복 실행에는 아직 없는 report 경로를 사용한다. [형식과 전이 경계](design/streamlite.md#page와-wal의-형식-불변식)를 함께 확인한다.
 
+[checkpoint 시험](../tests/test_candidate_checkpoint.c)은 control anchor와 실제 CHECKPOINT_BEGIN/CHUNK/END의 완전성을 대조한다. 두 slot에 실제 checkpoint 부분 verifier를 연결해 digest 불량만 이전 anchor로 fallback하고 UNSUPPORTED·LIMIT·OOM은 차단한다. 선언된 dirty/transaction 표의 정렬·중복·CSN·owner·redo/terminal 위치, chunk 순서/길이·digest·부분 prefix, interleaved 일반 record, allocator 입력 변경과 END 뒤 I/O 실패의 부분 결과 차단을 확인한다. 최대8192개 dirty/4096개 transaction은 두 WAL segment에 걸친다. 시험의 거래 상태는 합성 snapshot이며 실제 terminal record와 data page의 전체 이력 검증은 아니다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-checkpoint TEST_TIMEOUT=120 CANDIDATE_CHECKPOINT_REPORT=build-regression/fault/checkpoint-check.json
+```
+
+native90초·runner120초와 원 파일/report를 보존한다. 재사용 control·transport·format·digest·checksum object와 fingerprint는 각각 `--old-file`로 고정하고 전후 해시를 확인한다. 일반 재현 명령은 해당 build 영역의 기존 파일을 보호하지 않으므로 보존할 실행에는 이 pin과 아직 없는 report 경로가 필요하다. 이 target은 기본 library에 연결하지 않으며 WAL reader는 append·force·tail 수리·로그 회수를 하지 않는다. [checkpoint 형식과 미완료 복구 경계](design/streamlite.md#checkpoint와-회수-순서)를 함께 확인한다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

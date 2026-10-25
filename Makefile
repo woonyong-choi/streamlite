@@ -115,6 +115,12 @@ TEST_BINS = $(addprefix $(BUILD_DIR)/,$(BASIC_TESTS))
 
 CANDIDATE_WAL_OBJS = $(BUILD_DIR)/storage/candidate_wal.o $(BUILD_DIR)/storage/candidate_wal_format.o
 CANDIDATE_CONTROL_OBJS = $(BUILD_DIR)/storage/candidate_control.o $(BUILD_DIR)/storage/candidate_control_format.o
+CANDIDATE_CHECKPOINT_OBJS = $(BUILD_DIR)/storage/candidate_checkpoint.o $(BUILD_DIR)/storage/candidate_checkpoint_format.o
+$(BUILD_DIR)/test_candidate_checkpoint: $(BUILD_DIR)/tests/test_candidate_checkpoint.o $(CANDIDATE_CHECKPOINT_OBJS) $(CANDIDATE_CONTROL_OBJS) $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/candidate_digest.o $(BUILD_DIR)/storage/checksum.o
+CANDIDATE_CHECKPOINT_REPORT ?= $(BUILD_DIR)/fault/test_candidate_checkpoint.json
+.PHONY: test-candidate-checkpoint
+test-candidate-checkpoint: $(BUILD_DIR)/test_candidate_checkpoint
+	$(TEST_RUNNER) --report $(CANDIDATE_CHECKPOINT_REPORT) -- ./$(BUILD_DIR)/test_candidate_checkpoint
 $(BUILD_DIR)/test_candidate_control: $(BUILD_DIR)/tests/test_candidate_control.o $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/checksum.o
 CANDIDATE_CONTROL_REPORT ?= $(BUILD_DIR)/fault/test_candidate_control.json
 .PHONY: test-candidate-control
@@ -212,7 +218,7 @@ test-result: $(BUILD_DIR)/test_result $(BUILD_DIR)/test_result_fault
 $(TEST_BINS) $(BUILD_DIR)/test_overflow_file $(BUILD_DIR)/test_value_sqlite $(BUILD_DIR)/test_candidate_wal $(BUILD_DIR)/test_candidate_wal_witness $(BUILD_DIR)/test_candidate_wal_files:
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal $(BUILD_DIR)/test_candidate_catalog $(BUILD_DIR)/test_candidate_control $(BUILD_DIR)/test_candidate_allocation $(BUILD_DIR)/test_candidate_wal_system:
+$(BUILD_DIR)/test_candidate_page $(BUILD_DIR)/test_candidate_result_wal $(BUILD_DIR)/test_candidate_catalog $(BUILD_DIR)/test_candidate_control $(BUILD_DIR)/test_candidate_allocation $(BUILD_DIR)/test_candidate_wal_system $(BUILD_DIR)/test_candidate_checkpoint:
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(BUILD_DIR)/storage/record_fault.o: src/storage/record.c
@@ -442,6 +448,8 @@ clean:
 -include $(BUILD_DIR)/storage/candidate_allocation_format.d
 -include $(CANDIDATE_WITNESS_MODULE:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_wal_system.d
+-include $(BUILD_DIR)/storage/candidate_checkpoint.d
+-include $(BUILD_DIR)/storage/candidate_checkpoint_format.d
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d
 -include $(DATABASE_OBJS:.o=.d) $(DATABASE_EXEC_FAULT_OBJS:.o=.d) $(BUILD_DIR)/sql/sql_statement_fault.d $(BUILD_DIR)/storage/heap_store_test.d
