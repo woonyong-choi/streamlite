@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "storage/checksum.h"
+#include "candidate_wal_system_internal.h"
 
 typedef struct {
     candidate_witness_transaction_t value;
@@ -15,7 +16,7 @@ typedef struct {
 typedef struct { uint64_t id, transaction_id, end_lsn; } group_t;
 typedef struct { uint64_t id, generation, image_lsn; bool has_image; } page_t;
 typedef struct {
-    uint64_t id, transaction_id, first_lsn;
+    uint64_t id, transaction_id, first_lsn, last_lsn, owner_epoch;
     uint32_t expected_pages, expected_records, records, pages, crc;
     page_t seen[CANDIDATE_WITNESS_PAGES];
 } pending_group_t;
@@ -29,6 +30,7 @@ struct candidate_wal_witness {
     transaction_t transactions[CANDIDATE_WITNESS_TRANSACTIONS];
     group_t groups[CANDIDATE_WITNESS_GROUPS];
     pending_group_t pending;
+    candidate_wal_system_t *system;
 };
 
 static uint64_t read_le(const uint8_t *p, unsigned bytes)
@@ -74,6 +76,8 @@ static candidate_wal_status_t add_transaction(candidate_wal_witness_t *w,
 {
     if (r->transaction_id == 0 || r->previous_lsn != 0) return CANDIDATE_WAL_CORRUPT;
     if (r->type != 1 && r->type != 2) return CANDIDATE_WAL_CORRUPT;
+    candidate_witness_system_info_t system = candidate_system_info(w->system);
+    if (system.has_reservation && r->transaction_id > system.transaction_highwater) return CANDIDATE_WAL_CORRUPT;
     if (w->info.transactions == CANDIDATE_WITNESS_TRANSACTIONS || w->active == 64)
         return CANDIDATE_WAL_LIMIT;
     transaction_t *t = &w->transactions[w->info.transactions++];
@@ -90,6 +94,9 @@ static candidate_wal_status_t admit(candidate_wal_witness_t *w, transaction_t *t
 {
     if (r->payload_bytes != 64 || t->value.records != 0) return CANDIDATE_WAL_CORRUPT;
     if (read_le(r->payload, 8) == 0) return CANDIDATE_WAL_CORRUPT;
+    candidate_witness_system_info_t system = candidate_system_info(w->system);
+    if (system.has_epoch && (read_le(r->payload, 8) < system.retention_floor || read_le(r->payload, 8) > system.current_epoch))
+        return CANDIDATE_WAL_CORRUPT;
     uint64_t limit = read_le(r->payload + 56, 8);
     if (limit > 1048576) return CANDIDATE_WAL_CORRUPT;
     for (unsigned i = 0; i < w->info.transactions; i++) {
@@ -136,8 +143,9 @@ static candidate_wal_status_t start_group(candidate_wal_witness_t *w,
     if (pages > CANDIDATE_WITNESS_PAGES || records > CANDIDATE_WITNESS_RECORDS)
         return CANDIDATE_WAL_LIMIT;
     w->pending = (pending_group_t){.id = id, .transaction_id = r->transaction_id,
-        .first_lsn = r->lsn, .expected_pages = pages, .expected_records = records};
+        .first_lsn = r->lsn, .owner_epoch = r->owner_epoch, .expected_pages = pages, .expected_records = records};
     w->pending.crc = candidate_wal_witness_crc(0, r);
+    if (w->system != NULL) candidate_system_begin(w->system);
     return CANDIDATE_WAL_OK;
 }
 
@@ -183,10 +191,27 @@ static candidate_wal_status_t validate_delta(const candidate_wal_record_t *r)
     return at == r->payload_bytes ? CANDIDATE_WAL_OK : CANDIDATE_WAL_CORRUPT;
 }
 
+static candidate_wal_status_t event_record(candidate_wal_witness_t *w, const candidate_wal_record_t *r)
+{
+    pending_group_t *g = &w->pending;
+    if (w->system == NULL) return CANDIDATE_WAL_UNSUPPORTED;
+    if (g->id == 0 || r->payload_bytes < 8 || read_le(r->payload, 8) != g->id || g->records == g->expected_records)
+        return CANDIDATE_WAL_CORRUPT;
+    if (r->type == 16 && r->payload_bytes == 40) {
+        uint64_t previous = read_le(r->payload + 8, 8);
+        for (unsigned i = 0; i < w->info.transactions; i++)
+            if (w->transactions[i].value.transaction_id > previous) return CANDIDATE_WAL_CORRUPT;
+    }
+    candidate_wal_status_t status = candidate_system_event(w->system, r);
+    if (status != CANDIDATE_WAL_OK) return status;
+    g->records++; g->crc = candidate_wal_witness_crc(g->crc, r); return CANDIDATE_WAL_OK;
+}
+
 static candidate_wal_status_t page_record(candidate_wal_witness_t *w,
     const candidate_wal_record_t *r)
 {
     pending_group_t *g = &w->pending;
+    if (r->type == 6 || r->type == 7) return event_record(w, r);
     if (g->id == 0 || r->payload_bytes < 32) return CANDIDATE_WAL_CORRUPT;
     if (read_le(r->payload, 8) != g->id) return CANDIDATE_WAL_CORRUPT;
     page_t p = {.id = read_le(r->payload + 8, 8), .generation = read_le(r->payload + 16, 8)};
@@ -197,6 +222,10 @@ static candidate_wal_status_t page_record(candidate_wal_witness_t *w,
     else if (r->type == 5) status = validate_delta(r);
     else return CANDIDATE_WAL_UNSUPPORTED;
     if (status != CANDIDATE_WAL_OK) return status;
+    if (r->type == 4 && w->system != NULL) {
+        status = candidate_system_image(w->system, r);
+        if (status != CANDIDATE_WAL_OK) return status;
+    }
     for (unsigned i = 0; i < g->pages; i++)
         if (g->seen[i].id == p.id) return CANDIDATE_WAL_CORRUPT;
     if (g->pages == g->expected_pages || g->records == g->expected_records)
@@ -221,8 +250,18 @@ static candidate_wal_status_t end_group(candidate_wal_witness_t *w,
     uint64_t end = r->lsn + ((96 + r->payload_bytes + 7) & ~(uint64_t)7);
     for (unsigned i = 0; i < g->pages; i++)
         if (g->seen[i].has_image && g->seen[i].image_lsn != end) return CANDIDATE_WAL_CORRUPT;
+    if (w->system != NULL) {
+        uint64_t minimum = 0;
+        for (unsigned i = 0; i < w->info.transactions; i++) {
+            const candidate_witness_transaction_t *v = &w->transactions[i].value;
+            if (!v->has_admission || v->state != CANDIDATE_WITNESS_UNFINISHED) continue;
+            if (minimum == 0 || v->request_epoch < minimum) minimum = v->request_epoch;
+        }
+        candidate_wal_status_t status = candidate_system_finish(w->system, g->id, end, g->owner_epoch, minimum, g->transaction_id == 0);
+        if (status != CANDIDATE_WAL_OK) return status;
+    }
     w->groups[w->info.complete_groups++] = (group_t){g->id, g->transaction_id, end};
-    t->value.groups++;
+    if (t != NULL) t->value.groups++;
     memset(g, 0, sizeof(*g));
     return CANDIDATE_WAL_OK;
 }
@@ -325,10 +364,38 @@ static candidate_wal_status_t dispatch(candidate_wal_witness_t *w, transaction_t
     }
 }
 
+static candidate_wal_status_t system_record(candidate_wal_witness_t *w, const candidate_wal_record_t *r)
+{
+    if (w->system == NULL) return CANDIDATE_WAL_UNSUPPORTED;
+    pending_group_t *g = &w->pending;
+    candidate_wal_status_t status;
+    if (g->id == 0) {
+        if (r->type != 3 || r->previous_lsn != 0) return CANDIDATE_WAL_CORRUPT;
+        status = start_group(w, r);
+    } else {
+        if (g->transaction_id != 0 || r->previous_lsn != g->last_lsn || r->owner_epoch != g->owner_epoch)
+            return CANDIDATE_WAL_CORRUPT;
+        switch (r->type) {
+        case 4: status = page_record(w, r); break;
+        case 6: case 7: case 15: case 16: status = event_record(w, r); break;
+        case 8: status = end_group(w, NULL, r); break;
+        case 5: return CANDIDATE_WAL_UNSUPPORTED;
+        default: return CANDIDATE_WAL_CORRUPT;
+        }
+    }
+    if (status == CANDIDATE_WAL_OK) {
+        if (w->pending.id != 0) w->pending.last_lsn = r->lsn;
+        w->info.records++;
+    }
+    return status;
+}
+
 static bool visit_record(void *context, const candidate_wal_record_t *r)
 {
     candidate_wal_witness_t *w = context;
-    if (r->type >= 12 || r->transaction_id == 0) { w->status = CANDIDATE_WAL_UNSUPPORTED; return false; }
+    if (r->type >= 12 && r->type <= 14) { w->status = CANDIDATE_WAL_UNSUPPORTED; return false; }
+    if (r->transaction_id == 0) { w->status = system_record(w, r); return w->status == CANDIDATE_WAL_OK; }
+    if (r->type >= 12) { w->status = CANDIDATE_WAL_UNSUPPORTED; return false; }
     transaction_t *t = find_transaction(w, r->transaction_id);
     if (t == NULL) w->status = add_transaction(w, r, &t);
     if (w->status != CANDIDATE_WAL_OK) return false;
@@ -361,19 +428,25 @@ candidate_wal_status_t candidate_wal_witness_analyze(candidate_wal_t *wal,
     if (out == NULL) return CANDIDATE_WAL_INVALID;
     *out = NULL;
     if (wal == NULL || options == NULL) return CANDIDATE_WAL_INVALID;
-    if (is_zero(options->uuid, 16)) return CANDIDATE_WAL_INVALID;
+    candidate_witness_options_t saved = *options;
+    if (is_zero(saved.uuid, 16)) return CANDIDATE_WAL_INVALID;
     candidate_wal_memory_t allocator = {NULL, allocate_default, release_default};
-    if (options->memory != NULL) allocator = *options->memory;
+    if (saved.memory != NULL) allocator = *saved.memory;
     if (allocator.allocate == NULL || allocator.release == NULL) return CANDIDATE_WAL_INVALID;
     candidate_wal_witness_t *w = allocator.allocate(allocator.context, sizeof(*w));
     if (w == NULL) return CANDIDATE_WAL_NOMEM;
     memset(w, 0, sizeof(*w));
     w->memory = allocator;
-    memcpy(w->uuid, options->uuid, 16);
+    memcpy(w->uuid, saved.uuid, 16);
     w->info.resident_bytes = sizeof(*w);
+    if (saved.enable_system_groups) {
+        candidate_wal_status_t status = candidate_system_create(saved.uuid, &allocator, &w->system);
+        if (status != CANDIDATE_WAL_OK) { allocator.release(allocator.context, w, sizeof(*w)); return status; }
+        w->info.resident_bytes += candidate_system_resident_bytes(w->system);
+    }
     candidate_wal_status_t status = candidate_wal_scan(wal, visit_record, w, &w->info.transport);
     if (status == CANDIDATE_WAL_STOPPED) status = w->status;
-    if (status != CANDIDATE_WAL_OK) { allocator.release(allocator.context, w, sizeof(*w)); return status; }
+    if (status != CANDIDATE_WAL_OK) { candidate_wal_witness_close(&w); return status; }
     w->info.unfinished = w->active;
     w->info.incomplete_group_lsn = w->pending.first_lsn;
     *out = w;
@@ -383,6 +456,16 @@ candidate_wal_status_t candidate_wal_witness_analyze(candidate_wal_t *wal,
 candidate_witness_info_t candidate_wal_witness_info(const candidate_wal_witness_t *w)
 {
     return w == NULL ? (candidate_witness_info_t){0} : w->info;
+}
+
+candidate_witness_system_info_t candidate_wal_witness_system_info(const candidate_wal_witness_t *w)
+{
+    return candidate_system_info(w == NULL ? NULL : w->system);
+}
+
+const candidate_witness_system_event_t *candidate_wal_witness_system_at(const candidate_wal_witness_t *w, uint32_t index)
+{
+    return candidate_system_at(w == NULL ? NULL : w->system, index);
 }
 
 const candidate_witness_transaction_t *candidate_wal_witness_find(
@@ -398,7 +481,8 @@ void candidate_wal_witness_close(candidate_wal_witness_t **out)
 {
     if (out == NULL || *out == NULL) return;
     candidate_wal_witness_t *w = *out;
+    *out = NULL;
+    candidate_system_close(&w->system);
     candidate_wal_memory_t memory = w->memory;
     memory.release(memory.context, w, sizeof(*w));
-    *out = NULL;
 }

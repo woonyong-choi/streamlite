@@ -419,13 +419,22 @@ page 번호가 재사용되면 디스크 page가 재생 중인 record보다 새 
 | ADMIT, 64B | 요청 epoch u64·nonce 16B·operation digest 32B·결과 상한 u64 | 첫 record, 중복 요청 ID 거절, 1MiB 이하 상한 |
 | BEGIN, 16B | 격리 u32·예약 u32·snapshot u64 | 격리 0은 SNAPSHOT, 1은 serializable 후보. 중복 BEGIN 거절, serializable의 snapshot은 0 |
 | PHYS_BEGIN, 16B / PHYS_END, 24B | group ID u64·page 수 u32·record 수 u32, 끝에는 CRC32C u32·예약 u32 추가 | 연속 group, 단조 group ID·개수·checksum과 END 위치 대조 |
+| ALLOC / FREE, 40B | group ID·page ID·이전/새 generation·release horizon 각 u64 | 새 ID는0→1, 재사용은 이전 FREE의 generation+1, FREE는 같은 세대와 양수 horizon |
+| ID_RESERVE, 40B | group ID·이전/새 transaction highwater·이전/새 page highwater 각 u64 | 두 값이 퇴행하지 않고 하나 이상 증가, catalog/할당 root의 새 값과 대조 |
+| REQUEST_EPOCH, 40B | group ID·이전/새 요청 epoch·이전/새 보존 floor 각 u64 | 단조 값·최대4epoch·catalog root·관측한 미완료 요청의 floor pin 대조 |
 | PAGE_IMAGE / PAGE_DELTA | 앞 32B는 group ID·page ID·generation·기대 이전 pageLSN의 u64 네 개. image는 8192B 사본, delta는 개수 u32·예약 u32 뒤 offset u32·길이 u32·bytes 반복 | image UUID·종류 1–5·header/padding/checksum·END LSN, delta의 page 본문 범위·겹침·정렬·정확 길이. 실제 page 이력·redo는 별도 |
 | RESULT_CHUNK, 112B | 요청 epoch u64·nonce 16B·chunk 순번/수 각 u32·전체 길이 u64·digest 32B·VersionRef 24B·offset u64·길이 u32·예약 u32 | 64KiB 분할의 연속 순번·합계·동일 참조 digest, 최대 16chunk. 참조한 본문 존재와 hash는 별도 |
 | ABORT, 32B / COMMIT, 152B 이상 | 첫/직전 record LSN·앞선 record 수 각 u64·chain CRC32C u32·예약 u32. COMMIT은 CSN u64·요청 epoch u64·nonce 16B·operation/result digest 각 32B·결과 bytes u64·chunk 수 u32·예약 8B·의존 group 수 u32·group ID/끝 LSN의 u64 쌍 반복 | terminal 이후 record·끊긴 chain·중복/역행 CSN·빠진 group·결과 참조 불일치 거절 |
 
-chain과 group CRC는 record마다 종류 u16·예약 6B·LSN/transaction ID/이전 LSN/owner epoch/본문 길이의 u64 다섯 개·본문 bytes를 이어 계산한다. chain은 terminal 직전까지, group은 BEGIN과 image/delta만 포함한다. 비어 있는 응답의 참조 digest는 SHA-256의 빈 bytes 값이다. 이 CRC는 손상 검사이며 SHA-256이나 인증을 대신하지 않는다.
+chain과 group CRC는 record마다 종류 u16·예약 6B·LSN/transaction ID/이전 LSN/owner epoch/본문 길이의 u64 다섯 개·본문 bytes를 이어 계산한다. chain은 terminal 직전까지, group은 PHYS_BEGIN과 그 안의 page 변경·할당/해제·예약/epoch record를 포함한다. 비어 있는 응답의 참조 digest는 SHA-256의 빈 bytes 값이다. 이 CRC는 손상 검사이며 SHA-256이나 인증을 대신하지 않는다.
 
-분석기는 같은 UUID로 연 transport와 options를 받으며 한 group에서 page별 image 또는 delta 하나를 처리한다. 현재 ALLOC/FREE·system transaction·checkpoint·epoch/floor·ID_RESERVE는 UNSUPPORTED로 거절한다. 분석 전체에 거래와 완성 group을 각각 최대 4096개 보관하고 활성 거래는 64개로 제한한다. 4096개 제한은 회수 없는 분석 표를 유한하게 두는 내부 설정이며 전체 256MiB WAL을 모두 처리하는 제품 복구 보장이 아니다. 더 큰 입력은 LIMIT이고 잘라서 성공하지 않는다. 이 분석 표와 WAL buffer의 할당 계상은 전체 앱 RSS 상한과 다르다.
+분석기는 같은 UUID로 연 transport와 options를 받으며 한 group에서 page별 image 또는 delta 하나를 처리한다. 기본 모드는 ALLOC/FREE·system transaction·checkpoint·epoch/floor·ID_RESERVE를 UNSUPPORTED로 거절한다. 내부 옵션 `enable_system_groups`를 켜면 [system 분석](../../src/storage/candidate_wal_system.c)이 위40B record와 일반 image를 검사한다. system group은 transaction ID0·첫 previous LSN0으로 시작하고 하나의 owner 아래 직전 record를 연결한다. 예약/epoch는 system 전용이고 ALLOC/FREE는 사용자 physical group에도 허용해 논리 ABORT와 구분한다. checkpoint·system delta·type3 image는 아직 지원하지 않는다.
+
+새 모드는 image의 type1/2/4/5 본문을 각 codec으로 검증한다. 예약은 catalog/할당 root highwater와, epoch는 catalog root의 epoch/floor와 대조한다. 할당/해제는 새 할당 root가 참조한 node의 상태·generation·horizon·PHYS_END 끝 LSN을 요구한다. 새 generation에는 기대 이전 LSN0인 전체 image가 필요하다. 같은 page의 중복 event와 관측한 ALLOC/FREE 교대·세대 단절을 거절한다. 이미 본 transaction ID보다 낮은 이전 예약 값, 미완료 admission을 넘는 floor도 거절한다. 끝 record의 개수·CRC와 모든 image LSN이 맞기 전에는 관측 상태나 event 목록을 갱신하지 않는다.
+
+분석 전체에 거래와 완성 group을 각각 최대4096개, 활성 거래64개를 보관한다. system 모드는 group당 최대64개 image/event와 전체4096개 event를 별도로 제한한다. 이 빌드의 활성 system 분석 소유 요청량은 두 할당 합계1,681,736B이며 allocator overhead·stack·transport·전체 앱 RSS는 별도다. options는 allocator callback 전에 복사한다. 더 큰 입력은 LIMIT이고 잘라서 성공하지 않는다. 이 상한은 회수 없는 분석 표를 유한하게 두는 내부 설정이며 전체256MiB WAL을 모두 처리하는 제품 복구 보장이 아니다.
+
+`system_info`와 `system_at`는 관측한 prefix와 완성 group의 원시 기록을 반환한다. 최초 이전 값·미관측 할당/요청·checkpoint seed는 아직 증명하지 않는다. 변경 entry와 해당 node 참조를 검사하는 것과 전체 할당 표·tree/version 도달성·reader/fallback 보호를 대조하는 것은 다르다. 번호 예약 force와 실제 발급, 안전 horizon·회수, data redo·내구 결과·배타 복구 활성화는 후속 조정자가 맡는다. [system 시험](../../tests/test_candidate_wal_system.c)의 실제 WAL force/reopen과 소유 표 검증을 APPLIED나 제품 writer 완료로 확대하지 않는다.
 
 완전한 파일 scan을 통과한 뒤에만 owning 분석 결과를 반환한다. 미완성 거래·group은 미완성으로 남기며 ABORT를 추측하거나 파일을 고치지 않는다. 관측한 최대 CSN은 확정 frontier가 아니고, COMMIT witness는 APPLIED·force 성공·새 reader 가시성의 증명이 아니다. [전용 시험](../../tests/test_candidate_wal_witness.c)은 교차 거래·record 경계·CRC를 다시 맞춘 손상·한도/OOM와 뒤쪽 읽기 오류의 부분 결과 차단을 검증한다. 원래 영속 결과·복구 조정자는 본문과 metadata page, WAL-before-data·내구 terminal·복구 배타 소유권을 함께 검증해야 한다.
 

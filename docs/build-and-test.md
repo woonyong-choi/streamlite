@@ -120,7 +120,15 @@ make BUILD_DIR=build-regression test-candidate-wal-files TEST_TIMEOUT=120 CANDID
 make BUILD_DIR=build-regression test-candidate-wal-witness TEST_TIMEOUT=120 CANDIDATE_WITNESS_REPORT=build-regression/fault/witness-check.json
 ```
 
-기본 fixture prefix는 process ID를 포함하며 원본을 지우지 않는다. 반복 실행은 `CANDIDATE_WITNESS_REPORT`에 아직 없는 report 경로를 지정해 앞선 로그도 보존한다. native 90초·runner 120초를 유지한다. 분석은 파일과 transaction 상태를 고치지 않고 전체 scan 실패 시 부분 표를 반환하지 않는다. COMMIT witness는 본문 복원이나 APPLIED가 아니며 ALLOC/FREE·checkpoint·epoch/ID 예약과 실제 redo는 아직 지원하지 않는다. [내부 분석 계약](design/streamlite.md#checkpoint와-회수-순서)의 거절 범위와 남은 복구 의무를 함께 확인한다.
+기본 fixture prefix는 process ID를 포함하며 원본을 지우지 않는다. 반복 실행은 `CANDIDATE_WITNESS_REPORT`에 아직 없는 report 경로를 지정해 앞선 로그도 보존한다. native 90초·runner 120초를 유지한다. 분석은 파일과 transaction 상태를 고치지 않고 전체 scan 실패 시 부분 표를 반환하지 않는다. COMMIT witness는 본문 복원이나 APPLIED가 아니다. 기본 모드는 ALLOC/FREE·system·checkpoint·epoch/ID 예약을 거절한다. [내부 분석 계약](design/streamlite.md#checkpoint와-회수-순서)의 두 모드와 남은 복구 의무를 함께 확인한다.
+
+[system 시험](../tests/test_candidate_wal_system.c)은 내부 옵션 `enable_system_groups`를 켜고 실제 WAL의 metadata image와 ALLOC/FREE·ID_RESERVE·REQUEST_EPOCH를 대조한다. group 내 owner/chain·개수/CRC·세대·root/node·LSN,31개 record의 모든 prefix, 활성 요청의 floor 차단과 ABORT 뒤 구조 보존,64개 image 경계와4096개 event 한도·OOM·뒤쪽 읽기 실패·options 사본을 검사한다. 합성 파일의 force/reopen과 원시 event 결과를 확인하며 checkpoint·전체 할당 이력·reader/fallback 참조 해제·번호 발급·redo·복구 활성화는 구현하지 않는다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-wal-system TEST_TIMEOUT=120 CANDIDATE_SYSTEM_REPORT=build-regression/fault/system-check.json
+```
+
+기본 라이브러리에 연결하지 않으며 반복 실행에는 새 report 경로를 지정한다. 기존 object/binary를 보존하는 비교 실행은 `CANDIDATE_WITNESS_MODULE`로 새 object 경로를 사용하고 재사용하는 transport·format·checksum·page·metadata object를 각각 Make의 `--old-file`로 고정한다. 하나를 빠뜨려도 재빌드될 수 있으므로 실행 전후 원 해시를 대조한다. [기본 witness 시험](../tests/test_candidate_wal_witness.c)과 [결과 본문 시험](../tests/test_candidate_result_wal.c)은 새 소스로 별도 binary를 만들어 함께 확인한다.
 
 [page codec과 본문 reader](../include/storage/candidate_page.h)는 일반 version/overflow page의 slot·generation·길이와 결과 bytes를 검사한다. 아래 target은 [codec 시험](../tests/test_candidate_page.c)과 [WAL/page fixture](../tests/test_candidate_result_wal.c)를 각각 실행한다.
 
