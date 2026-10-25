@@ -213,7 +213,10 @@ static void abort_memory(void)
     }
 }
 
-int main(void)
+#ifndef CANDIDATE_ABORTED_RESULT_TEST_MAIN
+#define CANDIDATE_ABORTED_RESULT_TEST_MAIN main
+#endif
+int CANDIDATE_ABORTED_RESULT_TEST_MAIN(void)
 {
     setvbuf(stdout,NULL,_IONBF,0); alarm(90);
     final_descriptors(); abort_corruption(); abort_memory();

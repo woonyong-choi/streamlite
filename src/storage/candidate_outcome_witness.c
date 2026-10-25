@@ -1,9 +1,12 @@
 #include "storage/candidate_outcome_witness.h"
+#include "storage/candidate_outcome_rebuild.h"
+#include "storage/candidate_digest.h"
 
 #include <stdlib.h>
 #include <string.h>
 
 #include "candidate_wal_witness_internal.h"
+#include "candidate_wal_tail_internal.h"
 
 typedef struct {
     uint64_t transaction_id, owner_epoch, result_limit;
@@ -20,6 +23,17 @@ struct candidate_outcome_witness {
     candidate_catalog_t *catalog;
     candidate_outcome_witness_info_t info;
 };
+struct candidate_outcome_rebuild {
+    candidate_wal_memory_t memory;
+    candidate_outcome_rebuild_info_t info;
+    uint8_t uuid[16];
+    candidate_outcome_t entries[CANDIDATE_CATALOG_ENTRIES];
+};
+typedef struct {
+    admissions_t *admissions;
+    uint8_t digest[32];
+    candidate_wal_status_t status;
+} rebuild_scan_t;
 
 static uint64_t read_le(const uint8_t *p, unsigned size)
 {
@@ -245,4 +259,195 @@ void candidate_outcome_witness_close(candidate_outcome_witness_t **out)
     candidate_wal_memory_t memory = w->memory;
     candidate_catalog_close(&w->catalog);
     memory.release(memory.context, w, sizeof(*w)); *out = NULL;
+}
+
+static bool observe_rebuild(void *context, const candidate_wal_record_t *record)
+{
+    rebuild_scan_t *scan = context;
+    if (!observe_admission(scan->admissions,record)) { scan->status = scan->admissions->status; return false; }
+    scan->status = candidate_wal_tail_hash(scan->digest,record); return scan->status == CANDIDATE_WAL_OK;
+}
+
+static const candidate_outcome_t *stored_outcome(const candidate_catalog_t *catalog, uint64_t transaction)
+{
+    for (unsigned i = 0; i < candidate_catalog_root(catalog)->count; i++) {
+        const candidate_outcome_t *e = candidate_catalog_at(catalog,i);
+        if (e->transaction_id == transaction) return e;
+    }
+    return NULL;
+}
+
+static candidate_wal_status_t rebuild_bounds(candidate_outcome_rebuild_t *p, const candidate_catalog_root_t *base,
+    const candidate_control_state_t *anchor, const candidate_wal_witness_t *history)
+{
+    candidate_witness_info_t w = candidate_wal_witness_info(history);
+    candidate_witness_system_info_t s = candidate_wal_witness_system_info(history);
+    candidate_outcome_rebuild_info_t *i = &p->info;
+    i->current_epoch = s.has_epoch ? s.current_epoch : anchor->request_epoch;
+    i->retention_floor = s.has_epoch ? s.retention_floor : anchor->retention_floor;
+    i->transaction_highwater = s.has_reservation ? s.transaction_highwater : anchor->transaction_highwater;
+    i->page_highwater = s.has_reservation ? s.page_highwater : anchor->page_highwater;
+    i->visible_csn = w.highest_csn; i->wal_end_lsn = w.transport.valid_end_lsn;
+    if (i->owner_epoch < w.transport.highest_owner_epoch || i->owner_epoch < anchor->owner_epoch) return CANDIDATE_WAL_STALE;
+    if (base->owner_epoch > i->owner_epoch || base->current_epoch > i->current_epoch ||
+        base->retention_floor > i->retention_floor || base->transaction_highwater > i->transaction_highwater ||
+        base->page_highwater > i->page_highwater || base->visible_csn > i->visible_csn) return CANDIDATE_WAL_CORRUPT;
+    for (unsigned n = 0; n < w.transactions; n++) {
+        candidate_checkpoint_transaction_t t;
+        if (!candidate_witness_checkpoint_at(history,n,&t) || t.id > i->transaction_highwater) return CANDIDATE_WAL_CORRUPT;
+    }
+    return CANDIDATE_WAL_OK;
+}
+
+static candidate_wal_status_t check_stored(const candidate_catalog_t *catalog, admissions_t *admissions,
+    const candidate_wal_witness_t *history)
+{
+    for (unsigned i = 0; i < candidate_catalog_root(catalog)->count; i++) {
+        const candidate_outcome_t *e = candidate_catalog_at(catalog,i);
+        const admission_t *a = find_admission(admissions,e->transaction_id);
+        const candidate_witness_transaction_t *t = candidate_wal_witness_find(history,e->transaction_id);
+        if (a == NULL || t == NULL || !same_request(e,t) || e->admitting_owner_epoch != a->owner_epoch ||
+            e->declared_result_limit != a->result_limit) return CANDIDATE_WAL_CORRUPT;
+        if (e->state != CANDIDATE_OUTCOME_ADMITTED) {
+            candidate_wal_status_t status = compare_entry(e,a,t); if (status != CANDIDATE_WAL_OK) return status;
+        }
+    }
+    return CANDIDATE_WAL_OK;
+}
+
+static candidate_wal_status_t project_outcome(const candidate_outcome_t *old, const admission_t *a,
+    const candidate_witness_transaction_t *t, candidate_outcome_t *e)
+{
+    if (old != NULL && old->state != CANDIDATE_OUTCOME_ADMITTED) { *e = *old; return CANDIDATE_WAL_OK; }
+    *e = (candidate_outcome_t){.epoch = t->request_epoch,.transaction_id = t->transaction_id,
+        .state = t->state == CANDIDATE_WITNESS_COMMIT ? CANDIDATE_OUTCOME_COMMITTED : CANDIDATE_OUTCOME_ABORTED,
+        .csn = t->csn,.terminal_end_lsn = t->terminal_end_lsn,.declared_result_limit = a->result_limit,.admitting_owner_epoch = a->owner_epoch};
+    memcpy(e->nonce,t->request_nonce,16); memcpy(e->operation_digest,t->operation_digest,32);
+    if (t->state == CANDIDATE_WITNESS_ABORT) return candidate_digest_sha256(NULL,0,e->result_digest);
+    if (!a->has_result) return CANDIDATE_WAL_STALE;
+    e->result = a->result; e->result_bytes = t->result_bytes; e->result_chunks = t->result_chunks;
+    memcpy(e->result_digest,t->result_digest,32); return CANDIDATE_WAL_OK;
+}
+
+static int compare_outcomes(const void *left, const void *right)
+{
+    const candidate_outcome_t *a = left, *b = right;
+    if (a->transaction_id == b->transaction_id) return 0;
+    return a->transaction_id < b->transaction_id ? -1 : 1;
+}
+
+static candidate_wal_status_t rebuild_entries(candidate_outcome_rebuild_t *p, const candidate_catalog_load_t *load,
+    const candidate_catalog_t *catalog, admissions_t *admissions, const candidate_wal_witness_t *history)
+{
+    unsigned epochs[4] = {0};
+    for (unsigned n = 0; n < admissions->count; n++) {
+        const admission_t *a = &admissions->admissions[n];
+        const candidate_witness_transaction_t *t = candidate_wal_witness_find(history,a->transaction_id);
+        if (t == NULL || t->request_epoch > p->info.current_epoch) return CANDIDATE_WAL_CORRUPT;
+        if (t->request_epoch < p->info.retention_floor) continue;
+        unsigned epoch = (unsigned)(t->request_epoch - p->info.retention_floor);
+        if (epoch >= 4) return CANDIDATE_WAL_CORRUPT;
+        if (++epochs[epoch] > 1024 || p->info.count == CANDIDATE_CATALOG_ENTRIES) return CANDIDATE_WAL_LIMIT;
+        candidate_outcome_t *e = &p->entries[p->info.count];
+        candidate_wal_status_t status = project_outcome(stored_outcome(catalog,a->transaction_id),a,t,e);
+        if (status == CANDIDATE_WAL_OK && e->result.page.id > p->info.page_highwater) status = CANDIDATE_WAL_CORRUPT;
+        if (status == CANDIDATE_WAL_OK) status = compare_entry(e,a,t);
+        if (status != CANDIDATE_WAL_OK) return status;
+        p->info.count++; p->info.result_bytes += e->result_bytes;
+    }
+    qsort(p->entries,p->info.count,sizeof(p->entries[0]),compare_outcomes);
+    p->info.nodes = (p->info.count + CANDIDATE_CATALOG_NODE_ENTRIES - 1) / CANDIDATE_CATALOG_NODE_ENTRIES;
+    p->info.minimum_retained_bytes = (uint64_t)(p->info.nodes + 1) * 8192 + p->info.result_bytes;
+    if (p->info.minimum_retained_bytes > CANDIDATE_CATALOG_STORAGE_BYTES) return CANDIDATE_WAL_LIMIT;
+    for (unsigned n = 0; n < p->info.count; n++) {
+        candidate_wal_status_t status = read_body(load,&p->entries[n]);
+        if (status != CANDIDATE_WAL_OK) return status;
+    }
+    return CANDIDATE_WAL_OK;
+}
+
+candidate_wal_status_t candidate_outcome_rebuild_load(candidate_wal_t *wal,
+    const candidate_outcome_rebuild_options_t *options, candidate_outcome_rebuild_t **out)
+{
+    if (out == NULL) return CANDIDATE_WAL_INVALID;
+    *out = NULL;
+    if (wal == NULL || options == NULL || options->source.checkpoint == NULL || options->owner_epoch == 0) return CANDIDATE_WAL_INVALID;
+    candidate_outcome_rebuild_options_t saved = *options; candidate_control_state_t anchor = *saved.source.checkpoint;
+    saved.source.checkpoint = &anchor;
+    candidate_wal_memory_t memory = {NULL,allocate_default,release_default};
+    if (saved.source.catalog.memory != NULL) memory = *saved.source.catalog.memory;
+    if (memory.allocate == NULL || memory.release == NULL) return CANDIDATE_WAL_INVALID;
+    saved.source.catalog.memory = &memory;
+    candidate_outcome_rebuild_t *p = memory.allocate(memory.context,sizeof(*p));
+    if (p == NULL) return CANDIDATE_WAL_NOMEM;
+    memset(p,0,sizeof(*p)); p->memory = memory; p->info.owner_epoch = saved.owner_epoch;
+    memcpy(p->uuid,saved.source.catalog.uuid,16);
+    candidate_catalog_t *catalog = NULL; admissions_t *admissions = NULL; candidate_wal_witness_t *history = NULL;
+    candidate_wal_status_t status = candidate_catalog_load(&saved.source.catalog,&catalog);
+    if (status == CANDIDATE_WAL_OK) {
+        admissions = memory.allocate(memory.context,sizeof(*admissions));
+        if (admissions == NULL) status = CANDIDATE_WAL_NOMEM; else memset(admissions,0,sizeof(*admissions));
+    }
+    rebuild_scan_t scan = {.admissions = admissions};
+    if (status == CANDIDATE_WAL_OK) {
+        candidate_witness_options_t request = {.memory = &memory,.enable_system_groups = true}; memcpy(request.uuid,p->uuid,16);
+        status = candidate_witness_analyze_observed(wal,&request,&anchor,observe_rebuild,&scan,&history);
+        if (status == CANDIDATE_WAL_STOPPED && scan.status != CANDIDATE_WAL_OK) status = scan.status;
+    }
+    if (status == CANDIDATE_WAL_OK) {
+        candidate_witness_info_t info = candidate_wal_witness_info(history);
+        if (info.transport.has_tail) status = CANDIDATE_WAL_TAIL;
+        else if (info.unfinished != 0 || info.incomplete_group_lsn != 0 ||
+            candidate_wal_info(wal).durable_end_lsn < info.transport.valid_end_lsn) status = CANDIDATE_WAL_STALE;
+        else status = rebuild_bounds(p,candidate_catalog_root(catalog),&anchor,history);
+    }
+    if (status == CANDIDATE_WAL_OK) status = check_stored(catalog,admissions,history);
+    if (status == CANDIDATE_WAL_OK) status = rebuild_entries(p,&saved.source.catalog,catalog,admissions,history);
+    candidate_wal_witness_close(&history); candidate_catalog_close(&catalog);
+    if (admissions != NULL) memory.release(memory.context,admissions,sizeof(*admissions));
+    if (status != CANDIDATE_WAL_OK) { candidate_outcome_rebuild_close(&p); return status; }
+    memcpy(p->info.wal_digest,scan.digest,32); p->info.resident_bytes = sizeof(*p); *out = p;
+    return CANDIDATE_WAL_OK;
+}
+
+candidate_outcome_rebuild_info_t candidate_outcome_rebuild_info(const candidate_outcome_rebuild_t *p)
+{
+    return p == NULL ? (candidate_outcome_rebuild_info_t){0} : p->info;
+}
+
+const candidate_outcome_t *candidate_outcome_rebuild_at(const candidate_outcome_rebuild_t *p, uint32_t index)
+{
+    return p != NULL && index < p->info.count ? &p->entries[index] : NULL;
+}
+
+candidate_wal_status_t candidate_outcome_rebuild_encode_node(const candidate_outcome_rebuild_t *p,
+    uint32_t index, const candidate_page_location_t *location, uint8_t *out, size_t capacity)
+{
+    if (p == NULL || location == NULL || index >= p->info.nodes || memcmp(location->uuid,p->uuid,16) != 0) return CANDIDATE_WAL_INVALID;
+    candidate_catalog_node_t node = {.ordinal = index};
+    uint32_t start = index * CANDIDATE_CATALOG_NODE_ENTRIES, left = p->info.count - start;
+    node.count = left < CANDIDATE_CATALOG_NODE_ENTRIES ? left : CANDIDATE_CATALOG_NODE_ENTRIES;
+    for (unsigned n = 0; n < node.count; n++) node.entries[n] = p->entries[start + n];
+    return candidate_catalog_encode_node(location,&node,out,capacity);
+}
+
+candidate_wal_status_t candidate_outcome_rebuild_encode_root(const candidate_outcome_rebuild_t *p,
+    const candidate_page_location_t *location, const candidate_page_ref_t *nodes, uint32_t count,
+    uint64_t retained_bytes, uint8_t *out, size_t capacity)
+{
+    if (p == NULL || location == NULL || count != p->info.nodes || (count != 0 && nodes == NULL) ||
+        memcmp(location->uuid,p->uuid,16) != 0) return CANDIDATE_WAL_INVALID;
+    if (retained_bytes < p->info.minimum_retained_bytes || retained_bytes > CANDIDATE_CATALOG_STORAGE_BYTES) return CANDIDATE_WAL_LIMIT;
+    candidate_catalog_root_t root = {.owner_epoch = p->info.owner_epoch,.current_epoch = p->info.current_epoch,
+        .retention_floor = p->info.retention_floor,.transaction_highwater = p->info.transaction_highwater,
+        .page_highwater = p->info.page_highwater,.visible_csn = p->info.visible_csn,.retained_bytes = retained_bytes,.count = p->info.count};
+    for (unsigned n = 0; n < count; n++) root.pages[n] = nodes[n];
+    return candidate_catalog_encode_root(location,&root,out,capacity);
+}
+
+void candidate_outcome_rebuild_close(candidate_outcome_rebuild_t **out)
+{
+    if (out == NULL || *out == NULL) return;
+    candidate_outcome_rebuild_t *p = *out; candidate_wal_memory_t memory = p->memory; *out = NULL;
+    memory.release(memory.context,p,sizeof(*p));
 }

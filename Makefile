@@ -147,6 +147,22 @@ CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.js
 CANDIDATE_RECOVERY_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery.o
 CANDIDATE_RECOVERY_TERMINAL_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery_terminal.o
 CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
+$(BUILD_DIR)/test_candidate_outcome_rebuild: $(BUILD_DIR)/tests/test_candidate_outcome_rebuild.o $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_REBUILD_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_rebuild.json
+.PHONY: test-candidate-outcome-rebuild
+test-candidate-outcome-rebuild: $(BUILD_DIR)/test_candidate_outcome_rebuild
+	$(TEST_RUNNER) --report $(CANDIDATE_REBUILD_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_rebuild
+$(BUILD_DIR)/test_candidate_outcome_rebuild_limits: $(BUILD_DIR)/tests/test_candidate_outcome_rebuild_limits.o $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_REBUILD_LIMIT_PREFIX ?= $(BUILD_DIR)/fault/test_candidate_outcome_rebuild_limits
+.PHONY: test-candidate-outcome-rebuild-limits
+test-candidate-outcome-rebuild-limits: $(BUILD_DIR)/test_candidate_outcome_rebuild_limits
+	$(TEST_RUNNER) --report $(CANDIDATE_REBUILD_LIMIT_PREFIX)-capacity.json -- ./$(BUILD_DIR)/test_candidate_outcome_rebuild_limits capacity
+	$(TEST_RUNNER) --report $(CANDIDATE_REBUILD_LIMIT_PREFIX)-space.json -- ./$(BUILD_DIR)/test_candidate_outcome_rebuild_limits space
+.PHONY: test-candidate-outcome-rebuild-empty
+test-candidate-outcome-rebuild-empty: $(BUILD_DIR)/test_candidate_outcome_rebuild_limits
+	$(TEST_RUNNER) --report $(CANDIDATE_REBUILD_LIMIT_PREFIX)-empty.json -- ./$(BUILD_DIR)/test_candidate_outcome_rebuild_limits empty
 $(BUILD_DIR)/test_candidate_recovery_wal: $(BUILD_DIR)/tests/test_candidate_recovery_wal.o $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_RECOVERY_WAL_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_wal.json
