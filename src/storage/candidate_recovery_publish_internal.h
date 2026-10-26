@@ -77,6 +77,6 @@ candidate_wal_status_t candidate_publish_place_checkpoint(const candidate_wal_t 
     uint32_t transactions, uint64_t *lsns, uint64_t *end);
 candidate_wal_status_t candidate_publish_next(const publish_t *p, const candidate_control_info_t *control,
     uint64_t page_highwater, candidate_control_state_t *next);
-candidate_wal_status_t candidate_publish_follows(const candidate_control_info_t *control, const candidate_control_state_t *next);
+candidate_wal_status_t candidate_publish_check_control(const publish_t *p, const candidate_control_state_t *next);
 
 #endif

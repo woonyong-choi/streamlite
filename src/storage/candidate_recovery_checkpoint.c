@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "storage/candidate_checkpoint.h"
+#include "candidate_control_internal.h"
 #include "candidate_wal_witness_internal.h"
 
 #define CHECKPOINT_BEGIN_BYTES 160u
@@ -30,13 +31,6 @@ candidate_wal_status_t candidate_publish_place_checkpoint(const candidate_wal_t 
     return status;
 }
 
-static const candidate_control_state_t *highest_slot(const candidate_control_info_t *c)
-{
-    if ((c->valid_mask & 1u) == 0) return (c->valid_mask & 2u) == 0 ? NULL : &c->slots[1];
-    if ((c->valid_mask & 2u) == 0) return &c->slots[0];
-    return c->slots[0].generation > c->slots[1].generation ? &c->slots[0] : &c->slots[1];
-}
-
 candidate_wal_status_t candidate_publish_next(const publish_t *p, const candidate_control_info_t *control,
     uint64_t page_highwater, candidate_control_state_t *next)
 {
@@ -57,19 +51,10 @@ candidate_wal_status_t candidate_publish_next(const publish_t *p, const candidat
     return CANDIDATE_WAL_OK;
 }
 
-candidate_wal_status_t candidate_publish_follows(const candidate_control_info_t *control, const candidate_control_state_t *next)
+candidate_wal_status_t candidate_publish_check_control(const publish_t *p, const candidate_control_state_t *next)
 {
-    uint8_t bytes[CANDIDATE_CONTROL_BYTES];
-    candidate_control_state_t encoded = *next; encoded.generation = 1; encoded.slot = 0;
-    if (candidate_control_encode(&encoded,bytes,sizeof(bytes)) != CANDIDATE_WAL_OK) return CANDIDATE_WAL_CORRUPT;
-    const candidate_control_state_t *old = highest_slot(control);
-    if (old == NULL) return CANDIDATE_WAL_CORRUPT;
-    bool is_forward = next->checkpoint_id > old->checkpoint_id && next->owner_epoch >= old->owner_epoch;
-    is_forward = is_forward && next->transaction_highwater >= old->transaction_highwater && next->page_highwater >= old->page_highwater;
-    is_forward = is_forward && next->request_epoch >= old->request_epoch && next->retention_floor >= old->retention_floor;
-    is_forward = is_forward && next->visible_csn >= old->visible_csn && next->gc_horizon >= old->gc_horizon;
-    is_forward = is_forward && next->checkpoint_begin >= old->checkpoint_begin && next->checkpoint_end >= old->checkpoint_end;
-    return is_forward && next->redo_begin >= old->redo_begin ? CANDIDATE_WAL_OK : CANDIDATE_WAL_STALE;
+    candidate_wal_status_t status = candidate_control_check_publication(p->recovery->control,next);
+    return status == CANDIDATE_WAL_INVALID ? CANDIDATE_WAL_CORRUPT : status;
 }
 
 static int compare_transactions(const void *left, const void *right)
@@ -156,7 +141,7 @@ candidate_wal_status_t candidate_publish_checkpoint(publish_t *p, const candidat
     if (status == CANDIDATE_WAL_OK) status = candidate_publish_place_checkpoint(p->recovery->wal,&cursor,count,lsns,&end);
     if (status == CANDIDATE_WAL_OK) {
         p->next.checkpoint_begin = lsns[0]; p->next.checkpoint_end = end;
-        status = candidate_publish_follows(control,&p->next);
+        status = candidate_publish_check_control(p,&p->next);
     }
     if (status == CANDIDATE_WAL_OK) status = write_records(p,list,count,lsns);
     if (list != NULL) p->memory.release(p->memory.context,list,count * sizeof(*list));

@@ -24,7 +24,7 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. The Additional checkpoint after Task23 records new publication-counter and pinned-read findings. Current first incomplete task is Task23s, followed by23t before Task24. The candidate-file durable recovery integration is complete at Task23;23a–r remain its prerequisite evidence. This closes the isolated owning recovery/query path, not product SQL/ACK activation, actual writers, live buffering/MVCC/GC/log reuse, stream integration or maintenance-inclusive COW/WAL measurements. The whole goal stays active. The checkpoint is a separate continuation after the Task23 commit; its required repairs precede Task24. Existing runtime/default COW, data/ABI and all later requirements remain preserved.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. The Additional checkpoint after Task23 records new publication-counter and pinned-read findings. Current first incomplete task is Task23t before Task24; Task23s repairs the publication counters. The candidate-file durable recovery integration is complete at Task23;23a–r remain its prerequisite evidence. This closes the isolated owning recovery/query path, not product SQL/ACK activation, actual writers, live buffering/MVCC/GC/log reuse, stream integration or maintenance-inclusive COW/WAL measurements. The whole goal stays active. The checkpoint is a separate continuation after the Task23 commit; its required repairs precede Task24. Existing runtime/default COW, data/ABI and all later requirements remain preserved.
 
 Task 23d compacts only completed Task16–23c entries and their completed checkpoints after source review. Their exact full ledger remains in Git object `623e9d5c4da00a0adb842d3e8d4213d839ad6976:goal-1/tasks.md` (SHA-256 31dd489d6de49399434544cbfa2353500aa28e3cb458536bc2fbfe5a1d14d280). Task6 source coverage/requirement matrix and all incomplete entries remain verbatim; no source history, failure artifact or requirement is removed. This adds no context copy.
 
@@ -33,6 +33,8 @@ Task 23g compacts only the completed 23d/e/checkpoint23e/23f records against Git
 Task23n compacts completed23l/m only against Git `c7d5333023e93fedb11c3395c78fbf469e00677c:goal-1/tasks.md` (SHA-256 3bc228f973e7d25cf346aa5812bff8264cc3fea19e6a18bb7305df072a85b467); Task6 and all25 old incomplete sections stay byte-identical. Original failures and full records remain in Git and existing execution artifacts.
 
 Task23r compacts61 completed task/checkpoint records against Git `92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md` (SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066). A direct section comparison confirms Task6 and all26 previously incomplete entries remain byte-identical before23r closure. Full records, raw data and failure samples remain available in their original Git/execution locations. Only the current23r entry changes at this task boundary; the25 other incomplete entries, including original23, stay preserved.
+
+Task23s는 반복 재개의 전체 읽기 비용을 줄이기 위해 완료 항목 65개의 상세 기록을 고정 Git `4fde14e8b87c7a6478e0cb9add511ade6a196ec0:goal-1/tasks.md`로 연결한다. 원문 SHA-256은 `7a4402ea2db19b00d974234cd3e460c092816bb59d8ecb04920fc9e1ef9fbfec`이다. Task6와 모든 기존 미완료 섹션은 byte 단위로 보존하며 원자료·실패·Git 이력을 삭제하지 않는다.
 
 ## Initialization only — 2026-10-24
 
@@ -53,48 +55,37 @@ Task23r compacts61 completed task/checkpoint records against Git `92c7babf808a0e
 ## Task 1 — Preserve the COW decision and possible withdrawal rationale
 
 - Status: complete (documentation and static source verification only)
-- Work performed: added D52 to `docs/development-report.md` and linked it from `docs/design/streamlite.md`.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 2 — Specify the proposed concurrency and resource contract
 
 - Status: complete (contract proposal and static review only; no runtime implementation or approval of defaults)
-- Work performed: expanded `docs/design/streamlite.md` with a current-versus-proposed boundary table, separate same-process/multiprocess gates, serializable validation recommendation and snapshot alternative, logical rebase versus semantic conflict, cancellation handoff, durable/group outcome states, restart-query limits, ownership and aggregate byte budgets, pin/reclamation and retention pressure, migration and fallback.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 3 — Fix the separated comparison and adoption gates
 
 - Status: complete (comparison/adoption design proposal and static validation only; no experiment collection or engine decision)
-- Work performed: added E0–E7 to the existing StreamLite design: eligibility, cache, cache/workspace crossover, conditional SQL, payload/state layout, actual concurrent writers, matched COW versus WAL/MVCC, SQLite and local JetStream.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Checkpoint after Task 3
 
 - Status: complete (review with one required documentation repair queued; no implementation validation)
-- Work performed: previous turn is progress, verified by `a07f8732` and the Task 3 marker.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 4 — Restore bounded pending-query validation
 
 - Status: complete (CP3-1 design coverage repaired; no memory measurement or consumer implementation)
-- Work performed: added pending-list retrieval as a sixth workload, linked D51 and five source files, and specified Q1–Q5 for one-page metadata, one-page decoded payload, full sequential consumption, full materialization and failure/lifetime/state cases.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 5 — Connect bounded follow-ups and reconcile #257
 
 - Status: complete (follow-up structure, issue reconciliation and documentation only; no approved contracts, engine implementation or new measurements)
-- Work performed: created #260 StreamLite follow-up implementation with nine native subissues: cache #261, transaction workspace #262, independent writers #263, consumer streams #264, pending-query memory #265, COW/WAL total cost #266, SQLite/local JetStream alternatives #267, conditional claim/ACK #268 and optional queue initialization #269.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Prior final review — superseded by user correction
 
 - Status: complete (the registered decision/documentation objective only; contracts remain proposals and future engine work remains open)
-- Work performed: previous turn is progress, proved by 02dbcab7 and its Task 5 marker plus live follow-up issues.
-- Remaining risk: G1–G5 approvals and numbers, real workload/collector environments, cache/workspace/conditional SQL/optional lifecycle, stream/multiwriter implementation, failure recovery and fair measured product benefits remain future #257/#260–269 work.
-- AAR: a completed proposal objective can coexist with open product gates only when each unresolved gate stays explicit and linked.
-- Next step: historical boundary completed; resume the first incomplete entry in this file.
-- Commit record: `b5cad56650e82b106d9fcdd5548b330dff78917c`, `docs(docs): StreamLite 결정 작업 최종 검토 기록 갱신`; `Goal-mode boundary: goal-1 final review: complete`.
-- Full record: preserved Git ledger above, same section title.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Reopening correction — 2026-10-24
 
@@ -161,32 +152,27 @@ The required queue after Tasks 7–9 retains separate cache (#261), workspace (#
 ## Checkpoint after Task 6
 
 - Status: complete (recovered-scope audit; required architecture/document repairs remain queued)
-- Work performed: previous goal turn is progress, verified by 03f9573f, its Task 6 boundary marker and exact three-file tracking diff.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 7 — Make the present storage architecture judgment
 
 - Status: complete (present architecture recommendation and source/document verification; no new backend implementation, measured superiority or product cutover)
-- Current recommendation: page/redo WAL with a bounded buffer pool, MVCC and early key/range coordination is the recommended direction for the renewed engine.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 8 — Reconcile existing design and rationale with the judgment
 
 - Status: complete (existing public rationale reconciled; no backend implementation, new measurement or product cutover)
-- Work performed: updated D52 to state the present page/redo WAL, bounded buffer pool, MVCC and early-locking recommendation first.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 9 — Reconcile actual unfinished work and issue gates
 
 - Status: complete (issue/rationale reconciliation and restored execution queue only; all new execution tasks remain incomplete)
-- Work performed: updated only #238/#239/#257/#260/#263/#266 bodies to preserve the recovered early-coordination and old combined-path rejection, current WAL recommendation/falsifiers, G6 recovery obligations, common-cost follow-ups and prototype-before-comparison versus product-after-comparison distinction.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Checkpoint after Task 9
 
 - Status: complete (scope/order/evidence review with a tracking clarification; no engine or measurement validation)
-- Work performed: previous turn is progress, verified by c9db86a8, its Task 9 marker and exact three-file diff.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Execution closure rules after Task 9
 
@@ -197,387 +183,281 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 ## Task 10 — Fix the common execution and resource contract
 
 - Status: complete (common contract selection, source/document verification and phase readiness; no cache/workspace/lifecycle implementation or new measurement)
-- Work performed: added five common-contract sections and ten explicit input/oracle rows to docs/design/streamlite.md.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 11 — Implement bounded SQL template reuse
 
 - Status: complete (local internal comparison implementation and regression; no measured adoption, public prepared API or new storage backend)
-- Work performed: added parameter-origin metadata, binding-free syntax cloning and exact-SQL/version-keyed per-handle LRU for SELECT/INSERT/UPDATE/DELETE.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 12 — Implement optional queue lifecycle
 
 - Status: complete (local Python lifecycle implementation and regression; no noninstrumented cost/adoption result or stream implementation)
-- Work performed: declare the existing registry without allocating an instance value on SQL-only construction; create it at first explicit Queue registration through instance-dict setdefault.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Checkpoint after Task 12
 
 - Status: complete (common-contract/cache/lifecycle audit; documentation consistency repair queued, not engine or performance completion)
-- Work performed: previous turn is progress, verified by 3adb24ba, its Task 12 marker and eight-file scope.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 12a — Reconcile cache admission and implementation status
 
 - Status: complete (documentation and issue-summary repair only; no runtime/default change or new measured effect)
-- Work performed: corrected the older design sentence that could imply parser execution after rejected storage.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 13 — Implement transaction-private accumulated changes
 
 - Status: complete (local default-OFF workspace implementation and regression; no noninstrumented effect/adoption, new backend or actual independent writers)
-- Work performed: added per-work private page images and private catalog reuse behind TXN_WORKSPACE=0/1 and per-handle internal controls, default OFF.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 14 — Build and preregister common-cost comparisons
 
 - Status: complete (collector, preregistration and controls only; no formal performance collection, adoption or new backend)
-- Work performed: added optimized native driver, Python lifecycle/queue worker, fixed JSON config, registration/collection/verification and paired BCa analysis.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Checkpoint after Task 14
 
 - Status: complete (review with a required collector repair before formal collection; no engine or performance completion)
-- Work performed: previous turn is progress, verified by 28d68e3f, its Task 14 marker, eleven-file scope and ce7a9f46 parent.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 14a — Repair common-cost campaign deadline and reporting
 
 - Status: complete (collector deadline/reporting repair and controls; no formal effect collection, adoption or new backend)
-- Work performed: added a single monotonic deadline and remaining-time worker bounds for fixture creation and actual native/Python workers.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 15 — Collect and judge cache and workspace effects
 
 - Status: complete (preregistered E1/E2 collection and hold disposition; no default adoption, new backend or product integration)
-- Work/evidence: build/task15-cache-formal.registration.json pins plan/head 9455208029013751cb74161f328f7814d0a8e658, unchanged config/product source/optimized OFF+ON binaries/environment and exact 576-case schedule; control=false and registration SHA-256 c01613f810abc1442ea0b129c34c7bbfd6857346bfe2e37a8ab642efcd1a6f25.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Checkpoint after Task 15
 
 - Status: complete (evidence/requirements review; bounded analysis-metadata repair queued, no new implementation or collection)
-- Work performed: previous progress is 0c8b575c with the exact Task 15 marker, parent 94552080 and three-file scope.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 15a — Repair sample classification and historical analysis regeneration
 
 - Status: complete (sample metadata and offline reproduction repair; no new formal effect collection or product/default change)
-- Work performed: native and Python analysis schema 2 separately reports preflight/formal/diagnostic counts, retaining instrumented_records as diagnostic count.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 16p — Support indexed scalar-subquery equality
 
 - Status: complete (general SQL prerequisite and regression only; original conditional queue integration and measurement remain incomplete)
-- Work performed: database_expr.c reuses only an existing noncorrelated materialized scalar relation with one row/column, non-NULL value and exact column type.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 16 — Implement conditional queue updates
 
 - Status: complete (local internal comparison implementation and regression; no formal effect collection, adoption or new backend)
-- Work performed: 조건부 claim/ACK·실패 readback과 empty UNION 경계 수리, 기본OFF 유지.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 16
 
 - Status: complete (scope/source/evidence review; no new runtime implementation or formal measurement)
-- Work performed: 15a/16p/16의 source·실패·자원·문서/범위 검토.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 17 — Measure conditional SQL and optional lifecycle
 
 - Status: complete (fixed-plan formal collection, verified regeneration and hold disposition; no runtime/default adoption or backend implementation)
-- Work performed: 사전 등록 lifecycle72/E3조건부48 전체 수집과 두 가설 보류 판정.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 17
 
 - Status: complete (scope, provenance and measured-disposition audit; no new runtime implementation or formal samples)
-- Work performed: 고정 표본·pairing·판정과 과거 source 재분석 검토.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 18 — Build and preregister pending-query measurements
 
 - Status: complete (로컬 수집기·사전 판정·정상/실패 대조만 완료; 정식 효과·소비자 교체·새 backend 미완료)
-- Work performed: Q1–Q5 collector·고정 계획·실패/수명 control 구현.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Checkpoint after Task 18
 
 - Status: complete (원래 범위·구현/실측 근거 검토 완료; CP18-1/2 검증기 수리는 미완료로 추가)
-- Work performed: 자료 hash 집합 완전성 결함 CP18-1/2를 실제 반례로 확인.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 18a — Require complete pending-query artifact coverage
 
 - Status: complete (로컬 pending 자료 coverage 수리와 회귀만 완료; 공통 수리·정식 효과·제품 전환 미완료)
-- Work performed: pending 필수 자료·정규 경로·hash를 분석 전에 검증.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 18b — Require complete common-cost artifact coverage
 
 - Status: complete (로컬 공통 자료 검증 수리·과거 재처리·연동 대조 완료; 새 정식 효과·제품 전환 미완료)
-- Work performed: 공통 자료 coverage/gzip 역검증과 명시 과거 source 재현 수리.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 19 — Measure pending queries and the real caller boundary
 
 - Status: complete (고정 계획의 전체 격자 수집과 읽기 전용 감사 완료; actual caller replacement, whole-app solution and new backend remain incomplete)
-- Work performed: 1728case 정식 pending 수집·독립 판정과 원 consumer 읽기 전용 감사.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 19
 
 - Status: complete (범위·자료 완전성·재현·판정 감사; 새 구현·효과 표본이나 원 소비자 해결 완료와 구분)
-- Work performed: pending raw/판정·누락 거부·재현·consumer 경계 검토.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 20 — Prepare the missing primary-key scale validation
 
 - Status: complete (수집기·고정 계획·작은 대조 검증만 완료; Task21의 정식 규모 수집은 미완료)
-- Work performed: 원 #158 seed137/120초 조건의 수집기·계획·작은 대조 구현.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 21 — Execute the retained primary-key scale validation
 
 - Status: complete (원래 고정 규모9case의 로컬 정식 수집·검증 완료; 새 backend·제품 통합/발행과 구분)
-- Work performed: 원 1k/10k/100k 각3회·120초 규모9case의 정식 수집 완료.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Checkpoint after Task 21
 
 - Status: complete (로컬 범위·source·자료·재현·판정 검토 완료; 새 효과/제품 구현·원격 상태 확인과 구분)
-- Work performed: pending/scale 자료·재분석·누락 거부와 범위 검토.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 22 — Specify WAL and version recovery contracts
 
 - Status: complete (격리된 후보의 계약·대안·정적/제한 모형 검증 완료; 실제 엔진 구현·중단 복구·성능 미완료)
-- Work performed: 불변 version·논리 abort·NO-STEAL·G2영속 결과·checkpoint/소유권 후보 계약.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23a — Implement segmented WAL framing and restart scan
 
 - Status: complete (격리된 WAL transport 구현·실파일/byte 검증만 완료; 원래23의 거래/영속 결과 복구·제품 미완료)
-- Work performed: 격리된 segmented WAL codec/append/force/scan/명시 tail 수리 구현.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23b — Validate transaction and physical-group WAL witnesses
 
 - Status: complete (격리된 WAL의 의미 분석·실파일/독립 byte 검증 완료; 영속 본문·redo·복구 활성화는 미완료)
-- Work performed: 읽기 전용 거래 chain/physical group/terminal witness 분석 구현.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 23b
 
 - Status: complete (22/23a/23b 검토와 실제 결함 재현 완료; CP23b-1 수리를 다음 과업으로 추가)
-- Work performed: cwd 변경 뒤 다른 inode를 fsync하는 CP23b-1을 재현하고23c 추가.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23c — Bind WAL operations to the owned files
 
 - Status: complete (후보 파일 소유권·barrier 결함 수리와 로컬 검증 완료; 거래 복구·제품 통합 미완료)
-- Work performed: 디렉터리 fd와 segment inode/열린fd를 고정하고 누락·교체를 차단.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23d — Encode version pages and verify stored result bodies
 
 - Status: complete (일반 page codec·소유 본문 검증·합성 WAL/page roundtrip 완료; ID 조회·일반 복구 미완료)
-- Work/evidence: build/task23d-verification.json; codec34096/WAL866·독립 bytes/CRC/hashlib135·clang 검사 통과. 일반 page/소유 본문만 검증했다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23e — Store and look up bounded request outcome metadata
 
 - Status: complete (bounded metadata codec·raw ID 조회와 합성 WAL/data 검증; 일반 복구·APPLIED 미완료)
-- Work/evidence: build/task23e-verification.json; metadata50978/page34096/WAL892·실제133page/4group와4096record byte 대조. raw lookup은 APPLIED가 아니다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 23e
 
 - Status: complete (23c–23e의 코드·자료·계층 경계 검토; 원래23과 전체 목표는 미완료)
-- Work/evidence: build/checkpoint23e-verification.json; 읽기 전용7조건43검사·27312artifact와9059tracked 보존. terminal 불일치여도 raw MATCH/body OK가 가능함을 확인했다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23f — Implement recovery control slots and durable anchor publication
 
 - Status: complete (control codec·소유 파일·합성 의존성 anchor/내구 게시 검증; 원래23의 일반 복구는 미완료)
-- Work/evidence: build/task23f-verification.json; control16978·독립16384B/16torn×5·실제종료/ACK후SIGKILL·정적검사. 옵션변경 이전source 실패도 보존했다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23g — Encode allocation snapshots and validate generation transitions
 
 - Status: complete (type5 snapshot·소유 표·메모리 세대 전이 검증; 내구 system/일반 복구는 미완료)
-- Work/evidence: type5 lifetime snapshot/atomic RAM transitions: native236823, independent8files/16archives; no durable issuance/recovery.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23h — Validate WAL system groups and recovery state transitions
 
 - Status: complete (opt-in system/할당·예약·epoch witness와 metadata 대조; 내구 발급·일반 복구는 미완료)
-- Work/evidence: opt-in system witnesses: native22236, legacy10237/result892, independent31frames/37archives; exact old format object restored, no general recovery.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 23h
 
 - Status: complete (23f/g/h component/source/evidence review; original23 and the full goal remain incomplete)
-- Work/evidence: tracking-only review: exact4096success/4097LIMIT, native19781 and independentbytes;28787prior entries/22seals preserved, original23 remains incomplete.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23i — Read anchored checkpoint state and verify complete chunks
 
 - Status: complete (실제 checkpoint 형식·control anchor 부분 검증·소유 snapshot; 일반 복구 미완료)
-- Work/evidence: SLCP codec/owning reader: native2731, active64, independent15fixture/28file/18archive, peak426320B; 8B terminal 반례 수리 전후 보존. build/task23i-final-verification.json
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23j — Corroborate checkpoint state with retained WAL history
 
 - Status: complete (checkpoint/보존 WAL의 읽기 전용 의미 대조; 일반 복구 미완료)
-- Work/evidence: BEGIN cut/dirty group/terminal 이력 대조: native5368/용량58864, independent36fixture/52file/14archive, peak2108056B; 구 ABI 시험 연결 실패도 보존. build/task23j-verification.json
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23k — Implement bounded physical WAL redo
 
 - Status: complete (격리 target의 image/delta 복원·재실행; 일반 복구 활성화 미완료)
-- Work/evidence: bounded redo: native6925/5process 종료, independent3fixture/8file/25archive, workspace7866584B; 의미 view 반례 beforeOK7write1sync/동일 test object afterCORRUPT0write. build/task23k-verification.json
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 23k
 
 - Status: complete (23i/j/k component/source/자료 검토; 일반 복구와 전체 목표 미완료)
-- Work/evidence: 실제8192page/128group·4096txn/96chunk/17segment의64MiB 복원과 재실행0write, native58084/independent35file;30347원artifact/26seal 보존. build/checkpoint23k-verification.json
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23l — Corroborate persisted outcomes with WAL and result bodies
 
 - Status: complete (component implementation/real-file validation only; general recovery and product remain incomplete)
-- Work/evidence: owning outcome/WAL/body corroboration: native2938/catalog50978, independent21fixture42file, peak3747808B; build/task23l-verification.json.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23m — Coordinate exclusive recovery and validate reconstructed state
 
 - Status: complete (component implementation/real-file validation only; general recovery and product remain incomplete)
-- Work/evidence: exclusive resolved-snapshot coordinator: native1051185, independent27fixture82file, same-object reentry before/after; build/task23m-verification.json, commit c7d53330.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23n — Durably resolve unfinished WAL transaction terminals
 
 - Status: complete (WAL terminal 내구 정리·실파일/실제 중단 검증; 일반 복구 활성화와 전체 목표 미완료)
-- Work performed: cleanc7d53330의 사용자 작성자·23m marker·10파일 commit 범위와 source/raw를 검증한 progress에서 시작했다. 원래23에 필요한 첫 내구 전이만23n으로 분리했다. 같은 data/WAL/control 소유권 안에서 실제 control/checkpoint·전체 semantic WAL을 검증한다. 미완료 physical group은 STALE로 차단하며 그 밖의 transport tail만 수리한다. prefix force→미완료 거래의 실제 first/last LSN·record 수·CRC를 담은 ABORT append→전체 force→재검증을 연결하고 실패 receipt는0이다. 변경 시 owner는 선택 anchor보다 커야 하며 WAL의 관측 owner 이상이어야 한다. 동일 owner 재시작은 완성 terminal을 중복 추가하지 않는다. COMMIT·data/control bytes는 보존하고 ready handle/결과는 반환하지 않는다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 23n
 
 - Status: complete (23l/m/n 검토·실제 용량/정합 반례 재현; CP23n-1 수리를 다음 과업으로 추가)
-- Work performed: 직전717a6c38의 사용자 작성자·23n marker·11파일과 실제 source/raw를 검증한 progress에서 시작했다. 목표3파일·goal skill/reference·적용 지침을 다시 읽고 원래 Task6 요구, WAL 권고와 실제 구현/제품/실측 경계를 대조했다. ownership·입력 사본·OOM/partial I/O·barrier/재시작·WAL/data 순서·typed root/할당/terminal·보존/회수·롤백·문서/공개 기본 경로를 검토했다. 이 내부 native 경계에 별도 UI는 없다. 구현·plan·공개 문서·기존 자료를 고치지 않았다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23o — Reconcile aborted result fragments with persisted outcome semantics
 
 - Status: complete (CP23n-1 결과 의미 수리·실파일/독립 검증; 일반 복구 활성화와 전체 목표 미완료)
-- Work performed: clean e330570e의 사용자 작성자·checkpoint23n marker·tasks.md 단일파일과 원 source/raw를 검증한 progress에서 시작했다. raw witness의 중간 bytes/chunks/digest는 보존하고, codec이 검증한 정규 NULL/0/0/SHA-256(empty) ABORT만 결과 없는 final descriptor로 대조한다. 요청·admission·terminal 상태/끝·CSN 검증은 그대로다. non-NULL 보존 ABORT는 빈 응답을 포함해 전체 chunk/참조/digest/본문 대조를 유지하고 COMMIT에는 예외를 적용하지 않는다. 기존 설계·header·plan에 기본값과 제외 이유·물리 이력 검증 한계를 기록했다. 기존 시험은 부분 ABORT의 WAL-backed metadata 재구성을 다루지 않아 전용 시험을 추가했고 내부 Make module override로 옛 object를 보존했다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23p — Durably repair incomplete WAL physical tails
 
 - Status: complete (미완료 물리 WAL tail의 내구 정리·실파일 검증; 일반 복구 활성화와 전체 목표 미완료)
-- Work performed: clean38615869의 사용자 작성자·23o marker·7파일과 source/raw를 검증한 progress에서 시작했다. 원래23의 누락된 물리 tail 전이를23p로 분리하고 다른25미완료 섹션은 보존했다. 새 `candidate_recovery_repair_wal`은 같은 data/WAL/control 소유권 안에서 선택 checkpoint·전체 보존 WAL의 의미 검증이 읽은 실제 record를 SHA-256 chain으로 묶는다. 두 번째 transport scan의 동일 chain/끝/tail과 정확한 final PHYS_BEGIN/member만 확인한 뒤 최신 segment부터 제거·각 directory fsync, 시작 segment truncate/fsync, 보존 prefix 재분석·force, 정확한 ABORT append/force·재검증을 연결한다. 기존 terminal 전용 진입점은 미완료 그룹을 STALE로 계속 거절한다. 앞선 COMMIT·data/control과 기존 제품 기본 경로는 보존하며 receipt는 WAL 정리만 뜻한다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23q — Reconstruct complete retained request outcomes
 
 - Status: complete (소유 결과표 재구성·미게시 encoding·실파일 검증; 일반 복구 활성화와 전체 목표 미완료)
-- Work performed: clean7f55e7dc의 사용자 작성자·23p marker·12파일과 source/raw를 검증한 progress에서 시작했다. 기존 대조 계층은 오래된 표를 거절할 뿐 재구성하지 못하므로 원래23의 owning 재구성/encoding만23q로 분리했다. 같은 checkpoint-aware semantic scan에서 admission·chunk ref·WAL hash를 모으고 전체 forced prefix·완료 거래/group을 요구한다. 기존 terminal envelope는 엄격히 보존하고 빠진/ADMITTED nonempty COMMIT은 완전한 chunk·본문으로 복원한다. 새 ABORT는 정규 결과 없는 형태이며 손상된 보존 응답은 고쳐 숨기지 않는다. 빈 COMMIT의 빠진 참조는 STALE다. 최종 system/anchor epoch·floor·highwater를 대조하고4096개/4epoch·epoch당1024개와 공간 하한을 본문 읽기 전에 검사한다. 기존 catalog의 transaction ID 순서로 소유 descriptor를 반환하고 caller buffer에만 node/root를 인코딩한다. 기존 설계·plan과 별도checkpoint23q를 함께 갱신했으며 원래23과 다른25미완료 섹션은 보존했다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 23q
 
 - Status: complete (23o/p/q 계약·자료 검토와 실제 연결 반례 재현; CP23q-1 수리를 다음 과업으로 추가)
-- Work performed: 직전dc1e188b의 사용자 작성자·23q marker·9파일과 source/raw를 검증한 progress에서 시작했다. 목표3파일·goal 규칙과 Task6 원 요구, WAL 권고/기존 COW 보존·총비용/제품 미완료 경계를 대조했다. ABORT 중간 조각/보존 응답, 같은 semantic view hash, tail 제거의 directory/truncate/force/재시작, 소유권·입력 사본·OOM·bounds·typed root/본문·보존과 rollback을 검토했다. 이 native component에는 UI가 없다. 구현·plan·공개 문서·기존 원자료와 continuity는 변경하지 않았다.
-- Evidence/risk/AAR/next/commit: full unchanged record in `git show 92c7babf808a0e6a524093d1709357a1233ed10c:goal-1/tasks.md`, same section title; whole-file SHA-256 b625dcc6580e55900e356d1ba9fa4e9fcdebd6671c4795766e70f4117f7cf066. Historical boundary only; resume the current first incomplete task.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23r — Bind checkpoint-aware system history to the selected anchor
 
 - Status: complete (CP23q-1 상태 연결 수리·실파일/독립 검증; 일반 복구 활성화와 전체 목표 미완료)
-- Scope: CP23q-1의 선택 checkpoint BEGIN 이후 epoch/floor·transaction/page highwater와 첫 system 전이의 이전 값을 연결한다. 같은 checkpoint-aware witness를 쓰는 재구성·redo·terminal/tail 복구도 잘못된 전이를 파일 변경 전에 거절해야 한다. Issues: #266, #263.
-- Work performed: clean92c7babf의 사용자 작성자·checkpoint23q marker·tasks.md 단일파일과 원 source/raw를 검증한 progress에서 시작했다. 선택 BEGIN의 기존 거래·dirty·system 대조 뒤 기존 system 숫자 필드를 anchor에 연결한다. 첫 REQUEST_EPOCH/ID_RESERVE의 이전 값과 이후 admission/metadata가 같은 상태를 사용한다. BEGIN 전 미래 admission과 미완료 요청을 넘긴 floor도 거절한다. 별도 상태표·가짜 event·새 소유 할당을 추가하지 않고 raw 의미·ABI·전체 보존 WAL 요구를 유지한다. 기존 설계·공개 header·plan을 맞췄고 재사용 fixture에 별도 상태 연결 시험을 추가했다. 사용자 후속 실행 지시는 plan에 지속하며 이번 경계 이전에 작성된 수리를 다른 실행자가 작성한 것으로 바꾸지 않았다.
-- Counterexample evidence: `build/task23r-before-command.json`과 `build/task23r-after-command.json`은 같은 `build/task23r-state-test.o`를 서로 다른 module에 연결한다. 수리 전32998검사/4위반·후16594검사/0위반이며 정상2개는 유지하고 잘못된2개는 CORRUPT/out=NULL·projection 미생성으로 바뀐다. 최초 guard 버전과 실행물·원 test/source/object도 별도로 보존했다. 최종 실제 Make 명령은 `build/task23r-reviewed-command.json`, native는 `build/fault/task23r-state-reviewed.json`:17fixture/17438검사/0위반, checkpoint 사이 전이·이전 이력·admission 경계·완료 group 뒤 checkpoint를 포함한다. 잘못된10개는 redo target read/write/sync와 snapshot/terminal/tail write/sync/truncate 전에 거절한다.
-- Independent evidence: `python3 build/task23r-independent.py`의 실제 첫 실행은 `build/task23r-claude-independent-attempt-1.json`, 결과는 `build/task23r-independent.json`: C helper 없이 CRC32C/struct/hashlib1329검사·127파일을 대조했다. 전/후/최종의 같은4fixture WAL/source/pages bytes 일치, 선택 checkpoint chain·scalar/거래·control10개·정상 flat root와 source/after/pages 보존을 확인했다. 추가 `build/task23r-extra-byte-checks.json`은25fixture의36checkpoint·21group·31typed image의 owner·chunk ordinal/크기·CRC/UUID/PageRef/endLSN/previousLSN180검사를 확인했다. 합성 target 검증이며 실제 할당/ready DB 증명은 아니다.
-- Regression/review evidence: 기존 object를 고정한 checkpoint5368/system22236/호환 witness10237과 redo6925/snapshot1051185/terminal4260/tail21835/outcome2938/ABORT2237/rebuild93590/capacity55748/empty16458/space34861이 모두 성공·stderr0이다. 기존 OOM·옵션 사본/재진입 검사도 포함한다. 실제 링크·run·object hash는 `build/task23r-reviewed-regression-commands.json`, `build/task23r-claude-regressions.json`과 두 run report에 있다. `build/task23r-claude-static.json`의 clang3개는 경고0이다. `build/task23r-review.json`의 독립 검토 둘과 공개 계약 재확인에서 남은 P1/P2/MUST KILL은0이다. 공개 문서3개의 check_doc와 diff/link·기본 object 목록 검사를 통과했다. 전체 검증/보존 manifest는 `build/task23r-verification.json`이며 사용자 identity·parent/scope/marker·clean의 최종 확인은 별도 postcommit 증거로 남긴다.
-- Preservation/AAR: 이전34349artifact/42seal·보호9088tracked·main/origin6bb8b2e8·다른4worktree와 모든 기존 실패/원자료를 보존했다. completed group은 pending event buffer를 남기므로 그 count를 active-group guard로 쓰면 안 된다. 이를 제거한 최종 source/object와 정상 회귀를 보존했다. 오래된 witness test object의 enable_system_groups 전 ABI 오연결 SIGABRT도 지우지 않고 기존 호환23h object로 검증했다. redo의 최초 SIGALRM14·90초 제한 실패와 모든 재실행도 보존했다. 같은 binary와 기존23k binary, 새 고정 링크가 원 한도에서 성공했지만 최초 원인과 성능 회귀 여부는 미확정이다. `build/task23r-redo-assessment.json`은 나중의 부하·출력 시각만으로 fsync 원인이나 성능 우위를 단정한 해석을 채택하지 않는다. 완료 이력61개는 위 고정 Git/SHA로만 압축했고 Task6와 다른25미완료 entry는 그대로다.
-- Remaining risk: 회수된 이력의 checkpoint seed, 실제 metadata 할당·공간 quota·내구 게시·owner/checkpoint 활성화, 독립 writer·공정성/메모리·COW/WAL 양쪽 유지보수/복구 총비용·제품/stream은 미완료다. 새 성능 우위나 물리 전원 손실 내구성을 주장하지 않는다. 원래23과 모든 뒤 과업/checkpoint 및 실제 비교가 계속 필요하다. Vault/consumer/원격 쓰기·발행·전환은 없다.
-- Next step: 이23r task-boundary 뒤 멈춘다. 다음 continuation은 원래23의 남은 내구 복구를 수행하며 별도 checkpoint를 이번 턴에 실행하지 않는다. goal remains active.
-- Commit record: containing task-boundary commit subject `fix(repo): checkpoint 이후 WAL 상태 연결 검증 수정`; exact body marker `Goal-mode boundary: goal-1 task 23r: Bind checkpoint-aware system history to the selected anchor`. 사용자 Git identity로 이 수리와 관련 tracking만 함께 기록하고 최신 log와 clean status를 검증한다.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23 — Implement WAL records and durable commit recovery
 
 - Status: complete (isolated candidate durable recovery integration and local validation; product integration, actual writers and total-cost measurements remain incomplete)
-- Scope: Implement the candidate's framing/checksum/order, commit/outcome markers, append/barrier and restart recovery without SQL/callback replay. Implement Task22's selected durable G2 result-resolution path. Issues: #263, #266. Prior23a–r remain component evidence; product SQL/ACK/writers, live buffering/MVCC/GC and matched COW/WAL total cost remain later tasks.
-- Work performed: started from clean6d3dd1a9487632bac430e4264601fe5b76950788 after verifying23r user identity/scope/marker and36375 old artifacts/44 seals. Baseline is build/task23-publication-before.json; historical build/task23-before.json was preserved. Applied just-mode feature/how/architect/arena with read-only sketches and an independent judge. Selected stable allocation/outcome root refs, bounded per-group publication and complete capacity/physical-space planning. A new outcome root requires retry discovery; shadowing the allocation tree conflicts with its one-root-image/group contract. A whole-image plan duplicates ownership and holds unnecessary memory. The judge rejected strict redo for tail-bearing selection and checkpoint-only owner advancement; a private read-only completed-group preview and actual allocation/root-owner transition address those conditions.
-- Implementation: candidate_recovery_recover owns the existing data/WAL/control files through selection, tail/terminal repair, redo, retained outcome reconstruction, reservation/ALLOC/staging, root/data force, checkpoint/control publication and strict final verification. Success alone returns an owning query handle. Failure returns NULL but effects/control publication can remain uncertain. Existing strict open and WAL-only repair retain their distinct contracts. Same-owner published reentry has0 writes. Actual C/tests/byte-checker writing uses the user's foreground nonpersistent local Claude process; the parent supervises executions, independent review, approved prose/metadata and commit. No new checkout/background conversation or remote publication.
-- Selection and ownership: reject a stored terminal without WAL terminal as STALE before writes, without using CORRUPT fallback to hide it. Apply reconstruction scalar ceilings and signed data-address bounds before metadata effects. Preserve valid dependency CORRUPT fallback and IO/NOMEM/LIMIT/UNSUPPORTED/STALE behavior. Root refs remain stable, but historical roots need not share latest epoch/floor. Search every LIVE root for a valid reservation carrier; otherwise allocate a self-accounted temporary empty root without clearing the selected root's retained descriptors. Actual ID_RESERVE/ALLOC images include their own lifetime entries, fixed-point node growth and final owner. Reuse unused reserved IDs only from complete same-owner provenance, full allocation/physical history, exclusive membership and absence of surviving references.
-- Source binding: pin the entire anchor-independent transport view before the first candidate and retain source failure across fallback. Every actual semantic observer, selection-to-repair transition and final verifier shares that proof. Trim only to the verified known prefix and extend only from the exact encoded append bytes frozen before mutable I/O callbacks. Requested random LSN, decoded LSN and record digest must agree. Strict redo also binds canonical group_end before data writes, preventing changed PAGE bytes or an unchanged DELTA with moved END from poisoning later retries. Legacy strict open is pinned too. A late whole-stream hash alone was rejected because it detects corruption after a wrong data write.
-- Capacity/accounting:4096 outcomes require90 nodes and multiple groups, not a64-node truncation. Plan IDs, signed offsets, post-carrier allocation base,202-entry boundaries,64-image/128-member group limits, retained group/events, actual segment placement and final checkpoint sizes before mutation. Charge distinct LIVE type4 metadata plus result VersionRef.previous/overflow dependencies; validate distinct slots even on shared pages and deduplicate physical charges. Keep type5 maintenance and sparse logical extent separate. Publication inventory fields are before publication; allocation_pages excludes carrier preparation. Final extent reports actual file bytes/LIVE type5/all ALLOC/carrier pages. New reserved+reused reserved IDs equals staging+carrier preparation pages.
-
-### Preserved counterexamples and repairs
-
-All report families below retain their full stdout/stderr, source/object/binary input hashes and raw targets. These are historical failures, not final successful executions. No failed or contradictory fixture is erased.
-
-| Evidence | Observation, cause and bounded repair |
-|---|---|
-| initial v1/t1, c4 source manifests and t1c4 runs | f1 persisted-terminal-without-WAL and f2 scalar ceiling initially write WAL before rejection; f3 oversized HWM writes11 WAL/2data before LIMIT; f4 misses previous/overflow pages; source-view writes2data from alternate read-at bytes. c4 same frozen t1 objects pass9 small cases after pre-effect checks, full physical accounting and canonical page-record indexing. Dense f4 initial counts8189/8191 are failures, not quota passes. ino_t hook narrowing was removed. |
-| stale-root-carrier/alloc/retry and source-view families | Valid older selected roots initially return STALE, while copying stale scalars into a reservation could create a corrupt group. Final carrier logic preserves the selected root and supports both existing LIVE and new self-accounted carrier cases. Unselected root identity is not assumed fixed. |
-| g5-faults and g5c5-faults | Eighth WAL write leaves complete type16 ID_RESERVE member without PHYS_END at174480. Old23p tail proof only admits4–7 and retry returns CORRUPT. c5 permits known system members15/16; same frozen fault objects then pass225iterations/119651checks including112 OOM positions. This earlier cohort is component evidence; final current-source fault cohort below supersedes it. |
-| s1/s2 c6 and s6 c6shim source reports | scan-lsn accepts a wrong-LSN frame; selectionA/repairB writes WAL/data then stableAretryCORRUPT; cross fallback acceptsB and21writes. PAGE apply writesB then stableAretryOK leavesB. Moved-END writes1data with pageLSN60920 instead of60784 and stableAretryCORRUPT. Before/after actual target files and A/B dumps remain. Uncalled legacy private-pin shim only permits linking the same test object to oldc6; it is not exercised. Old poisoned samples are detection evidence, never a healing claim. |
-| s2/s3 carrier and placement controls | c6 carrier33 returnsLIMIT/0writes though the33rd eligible LIVE root should fit at8192 protected pages. c7 recovery itself succeeds, then the fixture captures WAL while still owned and failsBUSY; corrected full continuation later times out400s, so neither is a full pass. Streaming carrier search and closing before capture repair those separate causes. Initial4096 placement fixture fails epoch encoding; its further4097transaction issue is a static bound finding. Corrected3072-request/67-node layout still needed exact checkpoint transaction-size normalization before causal acceptance. |
-| corrected u10/o10 paired placement reports | Initial padded fixture changes checkpoint transaction count, confounding the missing image. Final fit uses3362transactions/start267600512, actual181records exactly match planned type/payload sizes and passes452373checks. Cap uses3363/start267600752, plan_fits1/actual_fits0, returnsLIMIT/0writes/unchanged with442792checks;66 legitimate forces remain. Same u10 test object+c6shim performs152WAL/76data writes beforeLIMIT and exits1. Source boundary142+carrier1 gives first slice143..202/two type5 images; final group images3/62/11/new67. |
-| c7/s4 append and strict-open controls; parent c8 reruns | c7 rejects actual writtenA as CORRUPT/POISONED but accepts never-writtenB; strict open accepts alternateB ready1. c8 freezes pending view before callback and pins legacy open: AOK/OK, BCORRUPT/CORRUPT, strictB CORRUPT/ready0/0writes/unchanged, then stableAOK. Exact actual frameA/B dumps and physicalA equality remain. Parent independently reruns all3 cases successfully. Frozen t1+c8 small11 and existing7source controls also pass. Generic POISONED must not replace the source-CORRUPT latch. |
-| s6 source12 and final fixture/comment review | Nonmasked IMAGE→partialDELTA→partialDELTA checks both halves. Moved-END keeps canonical DELTA and inserts136B event/recomputed END. c8 has firstdata0/base-page unchanged and stableAretry60784; PAGE has noB before retryA. Read-at/selection/cross reject with0writes/0forces; apply has2 legitimate prior WAL forces. Final moved-END CHECKs enforce first_data0 and whole base-page equality; whole-file unchanged1 is observed, not a separate CHECK.17 redundant comments removed,41 contract/safety/counterexample comments preserved, with no behavioral comment-only refactor. |
-| s7 debug placement-fit and dense runtime diagnosis |580.007s timeout is preserved, notPASS. One-second live sample observes restore→redo source verification→checkpoint pinned scan, mostly SHA256 in that short sample. It does not establish sole delay cause, fsync attribution or performance ranking. Fresh optimized/fatalUBSan tagged unchanged hot helpers complete corrected fit/cap; old objects remain immutable. |
-| u11 basic, large draft and harness failures | Basic succeeds then O_EXCL before-copy collision fails; owner9 now runs on separate clone so owner8 announced postimage stays immutable. Extent oracle now includes reused reservation IDs. cases/regress aggregate nonzero failures and diagnostics. Large draft marked bootstrap carrier transaction4096 both committed and UNFINISHED, so referenceCORRUPT was an invalid fixture; unfinished requests move off the carrier. Corrected faults15 still times out589.943s aftercontrol-synced, notfullPASS. Link argument/missing private pin/dyld and old witness/result ABI failures remain harness evidence, not engine defects. |
-| r13 tail and packed redo history | r13 frozen tail test exceeds internal90s alarm. A later u17 run of the same frozen test object passes51.474s; load/time differ, so no cause is attributed to history56B→48B packing. Independent review verifies last_record=last_lsn-record_back under valid256MiB transport bounds, generation0 exclusion and unchanged apply/group_end proof. No formal speed or regression disposition follows from these elapsed diagnostics. Only current-source focused proof and explicit representation-equivalence permit older dense evidence reuse. |
-
-### Executed verification
-
-- Current runtime fingerprints: redo92803594493d21d181aa9742f162792835e47f115be832f0d85873966a8fde60; WALe2986058a8a6ed571c19a3b8c95580cc45e14d38215ec2522c87cbb5255390a6; recoverya4ca9f1cbc0e845f897408bc9923237ff51f6e2050d85d788657ab8bc5f248b9. Changed u17/o17 modules and current test objects use fatal UBSan; frozen objects retain their original instrumentation and every valid execution requires empty diagnostics. All other u13 runtime sources/headers match current bytes; compared u10 differences are public metric comments and later test-oracle fixes plus the same redo packing. Frozen dense/large/placement results below are explicitly those binaries' executions, never all-final-source coverage.
-- u17 current-source fault suite: build/task23-publish-o17-run-o17-faults-faults.json is code0/no timeout/stderr0,227iterations/122710checks,114 allocation-failure positions,50 reservation-reuse retries, short/EINTR, write/torn/sync failures and actual process stops. Each failing call returns NULL/no leaked owning allocation; same-owner retry validates queries, strict open and idempotent settle.
-- u17 current-source gates: build/task23-publish-u17-run-u17-faults-{basic,selection,empty,resolved,sparse,outcomes,outcomes-partial}.json all pass1326/1005/297/463/414/208638/213514checks. Full4096/90new/3groups and50reused40new/2groups are completed executions. Sparse extent409608192B is logical file size, not allocated bytes/RSS. Requested allocation peaks and owning resident bytes are diagnostics, not an8MiB aggregate-budget or product-memory pass.
-- u18 current-source12: build/task23-publish-u18-run-u18-src-*.json all code0/PASS/no timeout/stderr0. Independent review SHA b7812190934dc5707af2db1cbfbfae0416bbee654110d7cc3bace7802e93591f confirms actual maximum markers7884064B preview/7867648B strict workspace, matching release sizes, real injected hits4/6 and no newP1/P2. Selection/cross are CORRUPT/0writes/0forces; strict open is CORRUPT/0writes with3 legitimate forces then stableA succeeds. The56B source-record index is separately bounded near14MiB; history packing saves1,048,576B onLP64, not a whole-app memory promise.
-- Frozen o13-faults16 large coverage: o13-run-o13-faults16-faults-large-rep-0-3.json and parent-large16-rest.json pass4+8iterations/689630+1370458checks. Full stdout has exactly12 distinct points: first stage BEGIN/IMAGE, final member/END/data/sync, checkpoint BEGIN/END, control write/sync/synced, durable reservation. Actual recorded member types and first IMAGE are asserted. Durable-reservation retry reuses90 IDs, newreserve0, HWM162→162. Frozen binary a39566ac4d296dd99be961773afa18f96fc78f63afcb1275e6eca3787d244524 and u16 test/link inputs are pinned.
-- Parent frozen boundary/cap/quota: parent-boundary16 passes14variants/29294checks. group4093pass45740/group4094LIMIT45342 and event4094pass39381/event4095LIMIT38948 all pass; over-limit cases have0writes/unchanged. parent-quotapass16/quotalimit16/quotashared16 reports pass50588/50599/189checks: protected8192 success, required8194 LIMIT/0writes/unchanged, sharedslots9. Explicit raw prefixes are build/t23pub-f4-8186-78574, t23pub-f4-8188-79596 and t23pub-f4-shared-79920. o10 carrier33 full50897checks succeeds with8192 protected/newnodes0/reserved1/root111. The opposing carrier-none control is historical c6/c7 only: s1-run-s1-srcc6-carrier-none.json and s2-run-s2-srcc7-carrier-none.json each pass50585checks withLIMIT/0writes. It is not an o10/final execution and is outside aggregate3. The46 segment-placement variants/23publication records/485000checks in g5 are c4-cohort component evidence (build/task23-publish-g5-ld-faults.json), not final-cohort executions. candidate_wal_place and the checkpoint source are byte-identical; group placement changes allocation_count to stage_base, equal when there is no new carrier and enforced equal at execution. The fixture has no new carrier by static construction, not by a RECEIPT observation. Changed carrier placement is separately exercised by corrected u10/o10 fit/cap and current focused publication; do not broaden those into an exhaustive current46-variant claim.
-- Legacy regressions: r17 transport21541/result-wal-current892/checkpoint5368/system22236/compatiblewitness10237/redo6945/terminal4260/tail21835/outcome2938/aborted2237; r17b snapshot1051212/rebuild93590/capacity55748/empty16458/space34861; r17c state17438/violations0 all succeed, stderr0. Snapshot/redo check-count increases are legitimate added callback checks, not fixed-count oracles. r17b first state parser missed its CHECKPOINT summary despite native0; repaired r17c records the actual supported summary. Failed old ABI links and alarm attempts remain preserved.
-- Build/static: build/task23-publish-parent-final-static1.json runs clang --analyze/-Wall/-Wextra/-Werror on10 changed modules with17 pinned source/header inputs, code0/stderr0. parent-final-make1 invokes the actual test-candidate-recovery-publish target with every reused u17/frozen/helper object and build/.build-fingerprint explicitly old-file pinned. Three initially absent binaries/main objects are fresh; fatalUBSan actual Make smokes f1-commit225/basic1326/moved-end294 all pass. No baremake/all/clean/-B or fingerprint rewrite. Existing docs/design/streamlite.md now distinguishes candidate recovery from product activation and preserves later writer/buffer/MVCC/GC/stream/total-cost requirements; check_doc and diff check pass.
-- Independent bytes: build/task23-publish-bytes7-verify.json is25 fixtures/0 failures,158 distinct raw input files, exact expected set/hash d8c56da6d0e67040eced4935a668a68b34dc5ab080d7b7d083cca68b3df1bdbe and final verifier SHA319ea7bb63b4c91aee08fc4b859dd329d4d847ca9237672c748b9223561dc44d. It derives CRC32C/struct/hashlib checks without C helpers. Both format-valid slots have checkpoint chain/cut-table replay, declared ID/first/last/terminal/CSN/owner/state, active coverage and cut-aware root/result dependencies. Dirty group binding is implemented and reviewed, but all selected positive byte fixtures have0 dirty entries, so this branch is not claimed as executed byte coverage; legacy checkpoint witness tests remain separate evidence. All completed frames before the exact repair cut are raw-identical even with a partial tail/group. Physical protection includes previous/overflow/shared slots/all LIVE type4. Actual A/B frames, new first-target B absence/retryA and preserved old-target B detection are hashed. Canonical pred/readlsn/chain replay compares7 final data pages each; partial chain has2 DELTAs. bytes6 independently verifies the same3 canonical DELTA targets as published fixtures, not3 new independent populations. Eight bytes4 negative controls on basic and type15-tail inputs all reject for the intended prefix-identity/checkpoint-table reason. Group mutation recomputes page/frame/group/transaction CRC; omission is an explicit in-memory prefix guard control. Its SHA98b36ec02b424a78630dee52afa1a7e715a4b95302fd6e50d60b8354eb97ba64 differs from final only by added A/B canonical replay; negative/publication functions and inputs are unchanged. Independent read-only review closes all accepted verifier P2s; parent inspects the final A/B addition and current replay outputs. parent-byte-reuse.json reconstructs the exact previous98b36ec0 file hash from the final file by reversing only the two A/B additions, concretely establishing unchanged-path reuse.
-- Failed verification infrastructure is preserved: original579-line verify.py is not final proof. bytes1 has22fixtures/12 failures from absent-epoch/adjacent-slot/B-semantics/region assumptions; bytes2's first output handler hits BrokenPipe. bytes2b/3/5 positive sets pass before final narrow repairs. Initial negative3 assumes a completed transaction0 group and hits fixture selection failure; final negative4 repairs the actual user transaction terminal CRC instead. Draft snapshot writer-parentbytes2b-sources.json preserves a001cc5781595006dc7f7170f579733db14a1d48bf8956b5324c572ff5e263a7. A late parent request duplicated the already-present bytes6 canonical DELTA proof; bytes7 adds explicit A/B replay with no new native campaign. These are checker/harness observations, not engine counterexamples.
-- Final aggregation: build/task23-publish-aggregate3.json reports44 positive native reports,7 explicitly expected before failures, nonempty regression/byte summaries and8 intended negative results with0 problems. build/task23-publish-parent-proof-validation.json additionally checks all full stdout/stderr hashes, executable inputs,16 actual legacy native manifests, exact12-point large coverage, final static/Make inputs and current158 byte-input hashes, with0 problems. aggregate3 points directly to current bytes7 and the valid unchanged-path bytes6/negative4 evidence; aggregate1 and parent-aggregate2 preserve the earlier bytes5-based aggregation.
-- Preservation/resource: build/task23-publish-parent-final-preservation1.json rehashes9087 protected tracked files, all36375 baseline artifacts and44 seals with0 mismatches. preservation2 records unchanged main/origin6bb8b2e8 and all four other worktree paths/HEADs/branches; the first raw-text comparison only differed in trailing LF. The existing continuity's38680-byte original prefix matches its baseline hash and subsequent entries are append-only. parent-compact-goal-scope preserves Task6 plus24 other incomplete sections byte-for-byte. Metadata-only mtime estimate6.357GiB/10857files/free11.48GiB revised only the soft artifact aim to7GiB with8GiB-free stop and no unchanged dense/fault repetitions; later free space is volatile and no DB quota/performance conclusion follows. List subtraction10.6GiB included older unmanifested files and is not a new-byte estimate. Final new-artifact/source manifest and postcommit status are recorded at the boundary. No original/failure deletion.
-- Closure review: build/task23-publish-parent-record-review.json records a read-only local Claude review of parent-authored tracking/continuity/design, with no remainingP1/P2. Accepted record fixes identify g5 as c4 component/static-equivalence evidence, carrier-none as historical c6/c7, tail timing as noncausal and byte dirty binding as unexecuted in the selected0-dirty cohort. A draft link to an unpublished commit and its stale design memory number were removed; historical Git/Task23m/raw measurements remain. The final parent-only status/current-boundary changes are the administrative delta approved by that review. The foreground writer exits0 after EOF; no second code writer/session remains. Final source/raw/review manifest is build/task23-publish-final-verification.json.
-- Remaining risk: the accepted Task23 implementation/validation/record findings are closed within their stated scope. The executed carrier33 cohort does not assert the new extent receipt fields; those relationships are verified in the separate final gates, not claimed as carrier33 assertions. Candidate handle/query recovery is not product APPLIED, actual independent writers, buffering/MVCC/GC/log reuse, physical power-loss proof, fair measured superiority or COW withdrawal based on measurements. Existing runtime/DB/ABI/default COW, main/YCSB, other four worktrees, Vault and consumer ownership remain preserved. No push/PR/merge/deployment/live conversion.
-- AAR: selected checkpoint state, alternate read views, exact segment/checkpoint placement, actual physical protection and test-oracle validity must all agree before mutation. Preserve preparation failures and diagnostic timeouts separately from engine counterexamples. A final hash after effects cannot prevent poisoned data; safe retry needs canonical bytes and group end before each write. Final metadata checks must be independent and nonvacuous rather than trusting native receipt counts.
-- Next step: stop after this containing local task-boundary commit and its identity/marker/scope/clean-status verification. The next continuation performs only the Additional checkpoint after23, before Task24. Goal remains active.
-- Commit record: containing task-boundary commit subject `feat(repo): 후보 DB 내구 복구와 결과 게시 경로 통합`; exact body marker `Goal-mode boundary: goal-1 task 23: Implement WAL records and durable commit recovery`. Only this task's28 source/design/tracking files are included under the configured user identity. Verify the containing commit and clean worktree in build/task23-publish-postcommit.json; no push/PR/merge follows.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Additional checkpoint after Task 23
 
 - Status: complete (current source/evidence review and native counterexample; required repairs23s/23t remain incomplete)
-- Work performed: 직전0afdff590b7714b6167762e93a2b22a7a0e77d60의 parent·사용자 identity·28파일·Task23 marker와 clean 작업본을 확인한 progress에서 시작했다. goal3파일·goal-mode/reference·just-mode를 다시 읽고 Task6 원 요구와 현재 WAL 권고, 복구/제품/실측 경계를 대조했다. how 탐색자 둘이 소유권·선택/fallback·source pin·redo·terminal/root·예약/공간·checkpoint 게시를 읽기 전용으로 검토했다. 기존 동일 입력의 실제 Make·fatalUBSan·clang·장애/byte 근거를 재사용했으며 큰 suite나 벤치마크를 반복하지 않았다. 이 내부 native 경계에는 별도 UI가 없다. 구현·plan·input·공개 문서·Vault·consumer를 고치지 않았다.
-- CP23-1, confirmed: `candidate_recovery_groups.c`의 reserve/stage가 최대 group ID를 무검사 증가시킨다. 소수의 정상 group에서도 마지막 ID는 UINT64_MAX일 수 있다. 로컬 Claude의 `.local/runs/embedded-stream-renewal/checkpoint23-gid/checkpoint23-gid3-run-{default,max,max-1,max-2}.json`은 같은 현재 module/frozen helper를 연결한다. 사전 terminal 검증은 모두OK, ABORT추가0·prefix끝26048로 입력이 유효하다. MAX는5WAL/2data 쓰기·5sync, MAX-1은11WAL/5data 쓰기·7sync 뒤CORRUPT이며 같은 owner 재시도와 strict open도CORRUPT다. MAX-2는 필요한2group을 발급해OK·재시도0writes·strictOK다. parent의 기존 독립 framing/CRC decoder 적용 `checkpoint23-group-bytes.json`은 두 실패 postimage에서 실제 group ID0을 확인한다. 복구 전 pre사본과 손상 뒤 파일, 첫 관측 보고서와 보강한gid2/gid3를 보존했다. gid2의 보조scan은owner0설정으로INVALID였고gid3가owner8로고쳐 실제 전후group을 관측한다. 최초gid1 source는동일경로로편집됐지만부모가원CLI JSONL의Write본문을그대로복구해첫compile입력SHA1db4c01c055c271ed64f74e034aef1d0f17ff6df742a3901d625d5328688837f와일치시켰다. `checkpoint23-gid1-source-recovery.json`에그근거가있다. 판정은보강한gid3를사용하며gid1/2/3와raw/실패를모두보존한다. P2이며23s에서 수리한다.
-- CP23-2, static finding: `candidate_control_publish`는 실제 highest generation과 selected 반대 slot의 parity를 계산해 발급 한도를 검사한다. 게시 preflight의 `candidate_publish_follows`는 이를 미리 계산하지 않아 generation 소진은 metadata/checkpoint 효과 뒤LIMIT가 된다. 기존 `tests/test_candidate_control.c`는MAX generation을 합법 입력으로 확인하지만, 복구 조정자 경로의 이 조건은 이번에 native 실행하지 않았다.23s에서 실제 control 발급 규칙을 공유하고 MAX와 fallback/parity 경계를 실행 검증한다. group ID wrap의 관측과 이 정적 finding을 혼합하지 않는다.
-- CP23-3, confirmed: pinned 전체 scan 뒤 임의 읽기의 header/frame decode CORRUPT가 `candidate_wal_read_at`에서 reject latch 없이 반환되어 control dependency fallback에 소비된다. 로컬Claude의 `checkpoint23-readat2-run-single.json`은 새 root4의 미반영IMAGE를 read-at으로 복원하는 유효한두control 후보를 사용한다. 정상 대조는root4로OK다. 첫 임의 full-frame의CRC만 깨뜨린 hook이1회 작동한 뒤stableA를 읽어도root3으로OK를 반환하며15WAL/7data/1control 쓰기·11sync로 게시한다. 재열기는root3으로OK·0writes다. 이는P2 fail-closed 계약 위반이다. 재현 작성자는P1과새상태영구되돌림을제안했지만 두root는빈표이고전체WAL로결과를재구성하므로 업무데이터 유실을입증하지않았다. root선택의영속변경과데이터오염을구분해그P1영향주장은채택하지않는다. 첫readat 초안은상위root의visible_csn이잘못되어 정상 대조도root3이었으므로 두후보 유효성 근거로 채택하지 않고 보존한다. 원 입력·보강source/command/hash·전후 파일을 남기며23t에서 수리한다.
-- Verification/preservation: `.local/runs/embedded-stream-renewal/checkpoint23-preservation2.json`은28현재 source/design/tracking·12증거·11022불변 current artifact·36375원artifact·44원seal의 hash 일치와 기존 continuity41260B prefix 보존을 확인한다. 첫 report의 유일한 full-file mismatch는 승인한 start 행의 append이며 원 report도 보존했다. 기존 aggregate3의44positive/7expected-before·16회귀·25byte fixture와158rawfile·8음성은 기록한 cohort/한계 안의 동일 근거다. current/frozen cohort·0-dirty byte fixture·carrier33 receipt 미실행·진단 timeout 한계를 유지한다. source pin 계약, byte/metadata 효과 전 사전 검사와 이 새 반례는 관련되며 기존 성공 수가 이 입력들을 증명하지 않는다. live #257/#263/#266은OPEN이며 제품/실측 완료 체크를 추가하지 않았다. `.local/runs/embedded-stream-renewal/checkpoint23-issues.json`은 읽기 결과다.
-- Closure review: `.local/runs/embedded-stream-renewal/checkpoint23-record-review.json`의 읽기 전용 로컬Claude 검토는 기록P1/P2=0이며 코드결함2개와정적finding은열려있다. no-comments는tracking만변경하므로해당없다. 반환뒤의행정정정은gid3 보조scan owner8과원Write본문에서복구한gid1 hash근거뿐이다. 최종manifest는checkpoint23-verification.json이다.
-- Remaining risk: CP23-1은 확인된 안전성 결함이다. CP23-2는 정적 finding이며CP23-3은위IMAGE/CRC단일주입 실행 범위로 한정한다.23s/23t가 닫히기 전 Task24와 비용 수집으로 진행하지 않는다. 현재 권고는 page/redo WAL·bounded buffer pool·MVCC·조기 key/range 조정이며 measured winner가 아니다. 실제 writer27/28·동등 buffered-COW29·양쪽 안전성30·사전 계획31·총비용 수집/판정32와 SQL/ACK/stream 후속을 보존한다. 기존 COW/default/DB/ABI·main/YCSB·다른4작업본과 원자료는 그대로다. 승인 없는 push/PR/merge/배포/전환은 없다.
-- AAR: 유한 group 개수는 group ID의 잔여 발급량을 뜻하지 않는다. 제어 slot generation과 parity도 실제 게시와 같은 규칙으로 효과 전에 확인해야 한다. source 오류와 후보 의존성 오류가 같은CORRUPT이면 fallback 전체에서 source 실패를 유지해야 한다. 큰 정상·장애 suite의 성공을 시험하지 않은 counter/decode 경계에 확대하지 않는다.
-- Next step: 이 checkpoint tracking commit과 검증 뒤 멈추고, 다음 goal continuation은23s 하나를 로컬 Claude로 수리·동일 반례 전후·정상 경계 검증한다. 이후23t·24와 기존 순서대로 실제 다중writer 및 양쪽 유지보수/복구를 포함한 총비용 비교까지 이어간다.2026-10-26 사용자는 이를 명시 재요청했다. 별도 승인 대기나 새 goal 초기화가 없다. 전체 goal은active다.
-- Commit record: containing checkpoint tracking commit subject `docs(docs): WAL 복구 체크포인트와 선행 수리 기록 갱신`; exact body marker `Goal-mode boundary: goal-1 checkpoint after task 23: complete`. stage는이tasks.md 하나이며 사용자 Git identity로 기록한다. 최신 log/parent/scope/clean은checkpoint23-postcommit.json에서 확인한다.
+- Evidence/risk/AAR/next/commit: 위 Task23s 보존 기준 Git 원문의 같은 제목. 원래 완료 범위와 근거·한계는 그 기록을 따르며 현재 첫 미완료 작업을 재개한다.
 
 ## Task 23s — Preflight recovery publication counters
 
-- Status: incomplete
-- Scope: CP23-1 group ID와CP23-2 control generation/target-slot parity의 발급 한도를 metadata 효과 전에 실제 게시와 같은 규칙으로 검사한다. Issues: #266, #263. 로컬 Claude가 실제 C·시험 수리를 담당하며 기존group/terminal/root/source·ABI·default를 보존한다.
-- Work performed: not started. checkpoint의 현재 source/반례는 수리 전 근거다.
-- Verification evidence: required — 동일 고정 반례 test object의 전후, MAX/MAX-1/MAX-2가 필요한 그룹 수와 만나는 정상/초과 경계, highest와selected가 다른 fallback의 control generation parity, 부족할 때LIMIT/NULL·metadata0writes·원입력/재시도 보존, 충분할 때 실제 성공/재시작·기존source/fault 회귀. `MAX-2`는 uint64 상한에서2를 뺀 값이다. 원 반례·모든 실패와object를 보존하고 기존objects를 명시 고정한다.
-- Remaining risk: wrap 뒤 손상된 과거 fixture를 자동 치유하거나 ID/generation을0으로 되돌려 통과시키지 않는다. terminal/tail/기존 redo 효과와 새 metadata 효과를 구분한다. control 발급 규칙을 복제해 다시 어긋나게 하지 않는다.
-- Next step: checkpoint23 뒤 첫 작업으로 수리·독립검토·검증·task-boundary commit만 수행한다. 이후23t이며 전체비용/제품 과업을 완료로 바꾸지 않는다.
-- Commit status: no task commit attempted.
+- Status: complete (CP23-1/2 후보 복구 게시 수리·로컬 검증; CP23-3·실제 writer·총비용·제품은 미완료)
+- Scope: group ID와 control generation/selected 반대 slot parity의 잔여 발급량을 신규 metadata 효과 전에 검사한다. Issues: #266, #263. 기존 DB·공개 ABI·format·default COW와 Task23t/24–39는 보존한다.
+- Work performed: clean4fde14e8에서 시작해 로컬 Claude가 C·시험·byte 검증기를 작성했다. private prepare_publication이 identity→highest 한도→selected 반대 slot/parity→codec→follows를 한 번만 정의한다. 내부 check와 실제 publish가 공유하며 실제 publish만 verifier·쓰기·fsync를 수행한다. 접근/소유 검사와 poison 계약은 유지한다. 복구의 중복 highest/follows는 제거했다. INVALID→CORRUPT wrapper는 열린 비공개 handle과 유효 next를 쓰는 현재 두 경로에서 codec 오류에만 도달함을 독립 검토했다. 실제 preflight groups를 UINT64_MAX-max_group_id와 비교하며 equality/zero need를 허용한다. late guard·토큰·persistent 형식은 추가하지 않았다.
+- Before/after evidence: `.local/runs/embedded-stream-renewal/task23s-counters-final-{before,after}-run-*.json`은 동일 `task23s-counters-final-test.o` SHAfd2907d97d509bc0755a91596d387320d7c5487d3a2faf08b1ccee232772d6fa를 연결한다. 수리 전10조건 중4반례는 예상 assertion 실패이며 수리 후10조건 모두 native0/timeout없음/stderr0이다. gid MAX/MAX-1은 각각5WAL·2data/11WAL·5data 뒤CORRUPT에서 LIMIT/NULL·0writes·입력동일·재시도0writes로 바뀐다. gen MAX는14WAL·5data 뒤LIMIT에서0writes로, gen MAX-1 fallback은17WAL·6data 뒤LIMIT에서 기존 restore ABORT2개만 남긴 LIMIT로 바뀐다. 후자는 신규 group/checkpoint/data/control0이고 재시도0writes다. CP23-2도 실제 복구 경로에서 재현했다.
+- Positive/frozen evidence: default·MAX-2의2group 발급, 중단 뒤 필요한 group0/1개, single MAX-1·fallback MAX-2의 generation MAX 게시, strict reopen·동일 owner 재진입0writes가 통과한다. 원 checkpoint23-gid3 object도 그대로 재연결한4실행이 성공했다. 이름정리 전 object a7f3c827…와 최종 fd2907d9…의 전후 실행을 구분해 보존했다. 최종 source에서 주석4개만 뺀 fresh reviewed object로 핵심2smoke도 통과했다. `task23s-reviewed-repair.json`은 exact comment-only hash 동등성을 기록한다.
+- Byte/build/regression evidence: `task23s-bytes-final.json`과 부모 재실행 `task23s-parent-bytes-final.json`은 C helper 없이 고정 Python decoder319ea7bb…로18fixture의 framing/CRC·실제 group ID/slot/generation·checkpoint 유무를 대조한다. 전체 catalog/result 의미 검증으로 확대하지 않는다. 실제 `task23s-make-final-counters.json`의 target10조건, boundary14형태/29294검사, small faults227회/122710검사·114OOM·50예약재사용, control16978/checkpoint2731/recovery1051212/wal_checkpoint5368/terminal4260, 작은 publish4/source4가 모두 성공했다. 상세 argv·object·stdout/stderr는 first-phase95records의 `task23s-manifest.json`에 있다. 소스7개의 clang 분석과 이름정리 후 추가 분석, 최종 unit의 부모 clang 분석은 경고0이다. 변경 모듈·새 시험은 fatal UBSan/-Werror로 빌드했다. frozen 구형 control object만 recoverable UBSan이며 HEAD 재컴파일과325782B 역어셈블이 동일하다. 모든 old object가 fatal이라고 주장하지 않는다.
+- Review/verification repair: 독립 검토 둘의 잔여 P1/P2/P3/MUST KILL은0이다. STALE가 exhausted LIMIT에 가려진 추가시험 P3를 수용했다. 정상 generation에서 check/publish를 각각 실행해 STALE13·codecINVALID1과0write/verify/sync, slot 보존 및 이후 정상 publish를 확인했다. 최종 control은17044검사/0위반이다. no-comments 수용5줄만 삭제하고 내부 API 부수효과 계약은 남겼다. reviewed smoke의 첫2시도는 case인자 누락으로 argc CHECK에서 끝났으며 보존하고 올바른 두 실행은0/stderr0이다. engine 반례로 세지 않는다. 부모 독립 fallback 실행과 초기/최종 byte 재실행도 성공했다. 최종 scope·보존·source/evidence는 `task23s-parent-final-verification.json`, commit identity/marker/scope/clean은 `task23s-postcommit.json`에서 확인한다.
+- Preservation/AAR: `task23s-preservation.json`과 부모 보존 검사는61024원artifact 변경/누락0을 확인한다. 보호 tracked·ledger prefix·main/origin6bb8b2e8와 다른4worktree refs도 보존한다. 첫 manifest의 실행 중 log hash는 현재 code1 log의 첫2056646B와 정확히 같다. 최종 seal은 종료 후 full hash를 기록하며 원 manifest를 덮지 않는다. 첫 Make source/object/binary/report와 모든 실패를 보존했다. 완료65개 이력만 위 고정 Git으로 압축했고 Task6 및 다른24미완료 섹션은 byte동일하다. 작은 fault/boundary 원자료를 삭제하지 않고 산출물 소프트 목표만512MiB로 높였으며8GiB-free stop은 유지한다. 유한 group 개수는 잔여 ID가 아니며 오류분류 시험은 앞선 한도 오류에 가려지지 않아야 한다.
+- Remaining risk: counter 부족은 신규 reservation/stage/checkpoint/control 앞에서 거절한다. 선행 terminal/tail/redo 효과와 추후 verifier/I/O 실패까지0이라는 뜻은 아니다. 과거 손상 파일을 치유하지 않는다. 현재 권고는 page/redo WAL·bounded buffer pool·MVCC·조기 조정이며 실측 우위가 아니다. CP23-3은23t에서 수리해야 하고 실제 writer27/28·동등 COW29·안전성30·총비용31/32·제품/stream은 미완료다. dense/quota/large-fault/segments·sparse/나머지 source·벤치마크를 이번에 재실행하지 않았다. 기존 근거는 원 cohort의 한계 안에서만 재사용한다. 물리 전원 손실·전체 제품 메모리·성능 개선·배포를 주장하지 않는다.
+- Next step: 이 로컬 task-boundary commit과 검증 뒤 멈춘다. 다음 continuation은23t 하나이며 그 뒤 기존24–39·모든 checkpoint·최종 review를 이어간다. 별도 백그라운드 대화·Vault/consumer/원격쓰기·push/PR/merge/배포/전환은 없다. 파일 기반 goal은 active다. built-in의 기존 blocked 표시는 resume 수정 연산이 없는 도구 한계이며 새 목표를 초기화하지 않았다.
+- Commit record: containing task-boundary commit subject `fix(repo): 복구 게시 번호 소진의 사전 검사 추가`; exact body marker `Goal-mode boundary: goal-1 task 23s: Preflight recovery publication counters`. 사용자 Git identity로 이 수리와 관련 tracking10파일만 기록한다. postcommit을 확인하고 이번 턴에23t나 checkpoint를 수행하지 않는다.
 
 ## Task 23t — Retain malformed pinned-read failures across fallback
 

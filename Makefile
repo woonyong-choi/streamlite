@@ -206,6 +206,10 @@ $(BUILD_DIR)/test_candidate_recovery_publish_faults: $(BUILD_DIR)/tests/test_can
 $(BUILD_DIR)/test_candidate_recovery_publish_source: $(BUILD_DIR)/tests/test_candidate_recovery_publish_source.o $(CANDIDATE_PUBLISH_TEST_OBJS) \
 	$(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_PUBLISH_FIXTURE_OBJS ?= $(BUILD_DIR)/tests/test_candidate_recovery_publish_fixture.o
+$(BUILD_DIR)/test_candidate_recovery_publish_counters: $(BUILD_DIR)/tests/test_candidate_recovery_publish_counters.o \
+	$(CANDIDATE_PUBLISH_FIXTURE_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_PUBLISH_TIMEOUT ?= 900
 CANDIDATE_PUBLISH_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_publish
 CANDIDATE_PUBLISH_CASES ?= f1-commit f1-abort f2-single f2-fallback f3-highwater f4-shared stale-root-carrier stale-root-alloc \
@@ -217,9 +221,11 @@ CANDIDATE_PUBLISH_SOURCE_CASES ?= scan-lsn read-lsn pred-spoof delta-chain selec
 CANDIDATE_PUBLISH_DENSE_CASES ?=
 CANDIDATE_PUBLISH_SOURCE_DENSE_CASES ?=
 CANDIDATE_PUBLISH_DENSE_TIMEOUT ?= 1200
-.PHONY: test-candidate-recovery-publish test-candidate-recovery-publish-source
+CANDIDATE_PUBLISH_COUNTER_CASES ?= gid-default gid-max-2 gid-max-1 gid-max gid-zero-need gid-one-need gen-max gen-max-1 \
+	gen-max-1-fallback gen-max-2-fallback
+.PHONY: test-candidate-recovery-publish test-candidate-recovery-publish-source test-candidate-recovery-publish-counters
 test-candidate-recovery-publish: $(BUILD_DIR)/test_candidate_recovery_publish $(BUILD_DIR)/test_candidate_recovery_publish_faults \
-	test-candidate-recovery-publish-source
+	test-candidate-recovery-publish-source test-candidate-recovery-publish-counters
 	@for c in $(CANDIDATE_PUBLISH_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_TIMEOUT) --seed $(FAULT_SEED) \
 		--report $(CANDIDATE_PUBLISH_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish $$c || exit 1; done
 	@for c in $(CANDIDATE_PUBLISH_DENSE_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_DENSE_TIMEOUT) --seed $(FAULT_SEED) \
@@ -232,6 +238,9 @@ test-candidate-recovery-publish-source: $(BUILD_DIR)/test_candidate_recovery_pub
 	@for c in $(CANDIDATE_PUBLISH_SOURCE_DENSE_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_DENSE_TIMEOUT) \
 		--seed $(FAULT_SEED) --report $(CANDIDATE_PUBLISH_REPORT)-source-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish_source $$c \
 		|| exit 1; done
+test-candidate-recovery-publish-counters: $(BUILD_DIR)/test_candidate_recovery_publish_counters
+	@for c in $(CANDIDATE_PUBLISH_COUNTER_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_PUBLISH_REPORT)-counter-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish_counters $$c || exit 1; done
 .PHONY: test-candidate-outcome-witness
 test-candidate-outcome-witness: $(BUILD_DIR)/test_candidate_outcome_witness
 	$(TEST_RUNNER) --report $(CANDIDATE_OUTCOME_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_witness

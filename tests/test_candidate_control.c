@@ -11,10 +11,11 @@
 
 #include "storage/candidate_control.h"
 #include "storage/checksum.h"
+#include "../src/storage/candidate_control_internal.h"
 
 #define CHECK(x) do { checks++; if (!(x)) { fprintf(stderr,"%s:%d: %s\n",__func__,__LINE__,#x);exit(1); } } while (0)
 #define OK(x) CHECK((x)==CANDIDATE_WAL_OK)
-static unsigned checks, serial, writes, syncs, reads, interrupts, short_bytes, fail_sync_at;
+static unsigned checks, serial, writes, syncs, reads, interrupts, short_bytes, fail_sync_at, verifies;
 static unsigned read_fail_at, read_zero_at, sync_interrupts;
 static bool write_zero, write_oversize;
 static long cut = -1;
@@ -36,7 +37,7 @@ static candidate_control_state_t state(uint64_t checkpoint)
 }
 static candidate_wal_status_t verify(void *context,const candidate_control_state_t *s)
 {
-    (void)context;
+    (void)context;verifies++;
     if(crash_verify && s->checkpoint_id==2)_exit(0);
     if(reenter && active!=NULL) {
         candidate_control_t *copy=active;CHECK(candidate_control_publish(active,s)==CANDIDATE_WAL_INVALID);
@@ -213,9 +214,46 @@ static void slots_and_failures(void)
     memcpy(bad,good,16384);high.checkpoint_id=UINT64_MAX;OK(candidate_control_encode(&high,bad+8192,8192));write_fixture(path,bad,16384);
     OK(candidate_control_open(path,&o,&c));next=state(3);writes=0;CHECK(candidate_control_publish(c,&next)==CANDIDATE_WAL_LIMIT && writes==0);OK(candidate_control_close(&c));
 }
+static void check_publication_matches_publish(void)
+{
+    const struct { uint64_t low,high; candidate_wal_status_t expected; } cases[]={
+        {0,UINT64_MAX,CANDIDATE_WAL_LIMIT},{0,UINT64_MAX-1,CANDIDATE_WAL_OK},
+        {UINT64_MAX-2,UINT64_MAX-1,CANDIDATE_WAL_LIMIT},{UINT64_MAX-3,UINT64_MAX-2,CANDIDATE_WAL_OK}};
+    for(unsigned i=0;i<sizeof(cases)/sizeof(cases[0]);i++){
+        reset_hooks();uint8_t bytes[16384]={0};candidate_control_state_t low=state(1),high=state(2);
+        if(cases[i].low!=0){low.generation=cases[i].low;low.slot=(unsigned)((low.generation-1)%2);OK(candidate_control_encode(&low,bytes+low.slot*8192,8192));rejected_checkpoint=2;}
+        high.generation=cases[i].high;high.slot=(unsigned)((high.generation-1)%2);OK(candidate_control_encode(&high,bytes+high.slot*8192,8192));
+        char path[PATH_MAX];write_fixture(path,bytes,16384);candidate_control_options_t o=options();candidate_control_t *c=NULL;OK(candidate_control_open(path,&o,&c));
+        candidate_control_state_t next=state(3);writes=verifies=syncs=0;
+        CHECK(candidate_control_check_publication(c,&next)==cases[i].expected && writes==0 && verifies==0 && syncs==0);
+        candidate_wal_status_t published=candidate_control_publish(c,&next);candidate_control_info_t info=candidate_control_info(c);
+        CHECK(published==cases[i].expected);
+        if(published==CANDIDATE_WAL_OK)CHECK(writes==1 && verifies==1 && syncs==1);else CHECK(writes==0 && verifies==0 && syncs==0);
+        if(published==CANDIDATE_WAL_OK)CHECK(info.selected==0 && info.slots[0].generation==UINT64_MAX && info.slots[0].checkpoint_id==3);
+        writes=verifies=syncs=0;next=state(4);next.backend=2;CHECK(candidate_control_check_publication(c,&next)==CANDIDATE_WAL_UNSUPPORTED);
+        CHECK(candidate_control_check_publication(c,NULL)==CANDIDATE_WAL_INVALID && writes==0 && verifies==0 && syncs==0);OK(candidate_control_close(&c));
+        printf("CHECK_PUBLICATION low=%llu high=%llu status=%d\n",(unsigned long long)cases[i].low,(unsigned long long)cases[i].high,(int)published);
+    }
+    reset_hooks();char path[PATH_MAX];path_name(path);candidate_control_options_t o=options();candidate_control_t *c=NULL;
+    OK(candidate_control_create(path,&o,&c));candidate_control_state_t next=state(1);OK(candidate_control_publish(c,&next));
+    candidate_control_state_t stale=state(2),malformed=state(2);stale.transaction_highwater=8;malformed.checkpoint_id=0;
+    const struct { const candidate_control_state_t *next; candidate_wal_status_t expected; } failures[]={
+        {&stale,CANDIDATE_WAL_STALE},{&malformed,CANDIDATE_WAL_INVALID}};
+    for(unsigned i=0;i<sizeof(failures)/sizeof(failures[0]);i++){
+        writes=verifies=syncs=0;candidate_wal_status_t checked=candidate_control_check_publication(c,failures[i].next);
+        CHECK(checked==failures[i].expected && writes==0 && verifies==0 && syncs==0);
+        candidate_wal_status_t published=candidate_control_publish(c,failures[i].next);candidate_control_info_t info=candidate_control_info(c);
+        CHECK(published==failures[i].expected && writes==0 && verifies==0 && syncs==0);
+        CHECK(!info.is_poisoned && info.selected==0 && info.valid_mask==1 && info.slots[0].generation==1 && info.slots[0].checkpoint_id==1);
+        printf("CHECK_PUBLICATION ordinary case=%u check=%d publish=%d\n",i,(int)checked,(int)published);
+    }
+    next=state(2);writes=verifies=syncs=0;OK(candidate_control_check_publication(c,&next));CHECK(writes==0 && verifies==0 && syncs==0);
+    OK(candidate_control_publish(c,&next));CHECK(writes==1 && verifies==1 && syncs==1 && candidate_control_info(c).slots[1].generation==2);
+    OK(candidate_control_close(&c));reset_hooks();
+}
 int main(void)
 {
-    setvbuf(stdout,NULL,_IONBF,0);alarm(90);codec();reset_hooks();lifecycle();torn();namespace_and_fork();ownership_and_limits();slots_and_failures();
+    setvbuf(stdout,NULL,_IONBF,0);alarm(90);codec();reset_hooks();lifecycle();torn();namespace_and_fork();ownership_and_limits();slots_and_failures();check_publication_matches_publish();
     OK(candidate_control_close(&active));CHECK(candidate_control_close(NULL)==CANDIDATE_WAL_INVALID);
     printf("PASS candidate control checks=%u; synthetic dependency verifier only, no checkpoint/WAL/data recovery activation\n",checks);return 0;
 }

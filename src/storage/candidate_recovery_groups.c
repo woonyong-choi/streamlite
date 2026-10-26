@@ -369,6 +369,7 @@ candidate_wal_status_t candidate_publish_preflight(publish_t *p, const candidate
         status = place_group(wal,&cursor,images,group_events,lsns,&end); groups++; events += group_events;
     }
     if (status != CANDIDATE_WAL_OK) return status;
+    if (groups > UINT64_MAX - p->max_group_id) return CANDIDATE_WAL_LIMIT;
     if (p->existing_groups + groups > CANDIDATE_WITNESS_GROUPS || p->existing_events + events > CANDIDATE_SYSTEM_EVENTS)
         return CANDIDATE_WAL_LIMIT;
     uint64_t checkpoint[2 + CANDIDATE_CHECKPOINT_CHUNKS];
@@ -378,5 +379,5 @@ candidate_wal_status_t candidate_publish_preflight(publish_t *p, const candidate
     status = candidate_publish_next(p,control,p->system_page_highwater + p->reserve_pages,&next);
     if (status != CANDIDATE_WAL_OK) return status;
     next.checkpoint_begin = checkpoint[0]; next.checkpoint_end = end;
-    return candidate_publish_follows(control,&next);
+    return candidate_publish_check_control(p,&next);
 }

@@ -1,4 +1,4 @@
-#include "storage/candidate_control.h"
+#include "candidate_control_internal.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -95,6 +95,23 @@ static void update_floor(candidate_control_t *c)
         uint64_t redo = c->info.slots[i].redo_begin;
         if (c->info.redo_floor == 0 || redo < c->info.redo_floor) c->info.redo_floor = redo;
     }
+}
+
+static candidate_wal_status_t prepare_publication(const candidate_control_t *c, const candidate_control_state_t *next,
+    candidate_control_state_t *out, uint8_t bytes[CANDIDATE_CONTROL_BYTES])
+{
+    candidate_control_state_t actual = *next;
+    if (actual.backend != c->backend || memcmp(actual.uuid, c->uuid, 16) != 0) return CANDIDATE_WAL_UNSUPPORTED;
+    uint64_t generation = c->info.valid_mask == 0 ? 0 : c->info.slots[highest(c)].generation;
+    unsigned target = c->info.selected < 0 ? 0 : 1u - (unsigned)c->info.selected;
+    if (generation == UINT64_MAX || (c->info.valid_mask != 0 && c->info.slots[highest(c)].checkpoint_id == UINT64_MAX)) return CANDIDATE_WAL_LIMIT;
+    generation++;
+    if ((generation - 1) % 2 != target) { if (generation == UINT64_MAX) return CANDIDATE_WAL_LIMIT; generation++; }
+    actual.generation = generation; actual.slot = target;
+    candidate_wal_status_t s = candidate_control_encode(&actual, bytes, CANDIDATE_CONTROL_BYTES);
+    if (s != CANDIDATE_WAL_OK) return s;
+    if (c->info.valid_mask != 0 && !follows(&c->info.slots[highest(c)], &actual)) return CANDIDATE_WAL_STALE;
+    *out = actual; return CANDIDATE_WAL_OK;
 }
 
 static candidate_wal_status_t read_slots(candidate_control_t *c)
@@ -210,30 +227,31 @@ candidate_wal_status_t candidate_control_publish(candidate_control_t *c, const c
     candidate_wal_status_t s = check_access(c);
     if (s != CANDIDATE_WAL_OK) return s;
     if (next == NULL) return CANDIDATE_WAL_INVALID;
-    candidate_control_state_t actual = *next;
-    if (actual.backend != c->backend || memcmp(actual.uuid, c->uuid, 16) != 0) return CANDIDATE_WAL_UNSUPPORTED;
-    uint64_t generation = c->info.valid_mask == 0 ? 0 : c->info.slots[highest(c)].generation;
-    unsigned target = c->info.selected < 0 ? 0 : 1u - (unsigned)c->info.selected;
-    if (generation == UINT64_MAX || (c->info.valid_mask != 0 && c->info.slots[highest(c)].checkpoint_id == UINT64_MAX)) return CANDIDATE_WAL_LIMIT;
-    generation++;
-    if ((generation - 1) % 2 != target) { if (generation == UINT64_MAX) return CANDIDATE_WAL_LIMIT; generation++; }
-    actual.generation = generation; actual.slot = target;
-    s = candidate_control_encode(&actual, c->buffer, sizeof(c->buffer));
+    candidate_control_state_t actual;
+    s = prepare_publication(c, next, &actual, c->buffer);
     if (s != CANDIDATE_WAL_OK) return s;
-    if (c->info.valid_mask != 0 && !follows(&c->info.slots[highest(c)], &actual)) return CANDIDATE_WAL_STALE;
     c->is_busy = true;
     s = c->verify(c->context, &actual);
     if (!has_owned_file(c)) s = poison(c);
     if (s == CANDIDATE_WAL_OK) {
-        s = transfer(c, c->buffer, sizeof(c->buffer), (uint64_t)target * sizeof(c->buffer), true);
+        s = transfer(c, c->buffer, sizeof(c->buffer), (uint64_t)actual.slot * sizeof(c->buffer), true);
         if (s == CANDIDATE_WAL_OK) s = sync_fd(c, c->fd);
         if (s != CANDIDATE_WAL_OK || !has_owned_file(c)) s = poison(c);
         else {
-            c->info.slots[target] = actual; c->info.valid_mask |= 1u << target;
-            c->info.verified_mask |= 1u << target; c->info.selected = (int)target; update_floor(c);
+            c->info.slots[actual.slot] = actual; c->info.valid_mask |= 1u << actual.slot;
+            c->info.verified_mask |= 1u << actual.slot; c->info.selected = (int)actual.slot; update_floor(c);
         }
     }
     c->is_busy = false; return s;
+}
+
+candidate_wal_status_t candidate_control_check_publication(candidate_control_t *c, const candidate_control_state_t *next)
+{
+    candidate_wal_status_t s = check_access(c);
+    if (s != CANDIDATE_WAL_OK) return s;
+    if (next == NULL) return CANDIDATE_WAL_INVALID;
+    candidate_control_state_t actual; uint8_t bytes[CANDIDATE_CONTROL_BYTES];
+    return prepare_publication(c, next, &actual, bytes);
 }
 
 candidate_control_info_t candidate_control_info(const candidate_control_t *c)
