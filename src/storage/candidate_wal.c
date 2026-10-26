@@ -577,11 +577,13 @@ candidate_wal_status_t candidate_wal_read_at(candidate_wal_t *w, uint64_t lsn, c
     uint64_t offset = lsn % CANDIDATE_WAL_SEGMENT_BYTES;
     if (read_full(w, w->files[id].fd, w->buffer, 80, offset) != CANDIDATE_WAL_OK) return poison(w);
     status = validate_frame_header(w, 80, lsn);
+    if (status == CANDIDATE_WAL_CORRUPT) return reject(w);
     if (status != CANDIDATE_WAL_OK) return status;
     size_t total = (size_t)read_le(w->buffer + 8, 4);
-    if (total > w->info.valid_end_lsn - lsn) return CANDIDATE_WAL_CORRUPT;
+    if (total > w->info.valid_end_lsn - lsn) return reject(w);
     if (read_full(w, w->files[id].fd, w->buffer, total, offset) != CANDIDATE_WAL_OK) return poison(w);
     status = candidate_wal_decode(w->uuid, w->buffer, total, out);
+    if (status == CANDIDATE_WAL_CORRUPT) return reject(w);
     if (status == CANDIDATE_WAL_OK && out->lsn != lsn) return reject(w);
     return status;
 }

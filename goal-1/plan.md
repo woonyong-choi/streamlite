@@ -230,3 +230,23 @@ Task23s resource refinement: retained14 allocation-boundary variants and the rel
 Task23s 결과: control-owned 준비 규칙 공유와 실제 필요 group 잔여량 검사를 로컬 Claude로 구현했다. 같은 최종 object의4반례 전후와10조건, 원 gid3, raw18fixture, 작은227fault·114OOM·50예약재시도, allocation14경계, 기존 control/checkpoint/recovery/terminal 및 작은 source 회귀와 실제 Make를 확인했다. 비용·실제 writer·제품 결과는 아니며23t와24–39를 보존한다. 기존 COW/default·공개 ABI·format을 바꾸지 않는다.
 
 추가시험의 STALE가 generation LIMIT에 가려진 P3를 수용했다. 정상 generation에서 STALE와 codecINVALID를 check/publish 각각 호출하고 효과0·state보존·다음 정상 게시를 검증했다. 주석5줄 정리 후 counter는 exact comment-only 동등성과 fresh2smoke로, unit은 전체17044검사로 확인했다. 첫 인자누락2실행과 모든 원자료는 보존하며 engine 실패와 구분한다. 변경 없는 큰 quota/largefault/benchmark를 반복하지 않았다. frozen 구형 control object의 recoverable UBSan은 변경 모듈의 fatal instrumentation과 분리하고 HEAD 재컴파일 역어셈블 동등성을 기록한다. 실행 중 log의 prefix hash와 종료 후 full hash도 구분한다. 최종 task 기록·부모 manifest를 검증한 뒤 사용자 identity로 한 로컬 commit만 남긴다.
+
+## Task 23t pinned malformed read repair
+
+기존 goal과 clean ac9f9921을 재개한다. 이번 경계의 순서는 소유권·원자료 보존 확인, 직접 반례 재현과 how/이력 확인, architect 후보와 독립 심사, 로컬 Claude 구현, 동일 시험 객체의 전후 실행·원자료 검증, 독립 검토와 기록·로컬 commit이다. 사용자가 지정한 같은 checkout과 한 과업 경계에 따라 새 worktree·원격 발행·Vault 쓰기는 하지 않는다. Task24–39와 총비용 비교는 그대로 남는다.
+
+현재23s 모듈에 보존된 readat2 시험 객체를 연결해 정상 root4와 단일 CRC 손상 뒤 root3 성공·WAL/data/control 쓰기15/7/1을 다시 관측했다. 이는 source 손상의 fail-closed 계약 위반이다. 두 root가 비어 있으므로 업무 데이터 손실로 확대하지 않는다. read-at의 header CORRUPT, pinned 끝을 넘는 frame, decode CORRUPT가 기존 WAL reject 상태를 우회한다. control의 정상 dependency fallback은 결함이 아니다. pin·소유 FD·거부 상태는 WAL 하나가 소유하며 redo는 이를 빌린다.
+
+architect 후보 둘은 기존 WAL 상태에 세 실패 경로를 연결하는 안에 수렴했다. 별도 오류 출처 타입을 모든 호출층에 전파하는 구조도 비교했다. 후자는 control 인터페이스와 원인 분류를 여러 층에 늘리고 후속 read/append를 막으려면 WAL 상태도 필요하다. 기존 reject를 재사용하면 source 실패만 소유자에서 유지하며 새 타입·allocation·공개 API를 추가하지 않는다. CORRUPT 외 INVALID/IO/NOMEM/UNSUPPORTED는 기존 분류를 유지한다. unpinned의 reject 뒤 POISONED는 기존 scan/LSN 검사와 같은 규칙이며 pinned 지속 CORRUPT와 별도 검증한다. 독립 심사를 확인한 뒤 구현한다.
+
+독립 심사도 WAL-owned A를 선택했다. fail-closed·오류/fallback·소유/인터페이스·검증 가능성의 판단 점수는 A20/B14다. 점수는 성능 측정이 아니다. control은 낮은 후보를 시도할 수 있지만 같은 WAL의 필수 scan이 지속 CORRUPT로 끝나므로 게시하지 못한다. fallback 시도 자체를 없앤다고 기록하지 않는다. 실제 C·시험·검증기 구현은 foreground nonpersistent 로컬 Claude에 맡겼으며 부모와 읽기 전용 검토자는 코드를 쓰지 않는다.
+
+시험은 실제 두 control 후보와 IMAGE·DELTA의 random-read hit, 단일 malformed header/frame CRC/끝 경계 뒤 stableA, 실패 효과0·NULL·파일동일·같은 handle 지속 거부, 새 stableA handle 성공을 검증한다. 정상 dependency fallback과 기존 LSN/digest/scan/append/apply/strict-open 대조는 유지한다. 먼저 시험 객체를 동결해 수리 전 실패를 남기고 WAL 모듈만 바꿔 같은 객체를 실행한다. 변경 없는 dense/quota/large fault·벤치마크는 반복하지 않는다. 새 산출물 소프트 목표256MiB와8GiB-free stop은 검증 운영 기본값이며 DB quota나 성능 기준이 아니다. 현재 약25.46GiB가 남았고 원63170산출물·9117tracked 파일을 baseline에 고정했다. 한 writer만 C·시험·검증기를 작성하며 부모는 실행·검토·승인된 목표 기록과 commit을 맡는다. 성능 개선·실제 writer·총비용 승자·제품 전환은 이 수리의 완료 주장에 포함하지 않는다.
+
+Task23t 자원 점검에서 회귀 원자료와 모든 실패 표본을 포함한 신규 할당량231.875MiB, 남은 공간24.989GiB를 관측했다. 남은 실제 Make·독립 byte·최종 주석 정리 검증을 보존하려고 산출물 소프트 목표만512MiB로 높인다.8GiB-free stop, 큰 fault/quota/벤치마크 반복 금지와 모든 원자료 보존은 유지한다. DB quota·SLO·adoption 기준을 바꾸는 조정이 아니다.
+
+첫 구현의 native·실제 Make는 통과했으나 부모와 독립 검토자 둘은 byte 검증기의 P2를 확인했다. 같은 byte·root·상태·object·hash라는 사실을 계산만 하고 기대값으로 강제하지 않아 잘못된 보고서도0으로 끝날 수 있었다. 기존 bytes2는 수동 대조한 관측값으로만 남기고 자동 판정 통과로 쓰지 않는다. 새 foreground 로컬 Claude에 이 검증기의 hard gate와 실제 음성 대조, 중복 설명 주석2줄의 정리·최종 Make를 맡겼다. 기존 manifest·보고서·각 cohort와 원 verifier 버전은 보존한다. 이 수리도23t 검증의 일부이며 검증기 P2가 남은 상태로 commit하거나 다음 과업을 시작하지 않는다.
+
+Task23t 결과: WAL의 세 CORRUPT 반환만 기존 reject에 연결했다. frozen2의 같은 시험 객체로 before/source-before 각각22조건 중13반례가 실패하고 after22조건은 모두 통과했다. 수리 전 fresh WAL과 원 object도 byte동일하다. 실제 IMAGE·DELTA hook과 한 번 주입, NULL·선택 단계 효과0·파일동일·같은 handle 지속 거부, stableA 재개방과 정상 dependency fallback·기존 오류 분류를 확인했다. 부모도 원 readat2 객체를 재연결해 CORRUPT·효과0 뒤 root4 재복구를 직접 확인했다. 관련 source11·작은 publish4·WAL12배치·redo·복구·terminal·checkpoint·control 회귀와 최종 Make22조건, clang 분석이 통과했다. 주석2줄 정리 외에는 frozen2 시험과 최종 시험이 동일하다.
+
+검증기에는 두 실패 통과 경계를 수리했다. 비교 사실을 강제 판정하고107개 대조로 잘못된 상태·효과·byte·객체·hash·선택을 거부한다. 부모가 발견한 잘못된 --only의0건 성공도 unknown/empty/mixed 선택과 빈 cohort 거부로 고쳤다. 최종 독립 byte 판정132run의 오류는0이며 부모 재실행 결과도 byte동일하다. 음성 대조는83fact·9raw·15실제CLI이고 기대와 다른 결과가 없다. 두 독립 검토자의 잔여 P1/P2/P3과 주석 지적은0이다. 처음 보고만 하던 판정기·빈 필터 반례·초안·경고·모든 원자료와 봉인은 보존한다. 같은 목표의23t만 닫고 사용자 identity로5파일 로컬 commit을 남긴다. 다음은24이며 실제 writer·동등COW·정리/복구 포함 총비용31/32·제품 통합·최종 review는 미완료다. built-in의 기존 blocked 표시는 resume 수정 연산이 없는 도구 한계로 남으며 파일 기반 goal은 active다.
