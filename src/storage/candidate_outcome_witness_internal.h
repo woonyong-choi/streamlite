@@ -14,6 +14,8 @@ uint32_t candidate_admissions_count(const candidate_admissions_t *admissions);
 bool candidate_admissions_at(const candidate_admissions_t *admissions, uint32_t index,
     candidate_semantic_admission_t *out);
 size_t candidate_admissions_resident_bytes(const candidate_admissions_t *admissions);
+/* witness에 남은 거래의 admission만 순서대로 남긴다. */
+void candidate_admissions_retain(candidate_admissions_t *admissions, const candidate_wal_witness_t *witness);
 void candidate_admissions_close(candidate_admissions_t **admissions);
 
 /* candidate_outcome_witness_load와 같은 root·coverage·entry·본문 대조이며 TAIL·force 검사는 caller가 먼저 한다. */

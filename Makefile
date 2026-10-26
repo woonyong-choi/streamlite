@@ -114,7 +114,7 @@ BASIC_TESTS = test_record test_record_fault test_overflow test_overflow_fault te
 TEST_BINS = $(addprefix $(BUILD_DIR)/,$(BASIC_TESTS))
 
 CANDIDATE_WAL_TAIL_MODULE ?= $(BUILD_DIR)/storage/candidate_wal_tail.o
-CANDIDATE_WAL_OBJS = $(BUILD_DIR)/storage/candidate_wal.o $(BUILD_DIR)/storage/candidate_wal_format.o $(CANDIDATE_WAL_TAIL_MODULE) $(BUILD_DIR)/storage/candidate_digest.o
+CANDIDATE_WAL_OBJS = $(BUILD_DIR)/storage/candidate_wal.o $(BUILD_DIR)/storage/candidate_wal_read.o $(BUILD_DIR)/storage/candidate_wal_format.o $(CANDIDATE_WAL_TAIL_MODULE) $(BUILD_DIR)/storage/candidate_digest.o
 $(CANDIDATE_WAL_TAIL_MODULE): src/storage/candidate_wal_tail.c $(BUILD_FINGERPRINT)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
@@ -147,7 +147,7 @@ $(BUILD_DIR)/test_candidate_outcome_witness: $(BUILD_DIR)/tests/test_candidate_o
 CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.json
 CANDIDATE_RECOVERY_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery.o
 CANDIDATE_RECOVERY_TERMINAL_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery_terminal.o
-CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
+CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o $(BUILD_DIR)/storage/candidate_wal_identity.o
 $(BUILD_DIR)/test_candidate_checkpoint_state: $(BUILD_DIR)/tests/test_candidate_checkpoint_state.o $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_STATE_REPORT ?= $(BUILD_DIR)/fault/test_candidate_checkpoint_state.json
@@ -308,6 +308,82 @@ CANDIDATE_VIEW_CASES ?= resolved recovery preview graph nonselected cut access f
 test-candidate-recovery-view: $(BUILD_DIR)/test_candidate_recovery_view
 	@for c in $(CANDIDATE_VIEW_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_VIEW_TIMEOUT) --seed $(FAULT_SEED) \
 		--report $(CANDIDATE_VIEW_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_view $$c || exit 1; done
+CANDIDATE_CLOSURE_OBJS = $(BUILD_DIR)/storage/candidate_recovery_continue.o $(BUILD_DIR)/storage/candidate_recovery_closure.o \
+	$(BUILD_DIR)/storage/candidate_wal_witness_prune.o
+CANDIDATE_CLOSURE_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_recovery_closure.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_dependency.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_fixture.o $(BUILD_DIR)/tests/test_candidate_recovery_view_fixture.o
+$(BUILD_DIR)/test_candidate_recovery_closure: $(CANDIDATE_CLOSURE_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_CLOSURE_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_CLOSURE_TIMEOUT ?= 1200
+CANDIDATE_CLOSURE_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_closure
+CANDIDATE_CLOSURE_CASES ?= cycles-resolved cycles-preview identity reservation dependency active live prefix segments faults oom
+.PHONY: test-candidate-recovery-closure
+test-candidate-recovery-closure: $(BUILD_DIR)/test_candidate_recovery_closure
+	@for c in $(CANDIDATE_CLOSURE_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_CLOSURE_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_CLOSURE_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_closure $$c || exit 1; done
+CANDIDATE_CLOSURE_BOUNDARY_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_recovery_closure_boundary.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_boundary_fixture.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_fixture.o $(BUILD_DIR)/tests/test_candidate_recovery_view_fixture.o
+$(BUILD_DIR)/test_candidate_recovery_closure_boundary: $(CANDIDATE_CLOSURE_BOUNDARY_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_CLOSURE_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_CLOSURE_BOUNDARY_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_closure_boundary
+CANDIDATE_CLOSURE_BOUNDARY_CASES ?= healthy-pair foreign-empty foreign-suffix unpublished-abort expired-abort slot-reuse
+.PHONY: test-candidate-recovery-closure-boundary
+test-candidate-recovery-closure-boundary: $(BUILD_DIR)/test_candidate_recovery_closure_boundary
+	@for c in $(CANDIDATE_CLOSURE_BOUNDARY_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_CLOSURE_TIMEOUT) \
+		--seed $(FAULT_SEED) --report $(CANDIDATE_CLOSURE_BOUNDARY_REPORT)-$$c.json -- \
+		./$(BUILD_DIR)/test_candidate_recovery_closure_boundary $$c || exit 1; done
+CANDIDATE_CLOSURE_TRANSPORT_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_recovery_closure_transport.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_transport_fixture.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_dependency.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_fixture.o $(BUILD_DIR)/tests/test_candidate_recovery_view_fixture.o
+$(BUILD_DIR)/test_candidate_recovery_closure_transport: $(CANDIDATE_CLOSURE_TRANSPORT_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_CLOSURE_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_CLOSURE_TRANSPORT_TIMEOUT ?= 1200
+CANDIDATE_CLOSURE_TRANSPORT_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_closure_transport
+CANDIDATE_CLOSURE_TRANSPORT_CASES ?= healthy short-padding padding header frame io reentry captured images
+.PHONY: test-candidate-recovery-closure-transport
+test-candidate-recovery-closure-transport: $(BUILD_DIR)/test_candidate_recovery_closure_transport
+	@for c in $(CANDIDATE_CLOSURE_TRANSPORT_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_CLOSURE_TRANSPORT_TIMEOUT) \
+		--seed $(FAULT_SEED) --report $(CANDIDATE_CLOSURE_TRANSPORT_REPORT)-$$c.json -- \
+		./$(BUILD_DIR)/test_candidate_recovery_closure_transport $$c || exit 1; done
+CANDIDATE_CLOSURE_CALLBACKS_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_recovery_closure_callbacks.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_transport_fixture.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_dependency.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_fixture.o $(BUILD_DIR)/tests/test_candidate_recovery_view_fixture.o
+$(BUILD_DIR)/test_candidate_recovery_closure_callbacks: $(CANDIDATE_CLOSURE_CALLBACKS_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_CLOSURE_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_CLOSURE_CALLBACKS_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_closure_callbacks
+CANDIDATE_CLOSURE_CALLBACKS_CASES ?= read-healthy visit-healthy visit-stop scan-healthy scan-stop read-reject read-reject-pinned \
+	read-move visit-reject-stop visit-move-stop scan-reject scan-reject-stop scan-move-stop first-owner-true first-owner-false
+.PHONY: test-candidate-recovery-closure-callbacks
+test-candidate-recovery-closure-callbacks: $(BUILD_DIR)/test_candidate_recovery_closure_callbacks
+	@for c in $(CANDIDATE_CLOSURE_CALLBACKS_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_CLOSURE_TRANSPORT_TIMEOUT) \
+		--seed $(FAULT_SEED) --report $(CANDIDATE_CLOSURE_CALLBACKS_REPORT)-$$c.json -- \
+		./$(BUILD_DIR)/test_candidate_recovery_closure_callbacks $$c || exit 1; done
+CANDIDATE_WAL_READ_BOUNDARY_OBJS ?= $(CANDIDATE_WAL_OBJS)
+$(BUILD_DIR)/test_candidate_wal_read_boundary: $(BUILD_DIR)/tests/test_candidate_wal_read_boundary.o \
+	$(CANDIDATE_WAL_READ_BOUNDARY_OBJS) $(BUILD_DIR)/storage/checksum.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_WAL_READ_BOUNDARY_TIMEOUT ?= 1200
+CANDIDATE_WAL_READ_BOUNDARY_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_read_boundary
+CANDIDATE_WAL_READ_BOUNDARY_CASES ?= unpinned pinned
+.PHONY: test-candidate-wal-read-boundary
+test-candidate-wal-read-boundary: $(BUILD_DIR)/test_candidate_wal_read_boundary
+	@for c in $(CANDIDATE_WAL_READ_BOUNDARY_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_WAL_READ_BOUNDARY_TIMEOUT) \
+		--seed $(FAULT_SEED) --report $(CANDIDATE_WAL_READ_BOUNDARY_REPORT)-$$c.json -- \
+		./$(BUILD_DIR)/test_candidate_wal_read_boundary $$c || exit 1; done
+$(BUILD_DIR)/test_candidate_wal_identity: $(BUILD_DIR)/tests/test_candidate_wal_identity.o $(BUILD_DIR)/storage/candidate_wal_identity.o
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_IDENTITY_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_identity.json
+.PHONY: test-candidate-wal-identity
+test-candidate-wal-identity: $(BUILD_DIR)/test_candidate_wal_identity
+	$(TEST_RUNNER) --report $(CANDIDATE_IDENTITY_REPORT) -- ./$(BUILD_DIR)/test_candidate_wal_identity
 $(BUILD_DIR)/test_candidate_redo: $(BUILD_DIR)/tests/test_candidate_redo.o $(CANDIDATE_REDO_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
 CANDIDATE_REDO_REPORT ?= $(BUILD_DIR)/fault/test_candidate_redo.json
 .PHONY: test-candidate-redo
@@ -650,6 +726,7 @@ clean:
 -include $(BUILD_DIR)/storage/candidate_recovery.d $(BUILD_DIR)/storage/candidate_recovery_state.d
 -include $(BUILD_DIR)/storage/candidate_recovery_terminal.d
 -include $(CANDIDATE_RECOVERY_PUBLISH_OBJS:.o=.d)
+-include $(CANDIDATE_CLOSURE_OBJS:.o=.d) $(BUILD_DIR)/storage/candidate_wal_identity.d
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d
 -include $(DATABASE_OBJS:.o=.d) $(DATABASE_EXEC_FAULT_OBJS:.o=.d) $(BUILD_DIR)/sql/sql_statement_fault.d $(BUILD_DIR)/storage/heap_store_test.d

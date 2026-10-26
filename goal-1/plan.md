@@ -162,3 +162,15 @@ source how와 구조가 다른 A/B 및 독립 심사를 대조했다.24a2의 기
 첫 구현24a2a는 pruning 없는 anchored canonical view다. 기존 checkpoint-aware 한 의미 상태에서 page frontier와 admission/result를 관측하고 graph·outcome 정본을 공유한다. RESOLVED와 PREVIEW의 기존 성공/오류와 standalone API의 검증 범위를 보존한다. loader는 작업 중만 빌리고 metadata만 소유하며 실제 WAL 접근·UUID와 callback 뒤 cut을 확인한다. cache info 비교를 모든 prefix 변조 검증으로 확대하지 않는다. 기존 직렬·배타·동일 prefix 전제, redo/publication/extent 보존, 전체 요청/상주량과 실패 시 NULL·기존 상태 보존을 지킨다.
 
 실제 recovery query/body·publish preview·buffer proof를 연결해 검증하고24a2a만 별도 commit한다. parent24a2의 정확 identity·계수/closure pruning·active group·같은 owner 예약 구간·4096초과 누적 cycle과 이후 durable seed/page redo/reader/실제 공간 reuse는 그대로 미완료다.24a1/24a2a/24a2 뒤 추가 checkpoint를 두고 기존 after24a3와 이후 checkpoint를 보존한다. 코드·시험·helper는 한 foreground nonpersistent localClaude만 작성하며 원자료·실패·main/YCSB·다른 작업본·Vault를 보존한다.
+
+Task24a2의 source gate 추가 확인: 4MiB segment에서 IMAGE 포함 최소 group8552B의4097개는 최소35037544B다. 작은 DELTA/txn-only 초과와 이를 혼동하지 않는다. 기존 마지막segment 제한과 단순 frame_end 전진으로 일반padding 경계를 검증할 수 없다는 좁은 독립 source검토를 받았다. 전체prefix scan 재호출이나 CORRUPT를 무시한 segment 점프는 불합격이다. 필요 최소 owned-WAL suffix cursor의 padding·다음header·실제frame 검증을 parent24a2 closure 전에 당겨 구현·검증한다. 원래24a4/6의 내구 seed/bootstrap·cold-open·일반 checkpoint suffix·reader/실제회수 의무는 그대로 남는다. 이는 source/산술 근거의 순서 조정이며 아직 새 cursor/native/4096IMAGE·event 통과가 아니다.
+
+최소suffix순회의두읽기전용후보와독립심사는WAL소유단일push방식에수렴했다. parent19/17·독립19/17은설계점수다. 좁은read capability가UUID·기존buffer·소유FD의bounded absolute-LSN callback만빌리는A를선택한다. private WAL구조전체를노출하거나fullscan을통째로옮기는B보다이번변경경계가작다. B의semantic STOPPED와transport IO/CORRUPT분리요건을이식한다. 공통segment/frame검증기를추출해749행WAL에단순추가하지않는다. 기존재진입계약은BUSY가아닌INVALID이며actual I/O·visitor전체guard와종료뒤access대조를지킨다. task24a2-cursor-candidates.json·cursor-judgment.json은source/설계근거일뿐새native/기능완료가아니다.
+
+## Latest StreamLite naming and cleanup priority — 2026-10-27
+
+사용자는 저장소·로컬 폴더·패키지 배포 이름을 StreamLite로 모두 맞추고 mode로 불필요한 레거시 파일·중복 회귀·불필요한 조건을 제거하라고 명시했다. 현재 이름 보존을 고정한 이전 package/ABI namespace 방침은 이 요청의 이름 변경 범위에서 대체한다. 표시 이름은 StreamLite, repository·directory·distribution·Python import의 정본은 streamlite로 둔다. C 공개 이름과 빌드·CI·설치 예도 같은 정본으로 옮기며 현재 저장소의 호출부를 함께 이전하고 불필요한 shim/병행 경로는 남기지 않는다. 기존 DB 파일 형식과 원자료·실패·이력의 원문은 이름 일괄 치환 대상이 아니며 실제 사용과 복구/비교 필요에 따라 구별한다.
+
+우선순위는 진행 중인 검증 결과·소스 보존 → R1 이름 통일 → R2 사용하지 않는 레거시/중복 조건 정리 → 기존24a3 이후 원래 목표다. 실행 중인 검사 입력 파일은 바꾸지 않는다. 사용자가 다시 명시한 저장소 metadata 이름 변경은 코드 입력을 바꾸지 않으므로 즉시 할 수 있으며, 폴더 이동은 활성 검사/작업본 경로를 확인한 안전한 경계에서 실행한다. 새 worktree·다른 background 대화로 넘기지 않는다. 코드와 소스 삭제는 단일 localClaude, parent는 조사·명령·검증·기록·커밋을 맡는다. 기능 변경과 이름/구조 정리는 별도 검증·커밋한다. 기존 추가 checkpoint24a2와 after24a3를 유지한다.
+
+완료 조건은 실제 GitHub repository identity/원격 URL, 이동한 로컬 정본/작업본 연결, streamlite wheel·sdist/공유 라이브러리·import·실제 스모크와 현재 문서/CI의 이름 일치다. cleanup은 실제 호출·참조·행동 검증으로 필요성을 판정해 삭제하고, 남아야 하는 안전/복구·실제 writer·COW/WAL 비교 요구를 단지 귀찮다는 이유로 없애지 않는다. 영향이 없는 성공 증거는 소스/헤더·객체/실행물 의존성을 대조해 재사용하며 반복 검증을 기계적으로 확장하지 않는다. 실제 다중 writer와 정리/복구 포함 COW/WAL 총비용은 아직 착수 전이며 원래 미완료 의무를 그대로 유지한다.

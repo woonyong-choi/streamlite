@@ -5,35 +5,9 @@
 
 #include "storage/checksum.h"
 #include "candidate_wal_system_internal.h"
+#include "candidate_wal_witness_data_internal.h"
 #include "candidate_wal_witness_internal.h"
 #include "candidate_wal_witness_state_internal.h"
-
-typedef struct {
-    candidate_witness_transaction_t value;
-    uint64_t owner_epoch;
-    uint64_t result_limit;
-    uint64_t chunk_bytes;
-} transaction_t;
-
-typedef struct { uint64_t id, transaction_id, end_lsn; } group_t;
-typedef struct { uint64_t id, generation, image_lsn; bool has_image; } page_t;
-typedef struct {
-    uint64_t id, transaction_id, first_lsn, last_lsn, owner_epoch;
-    uint32_t expected_pages, expected_records, records, pages, crc;
-    page_t seen[CANDIDATE_WITNESS_PAGES];
-} pending_group_t;
-
-struct candidate_wal_witness {
-    candidate_witness_info_t info;
-    candidate_wal_memory_t memory;
-    candidate_wal_status_t status;
-    uint8_t uuid[16];
-    unsigned active;
-    transaction_t transactions[CANDIDATE_WITNESS_TRANSACTIONS];
-    group_t groups[CANDIDATE_WITNESS_GROUPS];
-    pending_group_t pending;
-    candidate_wal_system_t *system;
-};
 
 static uint64_t read_le(const uint8_t *p, unsigned bytes)
 {
@@ -83,9 +57,7 @@ static candidate_wal_status_t add_transaction(candidate_wal_witness_t *w,
     if (w->info.transactions == CANDIDATE_WITNESS_TRANSACTIONS || w->active == 64)
         return CANDIDATE_WAL_LIMIT;
     transaction_t *t = &w->transactions[w->info.transactions++];
-    t->value.transaction_id = r->transaction_id;
-    t->value.first_lsn = r->lsn;
-    t->owner_epoch = r->owner_epoch;
+    *t = (transaction_t){.value = {.transaction_id = r->transaction_id,.first_lsn = r->lsn},.owner_epoch = r->owner_epoch};
     w->active++;
     *out = t;
     return CANDIDATE_WAL_OK;

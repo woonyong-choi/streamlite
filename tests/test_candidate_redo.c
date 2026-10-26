@@ -234,7 +234,10 @@ static void faults_and_reexecution(void)
         char path[300];target_t t={.fd=target_file(path,phase+20)};int fd=t.fd;
         fail_lsn=f.bad_lsn;mutate_lsn=f.bad_lsn;
         if(kind)mutate_scan=phase;else fail_scan=phase;
-        CHECK(run_redo(&f,&t,NULL,&info)==(kind?CANDIDATE_WAL_CORRUPT:CANDIDATE_WAL_IO));
+        candidate_wal_status_t redo_actual=run_redo(&f,&t,NULL,&info),redo_expected=kind?CANDIDATE_WAL_CORRUPT:CANDIDATE_WAL_IO;
+        printf("FAULT_SCAN phase=%u kind=%u actual=%u expected=%u wal_end=%llu writes=%u syncs=%u scan_pass=%u fail_scan=%u mutate_scan=%u fail_lsn=%llu\n",
+            phase,kind,redo_actual,redo_expected,(unsigned long long)info.wal_end_lsn,t.writes,t.syncs,scan_pass,fail_scan,mutate_scan,(unsigned long long)fail_lsn);
+        CHECK(redo_actual==(kind?CANDIDATE_WAL_CORRUPT:CANDIDATE_WAL_IO));
         fail_scan=0;mutate_scan=0;CHECK(info.wal_end_lsn==0&&t.syncs==0&&t.writes==(phase==3?7u:0u));
         t=(target_t){.fd=fd};OK(run_redo(&f,&t,NULL,&info));check_target(&t,&f);CHECK(close(fd)==0);
     }

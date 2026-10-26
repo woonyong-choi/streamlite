@@ -123,6 +123,7 @@ static candidate_wal_status_t record_digest(const candidate_wal_record_t *r, uin
 
 static candidate_wal_status_t scan_status(candidate_wal_status_t status, const fingerprint_t *f)
 {
+    if (status==CANDIDATE_WAL_POISONED && f->status==CANDIDATE_WAL_CORRUPT) return CANDIDATE_WAL_CORRUPT;
     return status==CANDIDATE_WAL_STOPPED ? f->status : status;
 }
 

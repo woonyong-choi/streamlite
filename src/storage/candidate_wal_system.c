@@ -252,3 +252,32 @@ candidate_wal_status_t candidate_system_finish(candidate_wal_system_t *s, uint64
     if (is_system) next.system_groups++;
     s->info = next; return CANDIDATE_WAL_OK;
 }
+
+static bool is_latest_transition(const candidate_wal_system_t *s, uint32_t index)
+{
+    uint64_t page = s->events[index].value.allocation.page_id;
+    for (uint32_t i = index + 1; i < s->info.events; i++)
+        if (s->events[i].type <= 7 && s->events[i].value.allocation.page_id == page) return false;
+    return true;
+}
+
+static bool is_retained_event(const candidate_wal_system_t *s, uint32_t index, uint64_t max_allocated_id)
+{
+    const candidate_witness_system_event_t *e = &s->events[index];
+    if (e->type == 6 || e->type == 7) return is_latest_transition(s, index);
+    if (e->type != 16) return false;
+    uint64_t first = e->value.reserve.previous_page > max_allocated_id ? e->value.reserve.previous_page : max_allocated_id;
+    return e->value.reserve.next_page > first;
+}
+
+uint32_t candidate_system_retain(candidate_wal_system_t *s, uint64_t max_allocated_id)
+{
+    uint32_t kept = 0, total = s->info.events;
+    for (uint32_t i = 0; i < total; i++) {
+        if (!is_retained_event(s, i, max_allocated_id)) continue;
+        if (kept != i) s->events[kept] = s->events[i];
+        kept++;
+    }
+    s->info.events = kept;
+    return total - kept;
+}

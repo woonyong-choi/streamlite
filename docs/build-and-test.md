@@ -242,7 +242,20 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build/recovery-view-check SANITIZE=
 
 `CANDIDATE_VIEW_CASES`로 사례를 선택하고 `CANDIDATE_VIEW_TIMEOUT`으로 각 runner의 제한 시간을 정한다. 새 build 경로와 사용하지 않은 report 접두사를 사용한다. report에는 사례 이름이 접미사로 붙는다. `CANDIDATE_VIEW_TEST_OBJS`와 `CANDIDATE_SEMANTIC_MODULE`을 재정의할 수 있으며, 기존 객체를 재사용하면 각 dependency/fingerprint를 `--old-file`과 전후 hash로 보호한다.
 
-기본 사례는 실제 후보 복구·결과 조회, strict/preview·force 경계, 선택 결과 밖 LIVE version, codec을 통과하는 참조 순환, 주입한 fsync EIO·손상된 pinned 읽기, OOM·입력 snapshot·loader 종료 뒤 metadata 조회, raw capture의 checkpoint 거절을 검사한다. 의미 관측 읽기의 대조는 checkpoint 읽기를 구분하며 redo·핀·전체 복구의 총비용은 별도로 남는다. 이 target은 메모리 view 후보를 검증하며 내구 seed·이력 정리·실제 공간 재사용·독립 writer·제품 성능 검증은 후속이다.
+기본 사례는 실제 후보 복구·결과 조회, strict/preview·force 경계, 선택 결과 밖 LIVE version, codec을 통과하는 참조 순환, 주입한 fsync EIO·손상된 pinned 읽기, OOM·입력 snapshot·loader 종료 뒤 metadata 조회, raw capture의 checkpoint 거절을 검사한다. 의미 관측 읽기의 대조는 checkpoint 읽기를 구분하며 redo·핀·전체 복구의 총비용은 별도로 남는다. 이 target은 최초 메모리 view 후보를 검증한다. 이어 처리와 의미 이력 정리는 아래 선택형 target으로 검사하며, 내구 seed·실제 공간 재사용·독립 writer·제품 성능 검증은 후속이다.
+
+[정리 시험](../tests/test_candidate_recovery_closure.c), [경계 시험](../tests/test_candidate_recovery_closure_boundary.c), [transport 시험](../tests/test_candidate_recovery_closure_transport.c), [callback 시험](../tests/test_candidate_recovery_closure_callbacks.c), [raw 읽기 경계 시험](../tests/test_candidate_wal_read_boundary.c)과 [identity 시험](../tests/test_candidate_wal_identity.c)은 별도 선택형 target으로 실행한다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build/recovery-closure-check SANITIZE=undefined \
+  CFLAGS="-Wall -Wextra -Werror -g -Iinclude -Itests -fsanitize=undefined -fno-sanitize-recover=undefined" \
+  LDFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined" \
+  test-candidate-recovery-closure test-candidate-recovery-closure-boundary \
+  test-candidate-recovery-closure-transport test-candidate-recovery-closure-callbacks \
+  test-candidate-wal-read-boundary test-candidate-wal-identity
+```
+
+각 target의 report 접두사와 사례 목록은 Makefile의 `CANDIDATE_CLOSURE_REPORT`·`CANDIDATE_CLOSURE_CASES`, `CANDIDATE_CLOSURE_BOUNDARY_REPORT`·`CANDIDATE_CLOSURE_BOUNDARY_CASES`, `CANDIDATE_CLOSURE_TRANSPORT_REPORT`·`CANDIDATE_CLOSURE_TRANSPORT_CASES`, `CANDIDATE_CLOSURE_CALLBACKS_REPORT`·`CANDIDATE_CLOSURE_CALLBACKS_CASES`, `CANDIDATE_WAL_READ_BOUNDARY_REPORT`·`CANDIDATE_WAL_READ_BOUNDARY_CASES`, `CANDIDATE_IDENTITY_REPORT`로 지정한다. 재실행에는 사용하지 않은 build·report 경로를 준다. 복구 view와 transport를 함께 바꿨으면 이 선택형 시험만으로 기존 WAL·checkpoint·redo·복구·buffer 회귀를 대신하지 않는다. raw 경계 시험의 IO는 잘못된 읽기 주소의 기존 오류 분류이며 실제 디스크 장애나 전원 차단을 증명하지 않는다.
 
 ### 공통 비용 수집
 

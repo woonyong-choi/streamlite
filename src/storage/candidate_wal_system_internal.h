@@ -18,6 +18,8 @@ candidate_wal_status_t candidate_system_image(candidate_wal_system_t *system, co
 candidate_wal_status_t candidate_system_event(candidate_wal_system_t *system, const candidate_wal_record_t *record);
 candidate_wal_status_t candidate_system_finish(candidate_wal_system_t *system, uint64_t group,
     uint64_t end_lsn, uint64_t owner_epoch, uint64_t minimum_active_epoch, bool is_system);
+/* page별 마지막 allocation 전이와 max_allocated_id 뒤 page를 남긴 예약만 남기고 버린 event 수를 돌려준다. */
+uint32_t candidate_system_retain(candidate_wal_system_t *system, uint64_t max_allocated_id);
 candidate_witness_system_info_t candidate_system_info(const candidate_wal_system_t *system);
 const candidate_witness_system_event_t *candidate_system_at(const candidate_wal_system_t *system, uint32_t index);
 

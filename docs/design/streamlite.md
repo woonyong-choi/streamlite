@@ -548,7 +548,15 @@ capture와 continue는 실제 WAL handle의 UUID와 접근 상태를 먼저 확�
 
 [소유 복구 view 시험](../../tests/test_candidate_recovery_view.c)은 실제 후보 결과 조회·본문, strict/preview 차이, catalog에 없는 LIVE version과 frozen CSN, 참조 순환·세대·pageLSN, callback 입력·cut 변경과 할당 실패를 대조한다. 주입한 fsync EIO와 손상된 pinned 기록의 실제 읽기 경로를 검사하고, 같은 cut의 force 전후 STALE·OK를 확인한다. checkpoint가 있는 WAL의 raw seed capture 거절도 별도로 대조한다.
 
-이 view도 전체 보존 WAL과 기존 역사 한도를 요구한다. checkpoint·redo·핀·기존 단독 API의 읽기는 계속 필요하다. 복구 handle에 남는 메타데이터와 기존·새 view가 함께 살아 있는 요청량은 총비용 비교에 포함한다. ID·nonce 이력 정리, 내구 seed, 실제 WAL 공간 회수·재사용, MVCC와 독립 writer는 후속 경계다.
+view의 최초 생성은 전체 보존 WAL과 기존 역사 한도를 요구한다. [이어 처리하는 후보](../../src/storage/candidate_recovery_continue.c)는 source와 같은 anchor·mode로 view를 복사하고 source cut 뒤의 suffix만 적용한다. anchor가 다르면 UNSUPPORTED, mode가 다르면 INVALID다. 정리는 suffix를 적용한 뒤 수행하므로 현재 resident와 새 suffix의 합도 거래4096개·완성 group4096개·event4096개와 활성 거래64개 한도를 지켜야 한다. 이 한도를 넘으면 LIMIT를 반환한다. 정리할 때에는 catalog의 결과, 허용 epoch의 미게시 admission, 모든 LIVE version과 previous chain, 미종결 거래와 그 group 의존성을 보존한다. allocation의 마지막 전이와 같은 owner의 예약 구간도 남긴다. 역사 누계와 현재 보유한 항목 수를 나누므로 반복 정리 뒤 resident 표가 작아져도 이미 처리한 거래·group·event 수는 줄지 않는다.
+
+[시작 ID와 nonce 이력](../../src/storage/candidate_wal_identity_internal.h)은 별도로 소유한다. 시작 ID는 정확한 구간 집합으로 보존해 은퇴한 ID와 예약만 한 빈 ID를 구별한다. nonce는 허용 epoch 전체를 보존하고 실제 retention floor 전이에 따라 정리한다. 내부 표현 한도는 ID 구간과 nonce 각각262144개이며, 표현 공간이 부족하면 기존 상태를 보존하고 LIMIT를 반환한다. 외부 색인의 세대·병합 I/O·게시·복구·정리 수명을 추가하는 안은 보류한다. 이 선택은 해당 비용 구조에 따른 설계 판단이며 측정된 성능 우위가 아니다.
+
+[WAL 소유 suffix cursor](../../src/storage/candidate_wal_read.c)는 cut 이후의 실제 frame, 남은 0 padding과 다음 segment header를 순서대로 검증한다. prefix byte를 다시 읽지 않으며 빌린 소유 FD와 기존 WAL buffer만 사용한다. 읽기와 visitor callback 동안 재진입 guard를 유지하고, OK나 STOPPED 종료 뒤에도 handle의 거부 상태와 파일 소유권을 확인한다. 첫 suffix owner가 이전 최고 owner보다 낮으면 visitor를 호출하기 전에 CORRUPT로 거절한다. captured 경계 metadata의 불일치와 실제 wire 손상의 지속 거부는 구분한다. checkpoint record를 포함한 일반 suffix는 여전히 UNSUPPORTED다. 별도 raw 메모리 seed API의 마지막 segment 제한도 유지한다.
+
+[정리 시험](../../tests/test_candidate_recovery_closure.c)과 [경계 시험](../../tests/test_candidate_recovery_closure_boundary.c)은 누적4096개를 넘는 이력, 정상 예약 gap, 중복 ID·nonce, 미게시 ABORT와 LIVE·미종결 의존성, UUID 결합과 할당 실패를 대조한다. [transport 시험](../../tests/test_candidate_recovery_closure_transport.c)은 자연 segment 경계를 넘는 IMAGE group과 event 이력, prefix 읽기 거절, 짧은 padding·header·frame 손상과 I/O·재진입을 검사한다. [callback 시험](../../tests/test_candidate_recovery_closure_callbacks.c)과 [raw 읽기 경계 시험](../../tests/test_candidate_wal_read_boundary.c)은 종료 때의 오류 우선순위, 첫 owner 거절과 기존 raw 오류 분류를 검사한다.
+
+checkpoint·redo·핀·기존 단독 API의 읽기는 계속 필요하다. 복구 handle에 남는 메타데이터와 기존·새 view가 함께 살아 있는 요청량, identity 정리의 scratch와 빌린 WAL 상주량을 총비용 비교에 포함한다. 요청 bytes와 stack 상한을 합산한 시험을 RSS나 전체 제품 메모리 보장으로 해석하지 않는다. 이 후보는 메모리의 의미 이력을 정리하며 내구 seed, page/redo 기반, 실제 WAL 공간 회수·재사용, MVCC와 독립 writer는 후속 경계다.
 
 같은 DB에서 durable commit 뒤 응답만 사라진 경우를 판별하기 위해 영속 요청 ID·결과 조회를 선택한다. 업무 key만 대조하는 안은 임의 SQL·여러 행의 결과 본문과 원자 commit을 일반적으로 복원하지 못하므로 이 후보의 기본 해결책으로 삼지 않는다. 영속 기록의 쓰기·보존 비용은 양쪽 비교에 포함한다. 이득이 사라지더라도 결과 보장을 한쪽에서만 빼지 않는다.
 

@@ -120,6 +120,18 @@ bool candidate_admissions_at(const candidate_admissions_t *a, uint32_t index, ca
 
 size_t candidate_admissions_resident_bytes(const candidate_admissions_t *a) { return a == NULL ? 0 : sizeof(*a); }
 
+void candidate_admissions_retain(candidate_admissions_t *a, const candidate_wal_witness_t *witness)
+{
+    admissions_t *s = &a->state;
+    uint32_t kept = 0;
+    for (uint32_t i = 0; i < s->count; i++) {
+        if (candidate_wal_witness_find(witness, s->admissions[i].transaction_id) == NULL) continue;
+        if (kept != i) s->admissions[kept] = s->admissions[i];
+        kept++;
+    }
+    s->count = kept;
+}
+
 void candidate_admissions_close(candidate_admissions_t **out)
 {
     if (out == NULL || *out == NULL) return;
