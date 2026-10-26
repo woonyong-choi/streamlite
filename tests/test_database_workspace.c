@@ -13,7 +13,8 @@
 #include "../src/sql/database_workspace.h"
 #include "alloc_audit.h"
 
-#define DB_PATH "build/test_database_workspace_dir/workspace.db"
+#define WORKSPACE_DIR STREAMLITE_TEST_BUILD_DIR "/test_database_workspace_dir"
+#define DB_PATH WORKSPACE_DIR "/workspace.db"
 #define TEST_BUDGET (64u * 1024u * 1024u)
 
 typedef struct {
@@ -84,7 +85,7 @@ static database_t *fresh(budget_t *budget, bool workspace, bool cache)
     query_ledger = ledger;
     database_t *db = NULL;
     assert(database_create_bounded(DB_PATH, &ledger, &db) == DATABASE_OK);
-    assert(database_workspace_enabled(db) == (TOTE_TXN_WORKSPACE != 0));
+    assert(database_workspace_enabled(db) == (STREAMLITE_TXN_WORKSPACE != 0));
     assert(database_workspace_set_enabled(db, workspace && getenv("WORKSPACE_NEGATIVE_CONTROL") == NULL));
     database_cache_set_enabled(db, cache);
     audit_ctx = budget;
@@ -455,7 +456,7 @@ static void workspace_rejects_late_resident_attachment(void)
 
 int main(void)
 {
-    mkdir("build/test_database_workspace_dir", 0700);
+    mkdir(WORKSPACE_DIR, 0700);
     system_io = page_file_default_io();
     page_file_io_t io = system_io;
     io.pwrite = counted_write;

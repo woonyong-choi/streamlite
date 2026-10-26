@@ -1,6 +1,6 @@
-"""설치한 totedb 패키지가 자기 안의 공유 라이브러리로 DB와 큐를 쓰는지 확인한다.
+"""설치한 streamlite 패키지가 자기 안의 공유 라이브러리로 DB와 큐를 쓰는지 확인한다.
 
-wheel·sdist 설치 직후 저장소 밖에서 실행한다. TOTEDB_LIB이 있으면 패키지 안 라이브러리를 확인할 수 없으므로 실패한다.
+wheel·sdist 설치 직후 저장소 밖에서 실행한다. STREAMLITE_LIB이 있으면 패키지 안 라이브러리를 확인할 수 없으므로 실패한다.
 """
 
 from __future__ import annotations
@@ -10,29 +10,29 @@ import sys
 import tempfile
 from pathlib import Path
 
-import totedb
-from totedb import Database, Queue
-from totedb._native import load_library
+import streamlite
+from streamlite import Database, Queue
+from streamlite._native import load_library
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from tools.verify_benchmark import verify_library
 
 
 def main() -> None:
-    if os.environ.get("TOTEDB_LIB"):
-        sys.exit("TOTEDB_LIB is set; unset it to check the bundled library")
-    package_dir = Path(totedb.__file__).resolve().parent
-    bundled = [p for p in package_dir.iterdir() if p.name.startswith("libtotedb.")]
+    if os.environ.get("STREAMLITE_LIB"):
+        sys.exit("STREAMLITE_LIB is set; unset it to check the bundled library")
+    package_dir = Path(streamlite.__file__).resolve().parent
+    bundled = [p for p in package_dir.iterdir() if p.name.startswith("libstreamlite.")]
     if len(bundled) != 1:
         sys.exit(
             f"expected one bundled library in {package_dir}, found {[p.name for p in bundled]}"
         )
     verify_library(bundled[0])
 
-    native_version = load_library().tote_version().decode()
-    if native_version != totedb.__version__:
+    native_version = load_library().streamlite_version().decode()
+    if native_version != streamlite.__version__:
         sys.exit(
-            f"version mismatch: library {native_version}, package {totedb.__version__}"
+            f"version mismatch: library {native_version}, package {streamlite.__version__}"
         )
 
     with (
@@ -50,7 +50,7 @@ def main() -> None:
             sys.exit(f"unexpected result: rows={rows!r} claim={claim!r}")
         queue.ack(claim)
 
-    print(f"totedb {totedb.__version__} ok: {bundled[0].name}")
+    print(f"streamlite {streamlite.__version__} ok: {bundled[0].name}")
 
 
 if __name__ == "__main__":

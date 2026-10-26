@@ -52,7 +52,7 @@ struct heap {
     uint32_t *dirs;         /* 디렉터리 페이지 ID: 트리면 루트 다음에 잎 순서 */
     size_t dir_count;
     size_t dir_cap;
-    bool is_tree;           /* true면 dirs[0]은 LHD2 루트이고 dirs[1..]이 잎이다. false면 dirs[0]이 잎 한 장이다 */
+    bool is_tree;           /* true면 dirs[0]은 SLD2 루트이고 dirs[1..]이 잎이다. false면 dirs[0]이 잎 한 장이다 */
     page_file_status_t last_status;
     bool indexed;           /* 키 색인을 쓴다(heap_index_spec_t) */
     size_t key_column;
@@ -458,7 +458,7 @@ static heap_status_t check_directory_count(const uint8_t *body, bool leaf, uint3
     return memcmp(body + used, zero, PAGE_BODY_BYTES - used) == 0 ? HEAP_OK : HEAP_CORRUPT;
 }
 
-/* LHD3 잎 본문 하나를 entries·free_bytes 뒤에 붙인다. 마지막이 아닌 잎은 가득 차 있어야 한다. */
+/* SLD3 잎 본문 하나를 entries·free_bytes 뒤에 붙인다. 마지막이 아닌 잎은 가득 차 있어야 한다. */
 static heap_status_t parse_leaf(heap_t *heap, const uint8_t *body, bool is_last, bool allow_empty,
                                 u32_list_t *entries, u16_list_t *free_bytes)
 {
@@ -482,7 +482,7 @@ static heap_status_t parse_leaf(heap_t *heap, const uint8_t *body, bool is_last,
     return HEAP_OK;
 }
 
-/* LHD2 루트 본문(body)을 해석해 잎을 모두 읽는다. 루트 머리글의 어긋남은 첫 페이지 규칙대로 UNSUPPORTED다. */
+/* SLD2 루트 본문(body)을 해석해 잎을 모두 읽는다. 루트 머리글의 어긋남은 첫 페이지 규칙대로 UNSUPPORTED다. */
 static heap_status_t read_tree(heap_t *heap, uint32_t root, const uint8_t *body, u32_list_t *entries,
                                u16_list_t *free_bytes, u32_list_t *dirs)
 {
@@ -507,7 +507,7 @@ static heap_status_t read_tree(heap_t *heap, uint32_t root, const uint8_t *body,
 }
 
 /*
- * 디렉터리를 읽는다. 루트는 LHD3 잎 한 장이거나 LHD2 루트 아래 LHD3 잎들이다. 그 밖의 첫 페이지는
+ * 디렉터리를 읽는다. 루트는 SLD3 잎 한 장이거나 SLD2 루트 아래 SLD3 잎들이다. 그 밖의 첫 페이지는
  * UNSUPPORTED_LOCATOR다(이 모듈의 디렉터리가 아니다).
  */
 static heap_status_t read_directory(heap_t *heap)
@@ -2402,8 +2402,8 @@ static void retire_old_directories(heap_batch_t *batch, size_t pages, const uint
 }
 
 /*
- * 바뀐 record page를 가리키는 새 디렉터리를 쓴다. 새 잎은 모두 LHD3이며 한 장의 한도를 넘으면
- * LHD2 루트 아래에 둔다. 트리 heap은 바뀐 잎과 루트만 새로 쓴다.
+ * 바뀐 record page를 가리키는 새 디렉터리를 쓴다. 새 잎은 모두 SLD3이며 한 장의 한도를 넘으면
+ * SLD2 루트 아래에 둔다. 트리 heap은 바뀐 잎과 루트만 새로 쓴다.
  */
 static heap_status_t publish_directories(heap_batch_t *batch, uint32_t *new_root)
 {

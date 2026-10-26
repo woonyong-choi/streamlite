@@ -15,7 +15,7 @@ on:
       - src/benchmark.*
       - tools/verify_benchmark.py
       - tests/test_benchmark*
-      - python/totedb/_native.py
+      - python/streamlite/_native.py
       - tests/package_smoke.py
       - .github/workflows/release.yml
 
@@ -35,10 +35,10 @@ jobs:
         env:
           IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
         run: |
-          python_version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' python/totedb/__init__.py)
+          python_version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' python/streamlite/__init__.py)
           tag="${GITHUB_REF_NAME#v}"
           if [ "$IS_TAG" != true ]; then tag="$python_version"; fi
-          header_version=$(sed -n 's/^#define TOTE_VERSION "\(.*\)"$/\1/p' include/totedb.h)
+          header_version=$(sed -n 's/^#define STREAMLITE_VERSION "\(.*\)"$/\1/p' include/streamlite.h)
           echo "tag=$tag python=$python_version header=$header_version"
           test "$tag" = "$python_version"
           test "$tag" = "$header_version"
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-24.04
     environment:
       name: pypi
-      url: https://pypi.org/project/totedb/
+      url: https://pypi.org/project/streamlite/
     permissions:
       id-token: write
     steps:

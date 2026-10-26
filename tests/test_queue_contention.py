@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "python"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from totedb import StaleError
+from streamlite import StaleError
 
 from bench.queue_contention.adapters import (
     ENGINES,
@@ -261,7 +261,7 @@ class QueueContentionTest(unittest.TestCase):
             adapter.outbox(2, payload(2, 64), retry)
             expected = adapter.rows()
             self.assertEqual(adapter.business(), [(2, payload(2, 64))])
-            if engine != "totedb":
+            if engine != "streamlite":
                 settings = adapter.settings()
                 self.assertEqual(
                     (

@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 import pytest
-from totedb import Database, ForkedHandleError, Queue
+from streamlite import Database, ForkedHandleError, Queue
 
 SPAWN = multiprocessing.get_context("spawn")
 LEASE_MS = 60_000
@@ -65,7 +65,7 @@ def _run_workers(path: Path, workers: int) -> list[tuple[int, int]]:
 
 @pytest.mark.parametrize("workers", [4, 16])
 def test_workers_share_one_queue_without_loss_or_duplicates(tmp_path: Path, workers: int) -> None:
-    path = tmp_path / "jobs.totedb"
+    path = tmp_path / "jobs.streamlite"
     jobs = 40 * workers
     _make_jobs(path, jobs)
 
@@ -85,7 +85,7 @@ def test_workers_share_one_queue_without_loss_or_duplicates(tmp_path: Path, work
 
 
 def test_commit_in_one_process_is_seen_by_the_next_statement_of_another(tmp_path: Path) -> None:
-    path = tmp_path / "seen.totedb"
+    path = tmp_path / "seen.streamlite"
     first = Database(path)
     first.execute("CREATE TABLE kv (k TEXT PRIMARY KEY, v INTEGER)")
     second = Database(path, create=False)
@@ -99,7 +99,7 @@ def test_commit_in_one_process_is_seen_by_the_next_statement_of_another(tmp_path
 
 
 def test_forked_child_cannot_use_the_parent_handle(tmp_path: Path) -> None:
-    path = tmp_path / "fork.totedb"
+    path = tmp_path / "fork.streamlite"
     db = Database(path)
     db.execute("CREATE TABLE t (x INTEGER)")
     db.execute("INSERT INTO t VALUES (1)")
@@ -163,7 +163,7 @@ def _wait_for_writer_progress(
 
 
 def test_killed_writer_leaves_no_half_applied_transaction(tmp_path: Path) -> None:
-    path = tmp_path / "kill.totedb"
+    path = tmp_path / "kill.streamlite"
     db = Database(path)
     db.execute(
         "CREATE TABLE log (id INTEGER PRIMARY KEY AUTOINCREMENT, worker INTEGER, n INTEGER, pad BLOB)"
@@ -248,7 +248,7 @@ def _finish_processes(processes: list[multiprocessing.Process]) -> None:
 
 
 def test_reads_do_not_wait_for_another_process_writing(tmp_path: Path) -> None:
-    path = tmp_path / "read.totedb"
+    path = tmp_path / "read.streamlite"
     db = Database(path)
     db.execute("CREATE TABLE big (id INTEGER PRIMARY KEY, pad BLOB)")
     db.execute("INSERT INTO big VALUES (1, X'00')")
@@ -300,7 +300,7 @@ def _commit_in_process(path: str, start: int, count: int) -> None:
 
 
 def test_writer_keeps_committing_while_readers_read_continuously(tmp_path: Path) -> None:
-    path = tmp_path / "starve.totedb"
+    path = tmp_path / "starve.streamlite"
     db = Database(path)
     db.execute("CREATE TABLE t (x INTEGER, pad BLOB)")
     with db.begin() as txn:

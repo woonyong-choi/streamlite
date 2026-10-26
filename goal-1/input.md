@@ -68,3 +68,7 @@ db 레포 이름 아직 안바뀐거 같은데 스트림라이트 였나 로컬 
 이거 6시간 전에도 한다고했는데 아직 안한거야? 레포와 로컬 폴더명 패키지 배포 StreamLite 이걸로 모두 맞춰 수정해
 
 [$mode](/Users/woonyong/.codex/skills/mode/SKILL.md)  로 구현하고 불필요한 레거시 파일 또는 테스트 회귀 검증 등 필요 없는 파일과 조건은 모두 삭제해서 깨끗하게 하고 작업해
+
+## Explicit disk-format cleanup correction — 2026-10-27
+
+기존 파일을 계속 열 수 있도록 디스크 식별값 `TOTEDB`는 유지합니다. 레거시는 모두제거하고 새로운 이름으로 바꿔서 적용해

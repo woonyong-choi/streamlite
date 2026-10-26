@@ -26,7 +26,7 @@
  */
 
 #define DIR_NAME "build/test_session_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 
 static int g_run, g_fail;
 #define CHECK(cond, ...)                              \

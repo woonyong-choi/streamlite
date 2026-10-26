@@ -174,3 +174,11 @@ Task24a2의 source gate 추가 확인: 4MiB segment에서 IMAGE 포함 최소 gr
 우선순위는 진행 중인 검증 결과·소스 보존 → R1 이름 통일 → R2 사용하지 않는 레거시/중복 조건 정리 → 기존24a3 이후 원래 목표다. 실행 중인 검사 입력 파일은 바꾸지 않는다. 사용자가 다시 명시한 저장소 metadata 이름 변경은 코드 입력을 바꾸지 않으므로 즉시 할 수 있으며, 폴더 이동은 활성 검사/작업본 경로를 확인한 안전한 경계에서 실행한다. 새 worktree·다른 background 대화로 넘기지 않는다. 코드와 소스 삭제는 단일 localClaude, parent는 조사·명령·검증·기록·커밋을 맡는다. 기능 변경과 이름/구조 정리는 별도 검증·커밋한다. 기존 추가 checkpoint24a2와 after24a3를 유지한다.
 
 완료 조건은 실제 GitHub repository identity/원격 URL, 이동한 로컬 정본/작업본 연결, streamlite wheel·sdist/공유 라이브러리·import·실제 스모크와 현재 문서/CI의 이름 일치다. cleanup은 실제 호출·참조·행동 검증으로 필요성을 판정해 삭제하고, 남아야 하는 안전/복구·실제 writer·COW/WAL 비교 요구를 단지 귀찮다는 이유로 없애지 않는다. 영향이 없는 성공 증거는 소스/헤더·객체/실행물 의존성을 대조해 재사용하며 반복 검증을 기계적으로 확장하지 않는다. 실제 다중 writer와 정리/복구 포함 COW/WAL 총비용은 아직 착수 전이며 원래 미완료 의무를 그대로 유지한다.
+
+## Latest disk-format correction — 2026-10-27
+
+사용자는 TOTEDB 디스크 식별값 유지도 명시적으로 거절했다. 현재 R1은 namespace뿐 아니라 새 StreamLite 파일 식별값·형식과 활성codec 식별값을 함께 적용하는 범위로 수정한다. 기존 형식3 reader·별칭·자동전환을 남기지 않는다. 기존 namespace-only Claude 초안은 생성/적용 전 SIGTERM으로 종료했으며 실패/중단 기록을 보존한다. 실제 원자료·실패·역사 DB bytes는 보존할 증거이며 소스 변경을 데이터 일괄 변환/삭제로 해석하지 않는다. 새 형식 생성·왕복/재시작·두 slot/손상 거절·공간 회수 경계와 Python/C/Java caller를 검증한다. 과거 DB 재열기 양성 대신 새 구현의 기존 형식 거절·불변과 새 형식의 정상을 대조한다. 이는 기존 호환 보존 방침의 최신 사용자 override이며 기존 runtime 기본 COW와 정리/복구 포함 COW/WAL 비교 요구를 제거하지 않는다.
+
+R1 형식 선택은 `STREAMLITE`10B와0 padding6B의16B 식별자·format4·SLPG envelope다. metadata64B는 유지해 control header80B, inline free IDs1508·chain2038로 정한다. 대안8B SLDB0004는 layout 변경이 작지만 전체 제품명이 드러나지 않아 선택하지 않는다. 이는 구조/명료성 판단이며 성능 우열 실측이 아니다. 활성LRP2/LRO2/LRCT/LHD2/LHD3/LPK1/LTX1은 각각SLR2/SLO2/SLCT/SLD2/SLD3/SLK1/SLT1으로 옮긴다. heap2/3은 옛버전호환이 아닌 현재 root/leaf의 서로 다른 종류이므로 두 알고리즘은 유지한다. 기본 COW의 실제 게시/fallback·회수/큰사슬·값 왕복을 재검증하며 새로운 별도경계캠페인을 기계적으로 요구하지 않는다.
+
+R1 배포 버전은 미배포0.3.0으로 분리한다. 기존GitHub v0.2.0 tag/릴리스는 당시ToteDB 원본이므로 새 namespace·형식4에 재사용하지 않는다. 이는 가역적인 pre1 minor 선택이며 tag갱신/발행/업로드는 수행하지 않는다. 기존0.2.0 Changelog와원자료를보존한다.

@@ -4,8 +4,8 @@
 #include "sql/database.h"
 #include "statement_clone.h"
 
-#ifndef TOTE_SQL_TEMPLATE_CACHE
-#define TOTE_SQL_TEMPLATE_CACHE 0
+#ifndef STREAMLITE_SQL_TEMPLATE_CACHE
+#define STREAMLITE_SQL_TEMPLATE_CACHE 0
 #endif
 
 #define DATABASE_CACHE_MAX_ENTRIES 64u

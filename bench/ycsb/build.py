@@ -91,7 +91,7 @@ def build() -> dict[str, object]:
         "-I" + str(home / "include" / ("darwin" if suffix == "dylib" else "linux")),
         str(SOURCE / "native" / "bridge.c"),
         "-L" + str(ROOT / "build" / "lib"),
-        "-ltotedb",
+        "-lstreamlite",
         "-lsqlite3",
         "-Wl,-rpath," + str(ROOT / "build" / "lib"),
         "-o",

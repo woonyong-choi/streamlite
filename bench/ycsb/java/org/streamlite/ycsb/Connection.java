@@ -1,4 +1,4 @@
-package org.totedb.ycsb;
+package org.streamlite.ycsb;
 
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.locks.LockSupport;
@@ -23,7 +23,7 @@ final class Connection implements AutoCloseable {
 
   Connection(String engineName, String path, boolean create, long retryMillis) {
     engine = switch (engineName) {
-      case "totedb" -> 0;
+      case "streamlite" -> 0;
       case "sqlite" -> 1;
       default -> throw new IllegalArgumentException("unknown engine " + engineName);
     };

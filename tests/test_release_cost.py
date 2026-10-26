@@ -34,7 +34,7 @@ def native(evidence: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
         "id": "fixture",
         "n": 8,
         "mode": "on",
-        "engine": "tote",
+        "engine": "streamlite",
         "phase": "measured",
         "repetition": 1,
     }
@@ -57,7 +57,7 @@ def native(evidence: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
             )
         records.append(
             {
-                "operation": ("tote_begin", "tote_exec", "tote_commit")[index % 3],
+                "operation": ("streamlite_begin", "streamlite_exec", "streamlite_commit")[index % 3],
                 "sequence": index + 5,
                 "pid": 42,
                 "tid": 43,
@@ -113,7 +113,7 @@ def test_failed_on_preflight_invalidates_perturbation(
         if (
             spec["n"] == 128
             and spec["mode"] == "on"
-            and spec["engine"] == "tote"
+            and spec["engine"] == "streamlite"
             and spec["phase"] == "preflight"
         ):
             raise ValueError("failed ON preflight")
@@ -214,7 +214,7 @@ def test_native_corrupt_evidence_is_rejected(native: tuple, fault: str) -> None:
     elif fault == "sequence":
         raw["records"][4]["sequence"] = 5
     elif fault == "operation":
-        raw["records"][4]["operation"] = "tote_commit"
+        raw["records"][4]["operation"] = "streamlite_commit"
     elif fault == "phase-count":
         raw["records"][4]["phases"].pop()
     elif fault == "condition":
@@ -293,7 +293,7 @@ def test_native_schedule_has_fixed_counts_rotation_and_mode_alternation() -> Non
             assert selected[0]["mode"] == ("off" if repeat % 2 == 0 else "on")
             assert {row["mode"] for row in selected} == {"on", "off"}
             first_engines.append(selected[0]["engine"])
-        assert first_engines[:3] == ["tote", "sqlite-each", "sqlite-reuse"]
+        assert first_engines[:3] == ["streamlite", "sqlite-each", "sqlite-reuse"]
 
 
 @pytest.mark.parametrize("fault", ["none", "missing", "duplicate", "n", "repeat"])
@@ -482,7 +482,7 @@ def test_suite_complete_summary_preserves_subordinate_comparisons_and_total_coun
         "runs": [{"phase": "measured", "status": "ok"}] * 240
         + [{"phase": "preflight", "status": "ok"}] * 48,
         "comparisons": [{"baseline": "sqlite-wal", "median_ratio": 1.25}],
-        "aggregates": [{"engine": "totedb"}],
+        "aggregates": [{"engine": "streamlite"}],
     }
     ycsb = {
         "measured_runs": 120,

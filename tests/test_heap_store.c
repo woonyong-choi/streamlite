@@ -21,7 +21,7 @@
  */
 
 #define DIR_NAME "build/test_heap_store_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 #define COLUMNS 5
 #define ZERO_ROW {{{VALUE_NULL, 0, 0, NULL, 0}, false}}
 
@@ -1340,7 +1340,7 @@ static void test_one_row_change_rewrites_only_its_leaf(void)
     clean_dir();
 }
 
-/* #198: 지금 형식(LHD3 잎, LHD2 루트)이 아닌 디렉터리 루트는 해석하지 않고 거절한다. 옛 형식을 옮기는 코드는 없다. */
+/* #198: 지금 형식(SLD3 잎, SLD2 루트)이 아닌 디렉터리 루트는 해석하지 않고 거절한다. */
 static void test_unknown_directory_root_is_rejected(void)
 {
     printf("\n[test_unknown_directory_root_is_rejected]\n");
@@ -1349,7 +1349,7 @@ static void test_unknown_directory_root_is_rejected(void)
     model_reset();
     load_many_pages(&fx, 10);
     uint8_t body[PAGE_BODY_BYTES] = {0};
-    memcpy(body, "LHD1", 4);
+    memcpy(body, "QQD0", 4);
     body[4] = 1;
     directory_put_u32(body + 8, fx.tid);
     uint32_t page;
@@ -1358,14 +1358,14 @@ static void test_unknown_directory_root_is_rejected(void)
     heap_schema_t schema = {TYPES, COLUMNS};
     heap_t *heap = NULL;
     heap_status_t opened = heap_open(fx.file, fx.tid, page, &schema, &heap);
-    CHECK(opened == HEAP_UNSUPPORTED_LOCATOR && heap == NULL, "옛 LHD1 루트는 UNSUPPORTED_LOCATOR (%d)", (int)opened);
+    CHECK(opened == HEAP_UNSUPPORTED_LOCATOR && heap == NULL, "알 수 없는 QQD0 루트는 UNSUPPORTED_LOCATOR (%d)", (int)opened);
     fx_close(&fx);
     model_reset();
     clean_dir();
 }
 
 
-/* 잎이 한 장이면 여유 바이트가 저장된 LHD3 페이지 한 장만 쓴다. */
+/* 잎이 한 장이면 여유 바이트가 저장된 SLD3 페이지 한 장만 쓴다. */
 static void test_single_leaf_heap_keeps_hint_format(void)
 {
     printf("\n[test_single_leaf_heap_keeps_hint_format]\n");
@@ -1375,7 +1375,7 @@ static void test_single_leaf_heap_keeps_hint_format(void)
     load_many_pages(&fx, 400);
     uint32_t dirs[MAX_DIRS];
     CHECK(directory_pages(fx.heap, dirs, fx.file) == 1 && root_has_magic(&fx, HEAP_HINT_DIRECTORY_MAGIC),
-          "항목이 한 장 안이면 LHD3 한 장");
+          "항목이 한 장 안이면 SLD3 한 장");
     fx_close(&fx);
     model_reset();
     clean_dir();
@@ -1408,7 +1408,7 @@ static void test_deleted_space_reused_after_reopen(void)
     assert(fx_commit(&fx, batch) == CATALOG_STORE_OK);
     heap_batch_free(batch);
     fx_reopen(&fx);
-    CHECK(root_has_magic(&fx, HEAP_HINT_DIRECTORY_MAGIC), "재시작 뒤에도 LHD3 공간 힌트가 남음");
+    CHECK(root_has_magic(&fx, HEAP_HINT_DIRECTORY_MAGIC), "재시작 뒤에도 SLD3 공간 힌트가 남음");
     assert(heap_batch_begin(fx.heap, &batch) == HEAP_OK);
     model_put(6, 4);
     value_view_t views[COLUMNS];

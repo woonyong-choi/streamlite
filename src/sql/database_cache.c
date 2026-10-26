@@ -33,7 +33,7 @@ struct database_cache {
 
 static bool is_enabled(const database_t *db)
 {
-    bool is_selected = db->cache_mode > 0 || (db->cache_mode == 0 && TOTE_SQL_TEMPLATE_CACHE);
+    bool is_selected = db->cache_mode > 0 || (db->cache_mode == 0 && STREAMLITE_SQL_TEMPLATE_CACHE);
     bool has_owner = !mem_ledger_enabled(&db->ledger) || mem_ledger_enabled(&db->resident);
     return is_selected && has_owner;
 }

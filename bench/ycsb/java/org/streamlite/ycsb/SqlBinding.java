@@ -1,4 +1,4 @@
-package org.totedb.ycsb;
+package org.streamlite.ycsb;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;

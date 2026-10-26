@@ -5,13 +5,11 @@ import ctypes
 import importlib
 import json
 import resource
-import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
 PHASE_FIELDS = (
     "wall_ns",
     "cpu_ns",
@@ -74,16 +72,6 @@ def _rss_peak() -> int:
     return int(value if sys.platform == "darwin" else value * 1024)
 
 
-def _database_class(condition: str) -> Any:
-    module = importlib.import_module("totedb.database")
-    if condition == "eager":
-        source = subprocess.run(
-            ["git", "show", "54b43509:python/totedb/database.py"], cwd=ROOT, text=True, capture_output=True, check=True
-        ).stdout
-        exec(compile(source, "54b43509:python/totedb/database.py", "exec"), module.__dict__)
-    return module.Database
-
-
 def _sql_work(db: Any) -> None:
     db.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, value INTEGER)")
     with db.begin() as txn:
@@ -94,8 +82,8 @@ def _sql_work(db: Any) -> None:
 
 
 def _queue_work(db: Any, count: int, payload: int, diagnostics: _Diagnostics) -> dict[str, Any]:
-    from totedb import ItemState, Queue, StaleError  # noqa: PLC0415
-    from totedb.queue import ClaimToken  # noqa: PLC0415
+    from streamlite import ItemState, Queue, StaleError  # noqa: PLC0415
+    from streamlite.queue import ClaimToken  # noqa: PLC0415
 
     queue = Queue(db, "jobs", clock=lambda: 1000)
     body = b"x" * payload
@@ -136,8 +124,9 @@ def _queue_work(db: Any, count: int, payload: int, diagnostics: _Diagnostics) ->
 
 
 def _run(args: argparse.Namespace) -> dict[str, Any]:
-    database = _database_class(args.condition)
-    diagnostics = _Diagnostics(importlib.import_module("totedb.database")._lib)
+    module = importlib.import_module("streamlite.database")
+    database = module.Database
+    diagnostics = _Diagnostics(module._lib)
     baseline_rss = _rss_peak()
     times = {name: 0 for name in ("open_ns", "execute_ns", "close_ns", "reopen_verify_ns")}
     latencies = []
@@ -173,7 +162,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
         with database(path, create=False) as reopened:
             _require(reopened.execute("SELECT id,value FROM notes").rows == ((1, 1),), "reopen mismatch")
             if args.scenario != "sql":
-                from totedb import Queue  # noqa: PLC0415
+                from streamlite import Queue  # noqa: PLC0415
 
                 _require(Queue(reopened, "jobs", install=False).list_items() == [], "reopened queue not empty")
         times["reopen_verify_ns"] += time.perf_counter_ns() - begin
@@ -203,7 +192,7 @@ def _run(args: argparse.Namespace) -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--prefix", required=True)
-    parser.add_argument("--condition", choices=("eager", "lazy", "baseline", "candidate"), required=True)
+    parser.add_argument("--condition", choices=("lazy", "baseline", "candidate"), required=True)
     parser.add_argument("--scenario", choices=("sql", "queue", "conditional"), required=True)
     parser.add_argument("--instances", type=int, required=True)
     parser.add_argument("--operations", type=int, required=True)

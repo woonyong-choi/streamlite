@@ -1,4 +1,4 @@
-"""wheel·sdist 빌드 때 C 공유 라이브러리를 만들어 totedb 패키지 안에 넣는다.
+"""wheel·sdist 빌드 때 C 공유 라이브러리를 만들어 streamlite 패키지 안에 넣는다.
 
 라이브러리는 ctypes로 여는 일반 공유 라이브러리라 Python ABI와 무관하다.
 그래서 wheel 태그는 `py3-none-{플랫폼}` 하나다.
@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tools.verify_benchmark import verify_library
 
 ROOT = Path(__file__).resolve().parent
-LIB_NAME = "libtotedb.dylib" if sys.platform == "darwin" else "libtotedb.so"
+LIB_NAME = "libstreamlite.dylib" if sys.platform == "darwin" else "libstreamlite.so"
 
 
 class BuildPyWithLibrary(build_py):
@@ -28,7 +28,7 @@ class BuildPyWithLibrary(build_py):
 
     def run(self) -> None:
         super().run()
-        build_dir = Path(self.build_lib).resolve().parent / "totedb-native-release"
+        build_dir = Path(self.build_lib).resolve().parent / "streamlite-native-release"
         command = [
             "make",
             "-B",
@@ -45,7 +45,7 @@ class BuildPyWithLibrary(build_py):
         for name in ("BENCHMARK", "MAKEFLAGS", "MFLAGS", "MAKEOVERRIDES"):
             environment.pop(name, None)
         subprocess.run(command, check=True, env=environment)
-        target = Path(self.build_lib) / "totedb" / LIB_NAME
+        target = Path(self.build_lib) / "streamlite" / LIB_NAME
         target.parent.mkdir(parents=True, exist_ok=True)
         source = build_dir / "lib" / LIB_NAME
         verify_library(source)

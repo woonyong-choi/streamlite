@@ -58,7 +58,7 @@ static ackq_status_t attempt(ackq_t *queue, session_t *session)
 
 int main(int argc, char **argv)
 {
-    require(argc == 2, "usage: test_pending_query_native fixture.totedb");
+    require(argc == 2, "usage: test_pending_query_native fixture.streamlite");
     session_limits_t limits = {128u << 20, 64u << 20, 32u << 20, 2, 0};
     session_pool_t *pool = NULL;
     session_db_t *db = NULL;

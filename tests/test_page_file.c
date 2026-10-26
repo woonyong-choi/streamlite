@@ -27,7 +27,7 @@
 #include "storage/record_page.h"
 
 #define DIR_NAME "__test__page_file_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 #define PARTIAL_PATH DB_PATH ".partial"
 
 static int g_run = 0;
@@ -254,7 +254,7 @@ static uint32_t page_file_control_generation_slot(const uint8_t *bytes)
 {
     uint64_t gen[2] = {0, 0};
     for (uint32_t slot = 0; slot < 2; slot++) {
-        for (int i = 7; i >= 0; i--) gen[slot] = (gen[slot] << 8) | bytes[(size_t)slot * PAGE_FILE_PAGE_BYTES + 32 + 20 + i];
+        for (int i = 7; i >= 0; i--) gen[slot] = (gen[slot] << 8) | bytes[(size_t)slot * PAGE_FILE_PAGE_BYTES + 32 + 28 + i];
     }
     return gen[1] > gen[0] ? 1 : 0;
 }
@@ -312,18 +312,20 @@ static void test_fixture_roundtrip_is_page_size_independent(void)
     uint8_t *bytes = slurp(DB_PATH, &size);
     CHECK(bytes != NULL && size % PAGE_FILE_PAGE_BYTES == 0, "파일 길이가 8192의 배수 (%zu)", size);
     /* 제어 페이지 envelope: 고정 magic·버전·종류·page ID·길이와 본문 magic */
-    CHECK(memcmp(bytes + PAGE_FILE_PAGE_BYTES, "LRPG", 4) == 0, "envelope magic");
+    CHECK(memcmp(bytes + PAGE_FILE_PAGE_BYTES, "SLPG", 4) == 0, "envelope magic");
     CHECK(bytes[PAGE_FILE_PAGE_BYTES + 4] == 2 && bytes[PAGE_FILE_PAGE_BYTES + 5] == 0, "envelope 버전 2(CRC32C) LE");
     CHECK(crc32c(0, "123456789", 9) == 0xe3069283u, "CRC32C 표준 검사값");
     CHECK(bytes[PAGE_FILE_PAGE_BYTES + 6] == PAGE_KIND_CONTROL, "종류 제어");
     CHECK(bytes[PAGE_FILE_PAGE_BYTES + 8] == 1, "제어 slot 1의 page ID");
-    uint32_t manifest = bytes[PAGE_FILE_PAGE_BYTES + 32 + 68];
-    CHECK(manifest > 0 && bytes[PAGE_FILE_PAGE_BYTES + 16] + 256u * bytes[PAGE_FILE_PAGE_BYTES + 17] == 72 + 8 * manifest,
-          "빈 목록이 없는 제어 본문은 머리 72바이트와 manifest %u개", manifest);
-    CHECK(bytes[PAGE_FILE_PAGE_BYTES + 40] == PAGE_FILE_FORMAT_VERSION, "형식 버전 3");
-    CHECK(memcmp(bytes + PAGE_FILE_PAGE_BYTES + 32, "TOTEDB\0\0", 8) == 0, "파일 magic");
-    CHECK(bytes[PAGE_FILE_PAGE_BYTES + 48] == 4 && bytes[PAGE_FILE_PAGE_BYTES + 49] == 3 &&
-              bytes[PAGE_FILE_PAGE_BYTES + 50] == 2 && bytes[PAGE_FILE_PAGE_BYTES + 51] == 1,
+    uint32_t manifest = bytes[PAGE_FILE_PAGE_BYTES + 32 + 76];
+    CHECK(manifest > 0 && bytes[PAGE_FILE_PAGE_BYTES + 16] + 256u * bytes[PAGE_FILE_PAGE_BYTES + 17] == 80 + 8 * manifest,
+          "빈 목록이 없는 제어 본문은 머리 80바이트와 manifest %u개", manifest);
+    CHECK(memcmp(bytes + PAGE_FILE_PAGE_BYTES + 32, "STREAMLITE\0\0\0\0\0\0", 16) == 0, "파일 magic 16바이트");
+    CHECK(PAGE_FILE_FORMAT_VERSION == 4 && bytes[PAGE_FILE_PAGE_BYTES + 48] == 4 && bytes[PAGE_FILE_PAGE_BYTES + 49] == 0 &&
+              bytes[PAGE_FILE_PAGE_BYTES + 50] == 0 && bytes[PAGE_FILE_PAGE_BYTES + 51] == 0,
+          "형식 버전 4 LE");
+    CHECK(bytes[PAGE_FILE_PAGE_BYTES + 56] == 4 && bytes[PAGE_FILE_PAGE_BYTES + 57] == 3 &&
+              bytes[PAGE_FILE_PAGE_BYTES + 58] == 2 && bytes[PAGE_FILE_PAGE_BYTES + 59] == 1,
           "byte order 표식은 little-endian 0x01020304");
     uint8_t *page0 = bytes;
     bool blank = true;
@@ -343,7 +345,7 @@ static void test_fixture_roundtrip_is_page_size_independent(void)
     record_slice_t value;
     CHECK(record_page_get(record, 0, &value) == RECORD_PAGE_OK && value.size_bytes == 5 &&
               memcmp(value.bytes, "alpha", 5) == 0,
-          "LRP2 본문이 envelope 안에서 왕복");
+          "SLR2 본문이 envelope 안에서 왕복");
     uint8_t wrong[PAGE_BODY_BYTES];
     CHECK(page_file_read(file, g_record_page, PAGE_KIND_RECORD, 8, wrong) == PAGE_FILE_CORRUPT,
           "다른 table ID는 거절");
@@ -365,20 +367,20 @@ typedef void (*mutate_t)(uint8_t *bytes, size_t *size);
 static void mut_control_version(uint8_t *b, size_t *s)
 {
     (void)s;
-    b[PAGE_FILE_PAGE_BYTES + 32 + 8] = 9;
+    b[PAGE_FILE_PAGE_BYTES + 32 + 16] = 9;
     reseal(b + PAGE_FILE_PAGE_BYTES);
 }
 static void mut_page_bytes(uint8_t *b, size_t *s)
 {
     (void)s;
-    b[PAGE_FILE_PAGE_BYTES + 32 + 12 + 1] = 0x10; /* 4096+... 의미 없는 크기 */
+    b[PAGE_FILE_PAGE_BYTES + 32 + 20 + 1] = 0x10; /* 4096+... 의미 없는 크기 */
     reseal(b + PAGE_FILE_PAGE_BYTES);
 }
 static void mut_byte_order(uint8_t *b, size_t *s)
 {
     (void)s;
-    b[PAGE_FILE_PAGE_BYTES + 32 + 16] = 1;
-    b[PAGE_FILE_PAGE_BYTES + 32 + 19] = 4;
+    b[PAGE_FILE_PAGE_BYTES + 32 + 24] = 1;
+    b[PAGE_FILE_PAGE_BYTES + 32 + 27] = 4;
     reseal(b + PAGE_FILE_PAGE_BYTES);
 }
 static void mut_envelope_version(uint8_t *b, size_t *s)
@@ -393,10 +395,30 @@ static void mut_file_magic(uint8_t *b, size_t *s)
     b[PAGE_FILE_PAGE_BYTES + 32] = 'X';
     reseal(b + PAGE_FILE_PAGE_BYTES);
 }
+static void mut_file_magic_padding(uint8_t *b, size_t *s)
+{
+    (void)s;
+    b[PAGE_FILE_PAGE_BYTES + 32 + 15] = 1;
+    reseal(b + PAGE_FILE_PAGE_BYTES);
+}
+static void mut_foreign_envelope_slot1(uint8_t *b, size_t *s)
+{
+    (void)s;
+    memcpy(b + PAGE_FILE_PAGE_BYTES, "QQPG", 4);
+    reseal(b + PAGE_FILE_PAGE_BYTES);
+}
+static void mut_foreign_envelope_slot0(uint8_t *b, size_t *s)
+{
+    (void)s;
+    memcpy(b, b + PAGE_FILE_PAGE_BYTES, PAGE_FILE_PAGE_BYTES);
+    memcpy(b, "QQPG", 4);
+    b[8] = 0;
+    reseal(b);
+}
 static void mut_checksum(uint8_t *b, size_t *s)
 {
     (void)s;
-    b[PAGE_FILE_PAGE_BYTES + 40] ^= 1; /* 본문 한 비트, 체크섬은 그대로 */
+    b[PAGE_FILE_PAGE_BYTES + 48] ^= 1; /* 본문 한 비트, 체크섬은 그대로 */
 }
 static void mut_body_length(uint8_t *b, size_t *s)
 {
@@ -431,7 +453,7 @@ static void mut_empty(uint8_t *b, size_t *s)
     (void)b;
     *s = 0;
 }
-/* 다른 형식의 파일: 두 제어 페이지 어디에도 ToteDB magic이 없다 */
+/* 다른 형식의 파일: 두 제어 페이지 어디에도 StreamLite magic이 없다 */
 static void mut_foreign_file(uint8_t *b, size_t *s)
 {
     for (size_t i = 0; i < *s; i++) b[i] = (uint8_t)(i * 13u + 5u);
@@ -446,20 +468,14 @@ static void mut_short_text_file(uint8_t *b, size_t *s)
 static void mut_both_controls_bad(uint8_t *b, size_t *s)
 {
     (void)s;
-    b[PAGE_FILE_PAGE_BYTES + 40] ^= 1;
+    b[PAGE_FILE_PAGE_BYTES + 48] ^= 1;
     b[100] = 0x5a; /* slot 0은 비어 있지 않은 쓰레기 */
 }
 static void mut_page_count_too_small(uint8_t *b, size_t *s)
 {
     (void)s;
-    b[PAGE_FILE_PAGE_BYTES + 32 + 28] = 1;
+    b[PAGE_FILE_PAGE_BYTES + 32 + 36] = 1;
     reseal(b + PAGE_FILE_PAGE_BYTES);
-}
-static void mut_old_lrp1_only(uint8_t *b, size_t *s)
-{
-    (void)s;
-    memset(b, 0, 2 * PAGE_FILE_PAGE_BYTES); /* 제어 페이지 없이 옛 LRP1 페이지가 앞에 있는 파일 */
-    memcpy(b, "LRP1", 4);
 }
 
 static void test_invalid_files_are_rejected_without_change(void)
@@ -475,6 +491,9 @@ static void test_invalid_files_are_rejected_without_change(void)
         {"byte order", mut_byte_order, PAGE_FILE_UNSUPPORTED},
         {"envelope 버전", mut_envelope_version, PAGE_FILE_UNSUPPORTED},
         {"파일 magic", mut_file_magic, PAGE_FILE_UNSUPPORTED},
+        {"파일 magic 마지막 바이트", mut_file_magic_padding, PAGE_FILE_UNSUPPORTED},
+        {"슬롯 1의 다른 envelope", mut_foreign_envelope_slot1, PAGE_FILE_UNSUPPORTED},
+        {"슬롯 0의 다른 envelope", mut_foreign_envelope_slot0, PAGE_FILE_UNSUPPORTED},
         {"체크섬", mut_checksum, PAGE_FILE_CORRUPT},
         {"본문 길이", mut_body_length, PAGE_FILE_CORRUPT},
         {"page ID", mut_wrong_page_id, PAGE_FILE_CORRUPT},
@@ -486,7 +505,6 @@ static void test_invalid_files_are_rejected_without_change(void)
         {"짧은 텍스트 파일", mut_short_text_file, PAGE_FILE_UNSUPPORTED},
         {"제어 둘 다 손상", mut_both_controls_bad, PAGE_FILE_CORRUPT},
         {"page_count가 너무 작음", mut_page_count_too_small, PAGE_FILE_CORRUPT},
-        {"옛 LRP1 페이지만", mut_old_lrp1_only, PAGE_FILE_UNSUPPORTED},
     };
     fresh_dir();
     hooks_reset();
@@ -579,7 +597,7 @@ static void test_control_generations_and_fallback_limits(void)
         memcpy(mixed, after_g1, size_g1);
         /* 슬롯 0에 세대 3처럼 보이는 페이지를 직접 만든다: 슬롯 1의 세대 1 본문을 세대 3으로 바꿔 슬롯 1에 */
         uint8_t *slot1 = mixed + PAGE_FILE_PAGE_BYTES;
-        slot1[32 + 20] = 3; /* 세대 3, 슬롯 1 */
+        slot1[32 + 28] = 3; /* 세대 3, 슬롯 1 */
         reseal(slot1);
         /* 슬롯 0은 비어 있음: 세대 3인데 반대편이 비면 손상으로 취급되어 damaged_slots=1로 열린다 */
         spit(DB_PATH, mixed, size_g1);
@@ -1210,8 +1228,8 @@ static void test_free_list_survives_reopen(void)
     uint8_t *bytes = slurp(DB_PATH, &size);
     uint32_t slot = page_file_control_generation_slot(bytes);
     uint8_t *control = bytes + (size_t)slot * PAGE_FILE_PAGE_BYTES;
-    uint32_t manifest = (uint32_t)control[32 + 68] | (uint32_t)control[32 + 69] << 8;
-    uint8_t *ids_at = control + 32 + 72 + 8 * manifest;
+    uint32_t manifest = (uint32_t)control[32 + 76] | (uint32_t)control[32 + 77] << 8;
+    uint8_t *ids_at = control + 32 + 80 + 8 * manifest;
     memcpy(ids_at + 4, ids_at, 4);
     reseal(control);
     spit(DB_PATH, bytes, size);
@@ -1460,6 +1478,91 @@ static void test_short_io_and_eintr(void)
     clean_dir();
 }
 
+/* STREAMLITE_FAILURE_PATH가 주어지면 실패한 파일을 그 경로(없어야 함)에 남긴다 */
+static void preserve_failure(void)
+{
+    const char *keep = getenv("STREAMLITE_FAILURE_PATH");
+    if (keep == NULL || keep[0] == '\0') return;
+    if (link(DB_PATH, keep) == 0)
+        printf("  보존: %s\n", keep);
+    else
+        printf("  보존 실패: %s (%s)\n", keep, strerror(errno));
+}
+
+static void test_fresh_releases_one_past_control_reopen(void)
+{
+    printf("\n[test_fresh_releases_one_past_control_reopen]\n");
+    fresh_dir();
+    hooks_reset();
+    enum { N = 1509 };
+    page_file_t *file;
+    assert(page_file_create(DB_PATH, &file) == PAGE_FILE_OK);
+    uint8_t body[PAGE_BODY_BYTES], got[PAGE_BODY_BYTES];
+    memset(body, 0x6B, sizeof(body));
+    static uint32_t ids[N];
+    for (int i = 0; i < N; i++) {
+        assert(page_file_alloc(file, &ids[i]) == PAGE_FILE_OK);
+        assert(page_file_write(file, ids[i], PAGE_KIND_OVERFLOW, 0, body) == PAGE_FILE_OK);
+    }
+    for (int i = 0; i < N; i++) assert(page_file_release(file, ids[i]) == PAGE_FILE_OK);
+    CHECK(page_file_reusable_count(file) == N, "새 페이지 %d장이 모두 재사용 목록으로 (%zu)", N,
+          page_file_reusable_count(file));
+    page_file_status_t status = page_file_commit(file);
+    CHECK(status == PAGE_FILE_OK, "commit (%d)", (int)status);
+    if (status == PAGE_FILE_OK) {
+        status = page_file_publish(file);
+        CHECK(status == PAGE_FILE_OK, "publish (%d)", (int)status);
+    }
+    page_file_close(file);
+    if (status != PAGE_FILE_OK) {
+        clean_dir();
+        return;
+    }
+
+    file = NULL;
+    status = page_file_open(DB_PATH, true, &file, NULL);
+    CHECK(status == PAGE_FILE_OK, "쓰기 열기 (%d)", (int)status);
+    if (status != PAGE_FILE_OK) {
+        if (file != NULL) page_file_close(file);
+        preserve_failure();
+        clean_dir();
+        return;
+    }
+    size_t reusable = page_file_reusable_count(file);
+    uint32_t high = page_file_allocated_pages(file);
+    bool *seen = calloc(high, sizeof(bool));
+    assert(seen != NULL);
+    bool unique = true, in_range = true, written = true;
+    uint32_t first = 0;
+    for (size_t i = 0; i < reusable; i++) {
+        uint32_t id;
+        if (page_file_alloc(file, &id) != PAGE_FILE_OK || id < 2 || id >= high) {
+            in_range = false;
+            break;
+        }
+        unique = unique && !seen[id];
+        seen[id] = true;
+        if (i == 0) first = id;
+        written = written && page_file_write(file, id, PAGE_KIND_OVERFLOW, 0, body) == PAGE_FILE_OK;
+    }
+    free(seen);
+    CHECK(reusable > 0 && reusable <= N && in_range && unique && written && page_file_allocated_pages(file) == high,
+          "재사용 %zu장을 겹치지 않게 파일 범위 안에서 받고 씀 (%u -> %u)", reusable, high,
+          page_file_allocated_pages(file));
+    status = page_file_commit(file);
+    CHECK(status == PAGE_FILE_OK, "재사용 페이지 commit (%d)", (int)status);
+    page_file_close(file);
+
+    file = NULL;
+    status = page_file_open(DB_PATH, false, &file, NULL);
+    CHECK(status == PAGE_FILE_OK && reusable > 0 &&
+              page_file_read(file, first, PAGE_KIND_OVERFLOW, 0, got) == PAGE_FILE_OK && got[0] == 0x6B,
+          "읽기 열기와 재사용 페이지 읽기 (%d)", (int)status);
+    if (file != NULL) page_file_close(file);
+    if (status != PAGE_FILE_OK) preserve_failure();
+    clean_dir();
+}
+
 int main(void)
 {
     /* 잠금 충돌은 기다리지 않고 곧바로 LOCKED로 확인한다 */
@@ -1480,6 +1583,7 @@ int main(void)
     test_free_list_commit_failures();
     test_incomplete_commit_falls_back();
     test_short_io_and_eintr();
+    test_fresh_releases_one_past_control_reopen();
     page_file_set_default_io(NULL);
     clean_dir();
     printf("\n%s: %d/%d\n", g_fail == 0 ? "ALL PASSED" : "FAILED", g_run - g_fail, g_run);

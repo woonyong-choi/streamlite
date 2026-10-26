@@ -55,9 +55,9 @@ class _NativeCopies:
         self.infos: weakref.WeakSet[Any] = weakref.WeakSet()
 
     def install(self) -> None:
-        module: Any = importlib.import_module("totedb.queue")
-        original_list = module._lib.tote_queue_list
-        original_free = module._lib.tote_queue_list_free
+        module: Any = importlib.import_module("streamlite.queue")
+        original_list = module._lib.streamlite_queue_list
+        original_free = module._lib.streamlite_queue_list_free
         original_info = module._to_info
 
         def list_items(*args: Any) -> Any:
@@ -82,8 +82,8 @@ class _NativeCopies:
             self.info_peak = max(self.info_peak, len(self.infos))
             return info
 
-        module._lib.tote_queue_list = list_items
-        module._lib.tote_queue_list_free = free_items
+        module._lib.streamlite_queue_list = list_items
+        module._lib.streamlite_queue_list_free = free_items
         module._to_info = to_info
 
     def snapshot(self) -> dict[str, int]:
@@ -107,8 +107,8 @@ def create_fixture(settings: dict[str, Any]) -> dict[str, Any]:
         queue._getter.commit()
         queue.close()
     else:
-        module = importlib.import_module("totedb")
-        db = module.Database(path / "data.totedb")
+        module = importlib.import_module("streamlite")
+        db = module.Database(path / "data.streamlite")
         queue = module.Queue(db, "ack_queue", clock=lambda: 1000)
         for start in range(1, settings["backlog"] + 1, settings["batch"]):
             with db.begin() as txn:
@@ -206,10 +206,10 @@ def _open_query(settings: dict[str, Any], serializer: CountingSerializer) -> tup
     if settings["condition"] == "vendor":
         return _open_vendor(path, serializer), None
     if settings["condition"] == "compat":
-        module = importlib.import_module("totedb.persistqueue_compat")
+        module = importlib.import_module("streamlite.persistqueue_compat")
         return module.SQLiteAckQueue(path, auto_resume=False, serializer=serializer), None
-    module = importlib.import_module("totedb")
-    db = module.Database(path / "data.totedb")
+    module = importlib.import_module("streamlite")
+    db = module.Database(path / "data.streamlite")
     return module.Queue(db, "ack_queue", install=False), db
 
 

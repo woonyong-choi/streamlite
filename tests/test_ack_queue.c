@@ -359,9 +359,9 @@ static void test_lease_extension(void)
     until = 77;
     CHECK(ackq_extend(q, db, id, fence, 100, &until) == ACKQ_STALE && until == 77, "옛 claim의 연장은 STALE");
     char sql[96];
-    snprintf(sql, sizeof(sql), "SELECT fence FROM tote_queue_jobs WHERE id = %llu", (unsigned long long)id);
+    snprintf(sql, sizeof(sql), "SELECT fence FROM streamlite_queue_jobs WHERE id = %llu", (unsigned long long)id);
     int64_t now_fence = scalar_int(db, sql);
-    snprintf(sql, sizeof(sql), "SELECT lease_until FROM tote_queue_jobs WHERE id = %llu", (unsigned long long)id);
+    snprintf(sql, sizeof(sql), "SELECT lease_until FROM streamlite_queue_jobs WHERE id = %llu", (unsigned long long)id);
     CHECK(now_fence == (int64_t)newer && scalar_int(db, sql) == 1500, "STALE 연장은 lease와 fence를 바꾸지 않는다");
     CHECK(ackq_extend(q, db, 999, 1, 100, &until) == ACKQ_NOT_FOUND, "없는 id");
     CHECK(ackq_extend(q, db, id, newer, ACKQ_MAX_LEASE_MS + 1, &until) == ACKQ_INVALID, "lease 상한 초과");
@@ -405,7 +405,7 @@ static void test_idem_retention_after_purge(void)
     /* 보존 기간(purge 시각 100 + 1000)이 지나면 같은 key로 새 작업을 만든다 */
     g_now = 1100;
     CHECK(enq(q, db, "mail-1", "order-1", &other, &dup) == ACKQ_OK && !dup && other != id, "기간이 지나면 새 작업");
-    CHECK(scalar_int(db, "SELECT COUNT(*) FROM tote_queue_jobs_keys") == 0, "만료된 key는 지워졌다");
+    CHECK(scalar_int(db, "SELECT COUNT(*) FROM streamlite_queue_jobs_keys") == 0, "만료된 key는 지워졌다");
 
     /* 0이면 key를 남기지 않는다 */
     ackq_close(&q);
@@ -418,7 +418,7 @@ static void test_idem_retention_after_purge(void)
     ackq_claims_release(g_items, 1);
     assert(ackq_purge(q, db, false, 10, &purged) == ACKQ_OK && purged == 1);
     CHECK(enq(q, db, "a", "k", &other, &dup) == ACKQ_OK && !dup && other != id, "보존하지 않는 큐는 purge 뒤 새 작업");
-    CHECK(scalar_int(db, "SELECT COUNT(*) FROM tote_queue_plain_keys") == 0, "key를 남기지 않는다");
+    CHECK(scalar_int(db, "SELECT COUNT(*) FROM streamlite_queue_plain_keys") == 0, "key를 남기지 않는다");
     ackq_close(&q);
 
     /* 기본 보존 기간은 7일 */
@@ -770,13 +770,13 @@ static void test_wrong_database_and_read_only(void)
 
     /* 두 번째 database: 같은 이름의 큐 테이블은 없고 업무 테이블만 있다 */
     char path_b[192];
-    snprintf(path_b, sizeof(path_b), "%s/other.totedb", g_dir);
+    snprintf(path_b, sizeof(path_b), "%s/other.streamlite", g_dir);
     database_t *created = NULL;
     assert(database_create(path_b, &created) == DATABASE_OK && database_close(created) == DATABASE_OK);
     session_t *b = open_conn(path_b, true, true, NULL);
     assert(b != NULL);
-    assert(exec_ok(b, "CREATE TABLE tote_queue_jobs (id INTEGER PRIMARY KEY, marker TEXT NOT NULL)"));
-    assert(exec_ok(b, "INSERT INTO tote_queue_jobs VALUES (1, 'other-db')"));
+    assert(exec_ok(b, "CREATE TABLE streamlite_queue_jobs (id INTEGER PRIMARY KEY, marker TEXT NOT NULL)"));
+    assert(exec_ok(b, "INSERT INTO streamlite_queue_jobs VALUES (1, 'other-db')"));
     session_t *foreign = NULL;
     assert((foreign = begin_txn(b)) != NULL);
     CHECK(session_database(foreign) != session_database(a) && session_database(foreign) == session_database(b), "소속 확인");
@@ -798,7 +798,7 @@ static void test_wrong_database_and_read_only(void)
     CHECK(ackq_list(qa, foreign, 0, 1, false, listed, &count) == ACKQ_INVALID, "list 거절");
     CHECK(!session_txn_failed(foreign), "거절은 남의 트랜잭션을 실패시키지 않는다");
     CHECK(commit_txn(&foreign) == TXN_OK, "남의 트랜잭션은 영향 없이 commit된다");
-    CHECK(scalar_int(b, "SELECT id FROM tote_queue_jobs WHERE marker = 'other-db'") == 1 && scalar_int(b, "SELECT id FROM tote_queue_jobs") == 1,
+    CHECK(scalar_int(b, "SELECT id FROM streamlite_queue_jobs WHERE marker = 'other-db'") == 1 && scalar_int(b, "SELECT id FROM streamlite_queue_jobs") == 1,
           "다른 database의 같은 이름 테이블이 바뀌지 않았다");
     CHECK(ackq_stats(qa, a, &stats) == ACKQ_OK && stats.leased == 1 && stats.acked == 0 && stats.ready == 0,
           "이 큐도 바뀌지 않았다");

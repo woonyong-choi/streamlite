@@ -16,8 +16,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from totedb import StaleError
-from totedb.persistqueue_compat import Empty, SQLiteAckQueue, UnknownClaimError
+from streamlite import StaleError
+from streamlite.persistqueue_compat import Empty, SQLiteAckQueue, UnknownClaimError
 
 OpenQueue = Callable[[Path], Any]
 

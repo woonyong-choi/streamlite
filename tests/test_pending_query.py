@@ -168,7 +168,7 @@ def test_verify_rejects_incomplete_artifact_coverage(
         "raw": ".raw.jsonl",
         "stdout": "-0000.stdout",
         "stderr": "-0000.stderr",
-        "database": "-fixture-9-32-native/data.totedb",
+        "database": "-fixture-9-32-native/data.streamlite",
         "raw_altered": ".raw.jsonl",
     }
 
@@ -216,7 +216,7 @@ def _patch_json_read(monkeypatch: pytest.MonkeyPatch, path: Path, transform: Cal
         "-fixture-9-32-vendor.stderr",
         "-fixture-9-32-vendor/data.db-wal",
         "-fixture-9-32-vendor/data.db-shm",
-        "-fixture-9-32-native/data.totedb-lock",
+        "-fixture-9-32-native/data.streamlite-lock",
         "-0007-native.stdout",
         "-0007-native.stderr",
         "-0035.stdout",
@@ -359,11 +359,11 @@ def test_persistence_timeout_keeps_completed_case_and_stops(monkeypatch: pytest.
 
 @pytest.fixture
 def native_queue(collected: tuple[Any, ...]) -> Any:
-    from totedb import Database, Queue
+    from streamlite import Database, Queue
 
     prefix, _, _ = collected
-    fixture = Path(f"{prefix}-fixture-9-32-native/data.totedb")
-    path = _prefix("native-copy").with_suffix(".totedb")
+    fixture = Path(f"{prefix}-fixture-9-32-native/data.streamlite")
+    path = _prefix("native-copy").with_suffix(".streamlite")
     shutil.copyfile(fixture, path)
     db = Database(path)
     queue = Queue(db, "ack_queue", install=False, clock=lambda: 1000)
@@ -373,7 +373,7 @@ def native_queue(collected: tuple[Any, ...]) -> Any:
 
 
 def test_lists_preserve_mixed_states_without_pending_filter(native_queue: Any) -> None:
-    from totedb.persistqueue_compat import _status_code
+    from streamlite.persistqueue_compat import _status_code
 
     queue, _ = native_queue
     leased = queue.get(1000, item_id=2)
@@ -420,9 +420,9 @@ def test_page_transition_is_live_and_early_stop_keeps_owned_payload(
 def test_list_limits_and_conversion_failure_release_native_payload(
     native_queue: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import totedb.queue as module
-    from totedb import InvalidArgumentError, LimitError
-    from totedb._native import ListItem
+    import streamlite.queue as module
+    from streamlite import InvalidArgumentError, LimitError
+    from streamlite._native import ListItem
 
     queue, _ = native_queue
     assert queue.list_items(after_id=9) == []
@@ -435,9 +435,9 @@ def test_list_limits_and_conversion_failure_release_native_payload(
         queue.put(b"x" * (1048576 + 1))
     count = ctypes.c_size_t()
     items = (ListItem * 1025)()
-    assert module._lib.tote_queue_list(queue.handle, None, 0, 1025, 1, items, ctypes.byref(count)) != 0
+    assert module._lib.streamlite_queue_list(queue.handle, None, 0, 1025, 1, items, ctypes.byref(count)) != 0
     assert count.value == 0
-    original_free = module._lib.tote_queue_list_free
+    original_free = module._lib.streamlite_queue_list_free
     freed = []
 
     def free(values: Any, size: int) -> Any:
@@ -448,7 +448,7 @@ def test_list_limits_and_conversion_failure_release_native_payload(
         raise MemoryError("injected conversion failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(module._lib, "tote_queue_list_free", free)
+        patch.setattr(module._lib, "streamlite_queue_list_free", free)
         patch.setattr(module, "_to_info", refuse)
         with pytest.raises(MemoryError):
             queue.list_items(limit=4, with_payload=True)
@@ -460,7 +460,7 @@ def test_native_cancel_reports_no_partial_success(collected: tuple[Any, ...]) ->
     prefix, registration, _ = collected
     command = [
         str(ROOT / registration["plan"]["driver"]),
-        f"{prefix}-fixture-9-32-native/data.totedb",
+        f"{prefix}-fixture-9-32-native/data.streamlite",
         "4",
         "1",
         "1",
@@ -506,7 +506,7 @@ def test_native_fault_sweep_discards_partial_payloads(
     result = subprocess.run(
         [
             str(ROOT / "build-regression/test_pending_query_native"),
-            f"{prefix}-fixture-9-32-native/data.totedb",
+            f"{prefix}-fixture-9-32-native/data.streamlite",
         ],
         capture_output=True,
         text=True,
@@ -523,12 +523,12 @@ def test_native_fault_sweep_discards_partial_payloads(
 def test_iterator_second_page_failure_keeps_prior_owned_results(
     native_queue: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import totedb.queue as module
+    import streamlite.queue as module
 
     queue, _ = native_queue
     iterator = queue.iter_items(2, with_payload=True)
     first, second = next(iterator), next(iterator)
-    original = module._lib.tote_queue_list_free
+    original = module._lib.streamlite_queue_list_free
     freed = []
 
     def free(items: Any, count: int) -> Any:
@@ -539,7 +539,7 @@ def test_iterator_second_page_failure_keeps_prior_owned_results(
         raise MemoryError("second page conversion failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(module._lib, "tote_queue_list_free", free)
+        patch.setattr(module._lib, "streamlite_queue_list_free", free)
         patch.setattr(module, "_to_info", refuse)
         with pytest.raises(MemoryError):
             next(iterator)

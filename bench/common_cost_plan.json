@@ -1,7 +1,6 @@
 {
   "schema": 1,
   "baseline_commit": "ce7a9f4609d19fbcac3e12eeda6f37a1b8d62c28",
-  "lifecycle_baseline_commit": "54b43509",
   "rows": 10000,
   "operations": 1024,
   "groups": [

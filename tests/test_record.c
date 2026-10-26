@@ -234,16 +234,13 @@ static void record_page_get_checks_only_its_slot(void)
     assert(record_page_get(page, slots[2], &output) == RECORD_PAGE_INVALID);
 }
 
-/* #77: 본문 8192의 옛 LRP1 입력은 LRP2로 해석하지 않는다. */
-static void record_page_rejects_previous_format(void)
+static void record_page_rejects_unknown_magic(void)
 {
-    uint8_t old_empty[8192] = {'L', 'R', 'P', '1'};
-    assert(record_page_validate(old_empty) == RECORD_PAGE_INVALID);
     uint8_t page[RECORD_PAGE_BYTES];
     record_page_init(page);
     assert(record_page_validate(page) == RECORD_PAGE_OK);
-    assert(memcmp(page, "LRP2", 4) == 0);
-    memcpy(page, "LRP1", 4);
+    assert(memcmp(page, "SLR2", 4) == 0);
+    page[3] = '9';
     record_slice_t output = {NULL, 7};
     assert(record_page_validate(page) == RECORD_PAGE_INVALID);
     assert(record_page_get(page, 0, &output) == RECORD_PAGE_INVALID);
@@ -262,7 +259,7 @@ int main(void)
     record_invalid_input_preserves_output();
     record_page_changes_preserve_slot_identity();
     record_page_bounds_preserve_original();
-    record_page_rejects_previous_format();
+    record_page_rejects_unknown_magic();
     record_page_get_checks_only_its_slot();
     puts("record: codec, stable slots, resize/delete, page bounds and malformed input passed");
     return 0;

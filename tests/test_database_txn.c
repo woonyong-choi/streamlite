@@ -31,7 +31,7 @@
 #include "storage/value.h"
 
 #define DIR_NAME "__test__database_txn"
-#define DB DIR_NAME "/db.totedb"
+#define DB DIR_NAME "/db.streamlite"
 
 static int g_run, g_fail;
 

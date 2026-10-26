@@ -209,7 +209,7 @@ def _artifact_layout(registration: dict[str, Any], prefix: Path) -> tuple[set[st
     for backlog, body, engine in itertools.product(plan["backlogs"], plan["body_bytes"], ("vendor", "native")):
         key = f"{backlog}-{body}-{engine}"
         directory = Path(f"{prefix}-fixture-{key}")
-        database = directory / ("data.db" if engine == "vendor" else "data.totedb")
+        database = directory / ("data.db" if engine == "vendor" else "data.streamlite")
         fixtures[key] = database
         required.update((str(database), f"{directory}.stdout", f"{directory}.stderr"))
         suffixes = ("-shm", "-wal") if engine == "vendor" else ("-lock",)
@@ -269,7 +269,7 @@ def _check_git_sources(commit: str, hashes: dict[str, str]) -> None:
 
 
 def _runtime_sources(commit: str) -> dict[str, str]:
-    paths = _git(["ls-files", "src", "include", "python/totedb"]).splitlines()
+    paths = _git(["ls-files", "src", "include", "python/streamlite"]).splitlines()
     hashes = {path: _digest(ROOT / path) for path in paths}
     _check_git_sources(commit, hashes)
     return hashes
@@ -330,7 +330,7 @@ def _check_vendor(registration: dict[str, Any]) -> None:
 def _worker_env(plan: dict[str, Any], *, is_diagnostic: bool) -> dict[str, str]:
     return {
         **os.environ,
-        "TOTEDB_LIB": str(ROOT / plan["diagnostic_library" if is_diagnostic else "library"]),
+        "STREAMLITE_LIB": str(ROOT / plan["diagnostic_library" if is_diagnostic else "library"]),
         "PYTHONPATH": os.pathsep.join([str(ROOT / "python"), str(ROOT / plan["vendor_path"])]),
         "PYTHONHASHSEED": str(plan["seed"]),
         "PYTHONWARNINGS": "error",
@@ -386,7 +386,7 @@ def _prepare_fixtures(registration: dict[str, Any], prefix: Path, deadline: _Cam
 def _fixture_hashes(path: Path, deadline: _CampaignDeadline) -> dict[str, str]:
     return {
         str(file): _digest(file, deadline=deadline)
-        for file in (path / "data.db", path / "data.totedb")
+        for file in (path / "data.db", path / "data.streamlite")
         if file.exists()
     }
 
@@ -416,7 +416,7 @@ def _native_probe(
     plan = registration["plan"]
     command = [
         str(ROOT / plan["driver"]),
-        str(Path(settings["path"]) / "data.totedb"),
+        str(Path(settings["path"]) / "data.streamlite"),
         str(settings["page"]),
         str(int(settings["query"] != "metadata")),
         str(int(settings["query"] in ("sequential", "accumulate"))),

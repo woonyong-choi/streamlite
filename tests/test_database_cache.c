@@ -69,7 +69,7 @@ static void build_flag_controls_default(void)
     result_release(&result);
     database_cache_stats_t stats;
     database_cache_stats(db, &stats);
-    assert(stats.entries == (TOTE_SQL_TEMPLATE_CACHE ? 1u : 0u));
+    assert(stats.entries == (STREAMLITE_SQL_TEMPLATE_CACHE ? 1u : 0u));
     assert(database_close(db) == DATABASE_OK && audit_live == 0);
 }
 
@@ -549,7 +549,7 @@ static void allocation_failures_leave_cache_and_data_usable(void)
 
 int main(void)
 {
-    printf("SQLite reference: %s; cache default: %d\n", sqlite3_libversion(), TOTE_SQL_TEMPLATE_CACHE);
+    printf("SQLite reference: %s; cache default: %d\n", sqlite3_libversion(), STREAMLITE_SQL_TEMPLATE_CACHE);
     assert(mkdir("build/test_database_cache_dir", 0700) == 0 || errno == EEXIST);
     build_flag_controls_default();
     binding_and_syntax_match_sqlite();

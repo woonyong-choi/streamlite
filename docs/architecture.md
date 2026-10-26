@@ -1,6 +1,6 @@
 # 아키텍처
 
-ToteDB는 C로 구현한 임베디드 SQL 데이터베이스다. 애플리케이션 프로세스 안에서 쿼리를 실행하고 테이블을 DB 파일에 저장한다. 주문 상태를 바꾸는 `UPDATE`는 Python의 `Database.execute`에서 C API, 세션, SQL 실행기를 거쳐 행 저장소에 도달한다. 선택 기능인 ACK 큐도 같은 세션의 SQL과 트랜잭션을 사용하므로 업무 행과 큐 작업을 한 DB 트랜잭션에서 함께 바꿀 수 있다.
+StreamLite는 C로 구현한 임베디드 SQL 데이터베이스다. 애플리케이션 프로세스 안에서 쿼리를 실행하고 테이블을 DB 파일에 저장한다. 주문 상태를 바꾸는 `UPDATE`는 Python의 `Database.execute`에서 C API, 세션, SQL 실행기를 거쳐 행 저장소에 도달한다. 선택 기능인 ACK 큐도 같은 세션의 SQL과 트랜잭션을 사용하므로 업무 행과 큐 작업을 한 DB 트랜잭션에서 함께 바꿀 수 있다.
 
 DB 파일을 다시 열면 제어 페이지가 가리키는 카탈로그에서 테이블의 행 저장소와 색인 루트를 찾는다. 행 저장소의 페이지 디렉터리는 실제 행 페이지(record page)를 가리키고, 행 페이지 안의 slot이 행을 식별한다. 색인은 물리 행 페이지 번호를 직접 저장하지 않고 디렉터리 순번과 slot을 저장한다. 큰 TEXT와 BLOB은 행에서 참조하는 별도 overflow 체인에 둔다.
 
@@ -12,7 +12,7 @@ DB 파일을 다시 열면 제어 페이지가 가리키는 카탈로그에서 �
 
 | 연결 대상 | 주고받는 것 |
 |---|---|
-| C 애플리케이션 | `tote_*` 호출, SQL 바인딩, 소유권을 넘겨받는 결과 버퍼 |
+| C 애플리케이션 | `streamlite_*` 호출, SQL 바인딩, 소유권을 넘겨받는 결과 버퍼 |
 | Python 애플리케이션 | `Database`, `Transaction`, `Queue` 호출과 Python 값, ctypes를 통한 공유 라이브러리 호출 |
 | DB 파일 | 8192바이트 페이지, 제어 슬롯 두 장, 카탈로그와 행·색인·회수 목록 |
 | writer 잠금 파일 | DB 옆 `<db>-lock`의 writer `flock`과 게시 대기 표시 |
@@ -31,9 +31,9 @@ DB 파일을 다시 열면 제어 페이지가 가리키는 카탈로그에서 �
 
 ### 호출과 결과
 
-Python의 `Database`, `Transaction`, `Queue`는 Python 값을 C 호출 인자로 바꾸고 반환 데이터를 Python 값으로 복사한다. 복사를 마치면 native 버퍼를 해제한다. 구현은 [database.py](../python/totedb/database.py)와 [queue.py](../python/totedb/queue.py)에 있다.
+Python의 `Database`, `Transaction`, `Queue`는 Python 값을 C 호출 인자로 바꾸고 반환 데이터를 Python 값으로 복사한다. 복사를 마치면 native 버퍼를 해제한다. 구현은 [database.py](../python/streamlite/database.py)와 [queue.py](../python/streamlite/queue.py)에 있다.
 
-C API의 `tote_db_t`는 DB mutex와 기본 세션을 소유한다. `tote_exec`는 SQL 결과를 호출자 소유의 버퍼로 인코딩한다. [totedb.c](../src/capi/totedb.c)가 구현이고 [totedb.h](../include/totedb.h)가 공개 선언이다.
+C API의 `streamlite_db_t`는 DB mutex와 기본 세션을 소유한다. `streamlite_exec`는 SQL 결과를 호출자 소유의 버퍼로 인코딩한다. [streamlite.c](../src/capi/streamlite.c)가 구현이고 [streamlite.h](../include/streamlite.h)가 공개 선언이다.
 
 `session`과 `database_conn`은 연결별 트랜잭션을 관리하고 실행 호출을 직렬화한다. 메모리 예산, 취소, 내부 결과의 수명도 이 경로에서 관리한다. 관련 코드는 [session.c](../src/sql/session.c)와 [database_txn.c](../src/sql/database_txn.c)에 있다.
 
@@ -62,7 +62,7 @@ C API의 `tote_db_t`는 DB mutex와 기본 세션을 소유한다. `tote_exec`�
 
 파일의 제어 슬롯 두 장 중 선택된 `page_file_control_t`가 게시 상태의 입구다. `catalog_head`와 `catalog_size`는 table ID 0인 카탈로그 overflow 체인을 가리킨다. 카탈로그를 읽으면 테이블 schema와 `heap_root`, 기본 키 루트, 보조 색인 루트를 얻는다. 제어 상태가 보관하는 reusable·aging 목록은 지금 재사용할 페이지와 아직 이전 세대를 위해 남겨 둘 페이지를 구분한다.
 
-`heap_root`는 행 페이지가 아니라 페이지 디렉터리의 루트다. 작은 디렉터리는 `LHD3` 잎 한 장이고, 커지면 `LHD2` 루트 아래 `LHD3` 잎들을 둔다. 잎 항목은 물리 행 페이지 ID와 빈 공간 힌트를 담으며, 항목의 순서가 `directory_index`다. 빈 공간은 삽입 후보를 고르는 힌트일 뿐이며 실제 삽입 전 행 페이지에서 다시 확인한다.
+`heap_root`는 행 페이지가 아니라 페이지 디렉터리의 루트다. 작은 디렉터리는 `SLD3` 잎 한 장이고, 커지면 `SLD2` 루트 아래 `SLD3` 잎들을 둔다. 잎 항목은 물리 행 페이지 ID와 빈 공간 힌트를 담으며, 항목의 순서가 `directory_index`다. 빈 공간은 삽입 후보를 고르는 힌트일 뿐이며 실제 삽입 전 행 페이지에서 다시 확인한다.
 
 색인 잎의 값인 `heap_locator_t`는 `directory_index`와 `slot`이다. 조회는 디렉터리 순번으로 물리 페이지를 고른 뒤 그 페이지의 slot에서 행을 읽는다. 행 페이지를 COW로 교체해도 디렉터리 순번과 slot이 같으면 색인 locator는 유지할 수 있다. 반대로 `UPDATE`가 행을 다른 위치로 옮기면 새 locator를 색인에도 넣는다. locator는 연 heap이나 batch의 수명 안에서만 쓰며 commit 뒤에는 다시 연 heap에서 얻는다.
 
@@ -101,7 +101,7 @@ C API의 `tote_db_t`는 DB mutex와 기본 세션을 소유한다. `tote_exec`�
 
 1. `database_work_begin`은 트랜잭션이 끝날 때까지 writer 잠금을 보유한다. `database`는 각 문장의 기준 카탈로그를 복제하며, 트랜잭션 안에서는 자기 작업 카탈로그를 기준으로 삼는다.
 2. `heap_batch_t`는 변경한 행 페이지와 큰 값·색인 페이지를 새 물리 페이지에 쓴다. COW(copy-on-write)는 게시 상태가 읽는 페이지를 그대로 두고 바뀐 부분을 새 페이지에 쓰는 방식이다. 색인도 이 batch가 새로 만든 노드만 제자리에서 고친다.
-3. `heap_batch_finish`는 바뀐 디렉터리를 쓰고 새 `heap_root`에 색인 stamp를 맞춘다. `LHD2` 트리의 안 바뀐 잎은 공유한다. 반환값은 새 heap·기본 키·보조 색인 루트와 fresh·old 페이지 집합이며, heap과 tree는 최종 commit을 호출하지 않는다.
+3. `heap_batch_finish`는 바뀐 디렉터리를 쓰고 새 `heap_root`에 색인 stamp를 맞춘다. `SLD2` 트리의 안 바뀐 잎은 공유한다. 반환값은 새 heap·기본 키·보조 색인 루트와 fresh·old 페이지 집합이며, heap과 tree는 최종 commit을 호출하지 않는다.
 4. `database`의 `publish_inner`와 `stage_adopt`는 루트 묶음을 작업 카탈로그로 채택한다. 앞 문장이 만든 미게시 fresh 페이지 중 더는 쓰지 않는 것은 즉시 돌려주고, 게시 세대의 퇴역 페이지는 `old_committed`에 모은다. 이 시점의 문장 성공은 아직 파일 게시가 아니다.
 
 명시적 트랜잭션에서 다음 문장은 자기 변경을 읽지만 다른 세션은 게시 상태를 읽는다. 문장 오류가 나면 작업 상태에 `failed`를 세워 후속 문장과 commit을 거절하므로 호출자는 rollback으로 트랜잭션을 끝낸다. `transaction` manager에 일반적인 snapshot·reader horizon 기능이 있어도 제품 backend의 `reclaim`은 `NULL`이고 `READ_ONLY` 트랜잭션은 거절한다. SQL 페이지 회수를 그 horizon에 연결하지 않는다.
@@ -132,13 +132,13 @@ C API의 `tote_db_t`는 DB mutex와 기본 세션을 소유한다. `tote_exec`�
 
 빈 목록 체인의 쓰기도 이 판정에 포함한다. 1회 경로는 측정한 속도 우위가 아니라 [page_file.c](../src/storage/page_file.c)의 `note_write`와 `page_file_commit` 분기다. 제품 저장 계층의 COW가 전제이며 raw `page_file_write`의 임의 다중 페이지 overwrite까지 원자적 트랜잭션으로 보장하지 않는다.
 
-제어 쓰기 시도 전 실패는 `NOT_APPLIED`지만 data fsync 실패처럼 핸들이 poison일 수 있다. `NOT_APPLIED`는 게시 결과이고 poison은 그 핸들을 계속 쓸 수 있는지의 상태다. 제어 write나 최종 fsync가 실패하면 결과는 `UNKNOWN`이고 새·옛 페이지 모두 보존한다. 호출자는 쓰기를 중단하고 자원을 정리해 DB를 닫은 뒤 다시 열어 업무 키로 실제 상태를 확인한다. 오류별 외부 표현은 [totedb.h](../include/totedb.h), SQL 경로는 [database_txn.c](../src/sql/database_txn.c)에 있다.
+제어 쓰기 시도 전 실패는 `NOT_APPLIED`지만 data fsync 실패처럼 핸들이 poison일 수 있다. `NOT_APPLIED`는 게시 결과이고 poison은 그 핸들을 계속 쓸 수 있는지의 상태다. 제어 write나 최종 fsync가 실패하면 결과는 `UNKNOWN`이고 새·옛 페이지 모두 보존한다. 호출자는 쓰기를 중단하고 자원을 정리해 DB를 닫은 뒤 다시 열어 업무 키로 실제 상태를 확인한다. 오류별 외부 표현은 [streamlite.h](../include/streamlite.h), SQL 경로는 [database_txn.c](../src/sql/database_txn.c)에 있다.
 
 `catalog_store_save`는 미반영이면 새 체인을 놓고 staged 참조와 pending을 복원하지만 불확정이면 어느 체인도 회수하지 않는다. 옛 카탈로그 공간 회수만 실패한 `UNRECLAIMED`는 게시 성공으로 취급한다. 이는 게시 실패와 다르다.
 
-결과 전달도 별도 성공 경계다. `tote_exec`의 결과 인코딩에서 크기 제한이나 메모리 부족이 나면 변경을 이미 commit했어도 버퍼를 받지 못할 수 있다. 따라서 버퍼 부재만으로 미반영을 판단하거나 쓰기를 무조건 재실행하지 않는다.
+결과 전달도 별도 성공 경계다. `streamlite_exec`의 결과 인코딩에서 크기 제한이나 메모리 부족이 나면 변경을 이미 commit했어도 버퍼를 받지 못할 수 있다. 따라서 버퍼 부재만으로 미반영을 판단하거나 쓰기를 무조건 재실행하지 않는다.
 
-C 성공 결과 버퍼는 호출자 소유이며 `tote_free` 전까지 다음 실행·rollback·DB close와 독립적으로 유효하다. Python `Result`는 복사된 Python 값이므로 Python 객체 수명 동안 다음 실행·rollback·DB close 뒤에도 유효하다. Python은 복사 뒤 native 버퍼를 해제한다. C API의 DB mutex는 실행·인코딩·내부 `result_release`까지 보유하며 호출자의 결과 소비 동안에는 보유하지 않는다. 이 내부 `result_t`의 해제와 호출자가 소유한 C 버퍼의 수명은 별개다. 입력 바인딩은 동기 호출 동안 빌리고 parser가 필요한 값을 복제한다.
+C 성공 결과 버퍼는 호출자 소유이며 `streamlite_free` 전까지 다음 실행·rollback·DB close와 독립적으로 유효하다. Python `Result`는 복사된 Python 값이므로 Python 객체 수명 동안 다음 실행·rollback·DB close 뒤에도 유효하다. Python은 복사 뒤 native 버퍼를 해제한다. C API의 DB mutex는 실행·인코딩·내부 `result_release`까지 보유하며 호출자의 결과 소비 동안에는 보유하지 않는다. 이 내부 `result_t`의 해제와 호출자가 소유한 C 버퍼의 수명은 별개다. 입력 바인딩은 동기 호출 동안 빌리고 parser가 필요한 값을 복제한다.
 
 ### 재개방과 조건부 fallback
 
@@ -180,9 +180,9 @@ manifest는 이번 기록 집합이지 전체 도달 페이지의 무결성 증�
 | 앱이 정한 DB 경로 | 제어·카탈로그·행·큰 값·색인·회수 상태 |
 | `<db>-lock` | 트랜잭션 writer 잠금과 게시 대기 표시, 영속 보조 파일 |
 | `<db>.partial` | 최초 생성 중 최종 이름 게시 전 파일 |
-| `build/lib/libtotedb.dylib` 또는 `.so` | Python이 로드하는 공유 라이브러리의 개발 빌드 |
+| `build/lib/libstreamlite.dylib` 또는 `.so` | Python이 로드하는 공유 라이브러리의 개발 빌드 |
 
-`page_file_create`는 partial 파일을 준비한다. DB 생성 경로는 여기에 초기 카탈로그를 쓰고 commit한 뒤 `page_file_publish`로 최종 이름을 게시하며 디렉터리를 동기화한다. 이름이 보이더라도 정리나 디렉터리 fsync가 실패한 `PUBLISHED_DIRTY`는 이름 내구성까지 성공했다는 뜻이 아니다. 잠금 파일을 임의로 지우거나 사용 중인 DB 파일을 교체하지 않는다. 메모리 캐시와 열린 핸들은 프로세스 수명에 속하며 DB 파일에 저장하는 객체가 아니다. 라이브러리 탐색은 [_native.py](../python/totedb/_native.py), 자식 자원 종료 순서는 [totedb.h](../include/totedb.h)를 따른다.
+`page_file_create`는 partial 파일을 준비한다. DB 생성 경로는 여기에 초기 카탈로그를 쓰고 commit한 뒤 `page_file_publish`로 최종 이름을 게시하며 디렉터리를 동기화한다. 이름이 보이더라도 정리나 디렉터리 fsync가 실패한 `PUBLISHED_DIRTY`는 이름 내구성까지 성공했다는 뜻이 아니다. 잠금 파일을 임의로 지우거나 사용 중인 DB 파일을 교체하지 않는다. 메모리 캐시와 열린 핸들은 프로세스 수명에 속하며 DB 파일에 저장하는 객체가 아니다. 라이브러리 탐색은 [_native.py](../python/streamlite/_native.py), 자식 자원 종료 순서는 [streamlite.h](../include/streamlite.h)를 따른다.
 
 ### 그림 원본과 재생성
 

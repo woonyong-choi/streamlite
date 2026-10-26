@@ -1,13 +1,13 @@
 # 데이터
 
-ToteDB 0.2.0의 SQL 값, 파일 형식과 선택형 ACK 큐 테이블을 다룬다. 예를 들어 SQL의 `NULL`, 빈 문자열 `''`, 빈 BLOB `X''`는 서로 다른 값이며, 조회 결과가 0행인 경우와도 다르다. C 호출의 반환 바이트는 [프로토콜](protocol.md)에 있다.
+StreamLite 0.3.0의 SQL 값, 파일 형식과 선택형 ACK 큐 테이블을 다룬다. 예를 들어 SQL의 `NULL`, 빈 문자열 `''`, 빈 BLOB `X''`는 서로 다른 값이며, 조회 결과가 0행인 경우와도 다르다. C 호출의 반환 바이트는 [프로토콜](protocol.md)에 있다.
 
 ## 저장 방식
 
 | 항목 | 값 |
 |---|---|
-| 엔진 | ToteDB 0.2.0, 자체 페이지 파일 |
-| 경로 | `tote_open` 또는 `Database`에 전달한 경로 |
+| 엔진 | StreamLite 0.3.0, 자체 페이지 파일 |
+| 경로 | `streamlite_open` 또는 `Database`에 전달한 경로 |
 | 쓰는 구성 요소 | SQL 데이터베이스, 같은 DB의 선택형 ACK 큐 |
 | 동시성 | 파일 전체에 writer 하나, 문장 단위 읽기와 게시 잠금 |
 | 형식 버전 위치 | 페이지 envelope의 버전, 제어 페이지 본문의 파일 형식 버전, 각 본문의 magic과 버전 |
@@ -48,24 +48,24 @@ SQL 열 타입은 `INTEGER`, `REAL`, `TEXT`, `BLOB`, `VARCHAR(n)`이다. `VARCHA
 | 부분 | 식별값·버전·크기 |
 |---|---|
 | 물리 페이지 | 8192바이트, 앞 32바이트 envelope와 본문 8160바이트 |
-| Envelope | `LRPG`, 버전 `2` |
-| 제어 페이지 | 슬롯 `0`, `1`, 본문 magic `TOTEDB\0\0`, 파일 형식 `3`, byte-order 표시 `0x01020304` |
-| 카탈로그 | `LRCT`, 버전 `1` |
-| 행 디렉터리 | `LHD3` 버전 `3`, `LHD2` 버전 `2` |
-| Record page | `LRP2` |
+| Envelope | `SLPG`, 버전 `2` |
+| 제어 페이지 | 슬롯 `0`, `1`, 본문 magic 16바이트 `STREAMLITE`와 `\0` 6바이트, 파일 형식 `4`, byte-order 표시 `0x01020304`, 머리 80바이트 |
+| 카탈로그 | `SLCT`, 버전 `1` |
+| 행 디렉터리 | 잎 `SLD3` 버전 `3`, 루트 `SLD2` 버전 `2` |
+| Record page | `SLR2` |
 | Record codec | 형식 바이트 `0x02` |
 | Heap 행 | 행 버전 `1`, REAL은 8바이트 |
-| Overflow | `LRO2` |
-| 정수 색인 | `LPK1` 버전 `1` |
-| TEXT 색인 | `LTX1` 버전 `1` |
+| Overflow | `SLO2` |
+| 정수 색인 | `SLK1` 버전 `1` |
+| TEXT 색인 | `SLT1` 버전 `1` |
 | 빈 페이지 사슬 | `FREE_LIST` 종류 `6` |
 
 - 물리 페이지의 envelope와 본문 크기는 [page_file.h](../include/storage/page_file.h)에 있다.
 - Envelope는 식별값과 버전 뒤에 종류, page ID, table ID, 본문 길이, 0인 예약 8바이트, CRC32C를 담는다. 구현은 [page_file.c](../src/storage/page_file.c)에 있다.
-- 제어 페이지는 파일 형식 뒤에 페이지 크기와 byte-order 표시를 담는다. 구현은 [page_file.c](../src/storage/page_file.c)에 있다.
+- 제어 페이지는 파일 형식 뒤에 페이지 크기와 byte-order 표시를 담는다. 이 형식 하나만 읽고 쓰며 이전 형식 reader나 변환기는 없다. 체크섬이 틀린 제어 슬롯은 손상으로 보고 다른 슬롯으로 연다. 체크섬은 맞는데 envelope magic이나 파일 magic·형식을 모르는 슬롯이 있으면 파일을 바꾸지 않고 UNSUPPORTED로 거절한다. 구현은 [page_file.c](../src/storage/page_file.c)에 있다.
 - 제어 참조는 generation, page_count, catalog head·size·generation, reusable·aging 목록과 사슬 참조, manifest를 담는다. 정의는 [page_file.h](../include/storage/page_file.h)에 있다.
 - 카탈로그는 길이·generation·다음 table ID·테이블·열·기본값·색인, FNV-1a 체크섬을 담는다. 구현은 [catalog.c](../src/storage/catalog.c)에 있다.
-- 행 디렉터리의 잎은 record page ID와 빈 공간 힌트를 담는다. 큰 디렉터리는 `LHD2` 루트 아래 `LHD3` 잎을 둔다. 정의는 [heap_store.h](../include/storage/heap_store.h)에 있다.
+- 행 디렉터리의 잎은 record page ID와 빈 공간 힌트를 담는다. 큰 디렉터리는 `SLD2` 루트 아래 `SLD3` 잎을 둔다. 정의는 [heap_store.h](../include/storage/heap_store.h)에 있다.
 - Record page는 slot과 행 바이트를 담으며 삭제 slot 번호를 재사용하지 않는다. 정의는 [record_page.h](../include/storage/record_page.h)에 있다.
 - Record codec은 형식 바이트 뒤에 LEB128 필드 수·코드, 최소 폭 little-endian 정수, TEXT·BLOB 바이트를 담는다. 구현은 [record.c](../src/storage/record.c)에 있다.
 - Heap 행은 열별 저장 종류와 값을 담고 큰 값은 head·size로 참조한다. 구현은 [heap_store.c](../src/storage/heap_store.c)에 있다.
@@ -84,7 +84,7 @@ Record codec의 코드 `0`은 NULL, `1`과 `2`는 정수 0과 1, `3..10`은 1~8�
 
 ## 테이블
 
-### `tote_queue_<name>`
+### `streamlite_queue_<name>`
 
 큐 설치가 만드는 작업 본체다. 모든 열은 `NOT NULL`이고 DDL에 `DEFAULT`가 없다. `put`이 넣는 초기 값은 열 기본값과 다르다.
 
@@ -104,13 +104,13 @@ Record codec의 코드 `0`은 NULL, `1`과 `2`는 정수 0과 1, `3..10`은 1~8�
 | 키와 색인 | 열 |
 |---|---|
 | 기본 키 | `id` |
-| 비고유 색인 `tote_queue_<name>_state` | `state` |
-| 비고유 색인 `tote_queue_<name>_idem` | `idem` |
+| 비고유 색인 `streamlite_queue_<name>_state` | `state` |
+| 비고유 색인 `streamlite_queue_<name>_idem` | `idem` |
 | 외래 키 | 없음 |
 
 `put`은 `state=0`, `lease_until=0`, `fence=0`, `attempts=0`, `note=''`를 명시하고 `ready_at`과 `created_at`에 현재 시각을 넣는다. 상태 전이와 lease 만료의 의미는 [트랜잭션 큐 설계](design/transaction-queue.md)에 있다.
 
-### `tote_queue_<name>_keys`
+### `streamlite_queue_<name>_keys`
 
 키가 있는 작업을 purge할 때 payload 요약과 만료 시각을 보관한다. 작업 본체가 살아 있는 동안 모든 키를 복제하는 테이블은 아니다.
 
@@ -127,7 +127,7 @@ Record codec의 코드 `0`은 NULL, `1`과 `2`는 정수 0과 1, `3..10`은 1~8�
 | 키와 색인 | 열 |
 |---|---|
 | 기본 키 | `seq` |
-| 고유 색인 `tote_queue_<name>_keys_idem` | `idem` |
+| 고유 색인 `streamlite_queue_<name>_keys_idem` | `idem` |
 | 외래 키 | 없음 |
 
 `digest`는 little-endian 길이 `u64`, CRC32C `u32`, FNV-1a `u64` 순서다. 작업 본체가 있으면 현재 payload 바이트를 비교하고, purge 뒤에는 이 요약을 비교한다. 따라서 보존 키가 수학적으로 충돌 없는 중복 제거를 보장하지 않는다. 실제 DDL과 보관 처리는 [ack_queue.c](../src/queue/ack_queue.c)에 있다.
@@ -164,7 +164,7 @@ ACK는 물리 삭제가 아니다. 보존 설정은 [설정](configuration.md)�
 
 ## 스키마 변경
 
-앱의 테이블 변경과 버전 관리는 앱이 맡는다. 공개 API에는 시작 시 앱 migration을 자동 실행하는 기능이 없다. ToteDB 0.2.0은 알 수 없는 파일 형식을 거절하며 SQLite 파일을 변환하지 않는다. 카탈로그와 레코드 버전도 공개 패키지 버전과 별개다. `1.0` 전에는 API와 파일 형식이 바뀔 수 있으며 자동 migration을 보장하지 않는다.
+앱의 테이블 변경과 버전 관리는 앱이 맡는다. 공개 API에는 시작 시 앱 migration을 자동 실행하는 기능이 없다. StreamLite 0.3.0은 알 수 없는 파일 형식을 거절하며 SQLite 파일을 변환하지 않는다. 카탈로그와 레코드 버전도 공개 패키지 버전과 별개다. `1.0` 전에는 API와 파일 형식이 바뀔 수 있으며 자동 migration을 보장하지 않는다.
 
 ## 파일
 

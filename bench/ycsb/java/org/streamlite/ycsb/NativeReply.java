@@ -1,4 +1,4 @@
-package org.totedb.ycsb;
+package org.streamlite.ycsb;
 
 final class NativeReply {
   static final int OK = 0;

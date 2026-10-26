@@ -24,7 +24,7 @@
 #include "../src/sql/database_cache.h"
 
 #define DIR_NAME "__test__session_txn"
-#define DB DIR_NAME "/db.totedb"
+#define DB DIR_NAME "/db.streamlite"
 
 static int g_run, g_fail;
 

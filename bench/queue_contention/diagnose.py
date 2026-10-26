@@ -53,7 +53,7 @@ def main() -> int:
     args = _arguments()
     try:
         library = args.baseline_lib if args.command == "compare" else args.library
-        os.environ["TOTEDB_LIB"] = str(library.resolve(strict=True))
+        os.environ["STREAMLITE_LIB"] = str(library.resolve(strict=True))
         result = _compare(args) if args.command == "compare" else _trace(args)
         print(json.dumps(result, sort_keys=True, allow_nan=False))
         return 1 if result["status"] in ("failed", "incomparable") else 0
@@ -94,7 +94,7 @@ def _arguments() -> argparse.Namespace:
     compare.add_argument("--workers", default="1,8")
     trace = commands.add_parser("trace")
     trace.add_argument("--library", type=Path, required=True)
-    trace.add_argument("--engine", choices=("totedb", "sqlite-wal"), default="totedb")
+    trace.add_argument("--engine", choices=("streamlite", "sqlite-wal"), default="streamlite")
     trace.add_argument("--workers", type=int, default=8)
     trace.add_argument(
         "--perf", type=Path, help="actual perf binary, not a kernel wrapper"
@@ -121,8 +121,8 @@ def _arguments() -> argparse.Namespace:
 
 def _variants(args: argparse.Namespace) -> list[Variant]:
     return [
-        Variant("baseline", "totedb", args.baseline_lib.resolve(strict=True)),
-        Variant("candidate", "totedb", args.candidate_lib.resolve(strict=True)),
+        Variant("baseline", "streamlite", args.baseline_lib.resolve(strict=True)),
+        Variant("candidate", "streamlite", args.candidate_lib.resolve(strict=True)),
         Variant("control", "sqlite-wal", args.candidate_lib.resolve(strict=True)),
     ]
 
@@ -329,7 +329,7 @@ def _process(
 ) -> dict[str, Any]:
     metadata = {
         "command": command,
-        "TOTEDB_LIB": str(library),
+        "STREAMLITE_LIB": str(library),
         "started_at": time.time(),
         "exit_code": None,
         "timed_out": False,
@@ -343,7 +343,7 @@ def _process(
             process = subprocess.Popen(
                 command,
                 cwd=ROOT,
-                env={**os.environ, "TOTEDB_LIB": str(library)},
+                env={**os.environ, "STREAMLITE_LIB": str(library)},
                 stdout=stdout,
                 stderr=stderr,
                 start_new_session=True,

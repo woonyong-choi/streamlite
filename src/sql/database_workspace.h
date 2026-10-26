@@ -3,8 +3,8 @@
 
 #include "sql/database.h"
 
-#ifndef TOTE_TXN_WORKSPACE
-#define TOTE_TXN_WORKSPACE 0
+#ifndef STREAMLITE_TXN_WORKSPACE
+#define STREAMLITE_TXN_WORKSPACE 0
 #endif
 #define DATABASE_WORKSPACE_BYTES (8u * 1024u * 1024u)
 

@@ -24,13 +24,13 @@ def test(output: Path) -> None:
     if checks.exists():
         raise ValueError("test output already exists: " + str(checks))
     checks.mkdir(parents=True)
-    for engine in ("totedb", "sqlite"):
+    for engine in ("streamlite", "sqlite"):
         directory = checks / engine
         directory.mkdir()
         database = BUILD / ("adapter-check-" + engine + ".db")
         if database.exists():
             database.unlink()
-        command = java_command("org.totedb.ycsb.Tool", "smoke", engine, str(database))
+        command = java_command("org.streamlite.ycsb.Tool", "smoke", engine, str(database))
         command.insert(1, "-Xcheck:jni")
         execution = process(command, directory, 120)
         write_json(directory / "process.json", execution)

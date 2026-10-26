@@ -1,16 +1,16 @@
 /*
- * totedb.c — 다른 언어에서 부르는 평탄한 C 인터페이스(#140). 설명은 include/totedb.h.
+ * streamlite.c — 다른 언어에서 부르는 평탄한 C 인터페이스(#140). 설명은 include/streamlite.h.
  *
- * 불변 조건: 핸들을 쓰는 모든 호출은 tote_db_t의 mutex 안에서 세션을 쓴다. 결과(result_t)는 읽는 동안 database의
+ * 불변 조건: 핸들을 쓰는 모든 호출은 streamlite_db_t의 mutex 안에서 세션을 쓴다. 결과(result_t)는 읽는 동안 database의
  * 상태를 참조하므로 실행부터 인코딩·해제까지 같은 잠금 구간에서 끝낸다. 다른 database의 트랜잭션은 잠그거나 실행하기
  * 전에 거절한다. db가 살아 있는 큐·트랜잭션 핸들을 세어 두고 하나라도 있으면 닫지 않는다.
  * 세션: 트랜잭션 밖의 호출은 연결의 자동 commit 세션을, 트랜잭션 안의 호출은 그 트랜잭션의 세션을 쓴다. 그래서 한
  * 스레드가 트랜잭션을 연 동안 다른 스레드의 자동 commit 문장이 그 트랜잭션에 섞이지 않는다. 지금 실행 중인 세션은
- * cancel_lock 아래 running에 둔다. 세션을 닫기 전에 running을 지우므로 tote_cancel이 닫힌 세션을 건드리지 않는다.
+ * cancel_lock 아래 running에 둔다. 세션을 닫기 전에 running을 지우므로 streamlite_cancel이 닫힌 세션을 건드리지 않는다.
  */
 #define _POSIX_C_SOURCE 200809L
 
-#include "totedb.h"
+#include "streamlite.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -23,7 +23,7 @@
 #include "sql/session.h"
 #include "../benchmark.h"
 
-struct tote_db {
+struct streamlite_db {
     session_pool_t *pool;
     session_db_t *db;
     session_t *autocommit;        /* 트랜잭션 밖의 문장과 큐 연산 */
@@ -35,58 +35,58 @@ struct tote_db {
     pid_t owner;                  /* 연 프로세스. fork한 자식은 mutex를 잡기 전에 거절한다 */
 };
 
-_Static_assert(TOTE_INVALID == ACKQ_INVALID && TOTE_NOMEM == ACKQ_NOMEM && TOTE_LIMIT == ACKQ_LIMIT && TOTE_BUSY == ACKQ_BUSY &&
-                   TOTE_NOT_INSTALLED == ACKQ_NOT_INSTALLED && TOTE_NOT_FOUND == ACKQ_NOT_FOUND && TOTE_STALE == ACKQ_STALE &&
-                   TOTE_CONFLICT == ACKQ_CONFLICT && TOTE_UNSUPPORTED == ACKQ_UNSUPPORTED && TOTE_IO == ACKQ_IO &&
-                   TOTE_NOT_APPLIED == ACKQ_NOT_APPLIED && TOTE_UNCERTAIN == ACKQ_UNCERTAIN && TOTE_POISONED == ACKQ_POISONED &&
-                   TOTE_TXN_FAILED == ACKQ_TXN_FAILED && TOTE_INTERNAL == ACKQ_INTERNAL && TOTE_CANCELLED == ACKQ_CANCELLED,
+_Static_assert(STREAMLITE_INVALID == ACKQ_INVALID && STREAMLITE_NOMEM == ACKQ_NOMEM && STREAMLITE_LIMIT == ACKQ_LIMIT && STREAMLITE_BUSY == ACKQ_BUSY &&
+                   STREAMLITE_NOT_INSTALLED == ACKQ_NOT_INSTALLED && STREAMLITE_NOT_FOUND == ACKQ_NOT_FOUND && STREAMLITE_STALE == ACKQ_STALE &&
+                   STREAMLITE_CONFLICT == ACKQ_CONFLICT && STREAMLITE_UNSUPPORTED == ACKQ_UNSUPPORTED && STREAMLITE_IO == ACKQ_IO &&
+                   STREAMLITE_NOT_APPLIED == ACKQ_NOT_APPLIED && STREAMLITE_UNCERTAIN == ACKQ_UNCERTAIN && STREAMLITE_POISONED == ACKQ_POISONED &&
+                   STREAMLITE_TXN_FAILED == ACKQ_TXN_FAILED && STREAMLITE_INTERNAL == ACKQ_INTERNAL && STREAMLITE_CANCELLED == ACKQ_CANCELLED,
                "공개 상태 번호는 큐 모듈의 상태와 같다");
 
 /* 자식은 fork 순간 다른 스레드가 쥔 mutex를 영원히 기다릴 수 있으므로 잠그기 전에 확인한다 */
-static bool forked(const tote_db_t *db) { return db->owner != getpid(); }
+static bool forked(const streamlite_db_t *db) { return db->owner != getpid(); }
 
-struct tote_queue {
-    tote_db_t *db;
+struct streamlite_queue {
+    streamlite_db_t *db;
     ackq_t *queue;
 };
 
-struct tote_txn {
-    tote_db_t *db;
+struct streamlite_txn {
+    streamlite_db_t *db;
     session_t *session;           /* 이 트랜잭션만 쓰는 세션 */
 };
 
-static _Atomic size_t g_max_result_bytes = TOTE_DEFAULT_MAX_RESULT_BYTES;
+static _Atomic size_t g_max_result_bytes = STREAMLITE_DEFAULT_MAX_RESULT_BYTES;
 
-void tote_set_max_result_bytes(size_t limit)
+void streamlite_set_max_result_bytes(size_t limit)
 {
     /* 버퍼 용량을 두 배로 키울 때 size_t가 넘치지 않도록 절반으로 제한한다 */
     atomic_store(&g_max_result_bytes, limit > SIZE_MAX / 2 ? SIZE_MAX / 2 : limit);
 }
 
-size_t tote_max_result_bytes(void)
+size_t streamlite_max_result_bytes(void)
 {
     return atomic_load(&g_max_result_bytes);
 }
 
-const char *tote_version(void) { return TOTE_VERSION; }
+const char *streamlite_version(void) { return STREAMLITE_VERSION; }
 
-const char *tote_status_name(int status)
+const char *streamlite_status_name(int status)
 {
     switch (status) {
-        case TOTE_EMPTY: return "EMPTY";
-        case TOTE_DB_INVALID: return "DB_INVALID";
-        case TOTE_DB_IO: return "DB_IO";
-        case TOTE_DB_CORRUPT: return "DB_CORRUPT";
-        case TOTE_DB_LOCKED: return "DB_LOCKED";
-        case TOTE_DB_UNSUPPORTED: return "DB_UNSUPPORTED";
-        case TOTE_DB_NOMEM: return "DB_NOMEM";
-        case TOTE_DB_NOT_FOUND: return "DB_NOT_FOUND";
-        case TOTE_DB_FORKED: return "DB_FORKED";
+        case STREAMLITE_EMPTY: return "EMPTY";
+        case STREAMLITE_DB_INVALID: return "DB_INVALID";
+        case STREAMLITE_DB_IO: return "DB_IO";
+        case STREAMLITE_DB_CORRUPT: return "DB_CORRUPT";
+        case STREAMLITE_DB_LOCKED: return "DB_LOCKED";
+        case STREAMLITE_DB_UNSUPPORTED: return "DB_UNSUPPORTED";
+        case STREAMLITE_DB_NOMEM: return "DB_NOMEM";
+        case STREAMLITE_DB_NOT_FOUND: return "DB_NOT_FOUND";
+        case STREAMLITE_DB_FORKED: return "DB_FORKED";
         default: return ackq_status_name((ackq_status_t)status);
     }
 }
 
-void tote_free(void *pointer)
+void streamlite_free(void *pointer)
 {
     free(pointer);
 }
@@ -94,59 +94,59 @@ void tote_free(void *pointer)
 static int map_database_status(database_status_t status)
 {
     switch (status) {
-        case DATABASE_OK: return TOTE_OK;
-        case DATABASE_IO: return TOTE_DB_IO;
-        case DATABASE_CORRUPT: return TOTE_DB_CORRUPT;
-        case DATABASE_LOCKED: return TOTE_DB_LOCKED;
-        case DATABASE_UNSUPPORTED: return TOTE_DB_UNSUPPORTED;
-        case DATABASE_NOMEM: return TOTE_DB_NOMEM;
-        case DATABASE_FORKED: return TOTE_DB_FORKED;
-        default: return TOTE_DB_INVALID;
+        case DATABASE_OK: return STREAMLITE_OK;
+        case DATABASE_IO: return STREAMLITE_DB_IO;
+        case DATABASE_CORRUPT: return STREAMLITE_DB_CORRUPT;
+        case DATABASE_LOCKED: return STREAMLITE_DB_LOCKED;
+        case DATABASE_UNSUPPORTED: return STREAMLITE_DB_UNSUPPORTED;
+        case DATABASE_NOMEM: return STREAMLITE_DB_NOMEM;
+        case DATABASE_FORKED: return STREAMLITE_DB_FORKED;
+        default: return STREAMLITE_DB_INVALID;
     }
 }
 
 static int map_session_status(session_status_t status)
 {
     switch (status) {
-        case SESSION_OK: return TOTE_OK;
+        case SESSION_OK: return STREAMLITE_OK;
         case SESSION_BUSY: return ACKQ_BUSY;
-        case SESSION_NOMEM: return TOTE_DB_NOMEM;
-        default: return TOTE_DB_INVALID;
+        case SESSION_NOMEM: return STREAMLITE_DB_NOMEM;
+        default: return STREAMLITE_DB_INVALID;
     }
 }
 
 /* 연결의 세션 풀은 한도가 없다. 예산이 필요한 호출자는 session.h를 직접 쓴다. */
 static const session_limits_t UNLIMITED = {SIZE_MAX, SIZE_MAX, SIZE_MAX, SIZE_MAX, 0};
 
-static void close_parts(tote_db_t *handle)
+static void close_parts(streamlite_db_t *handle)
 {
     if (handle->autocommit != NULL) session_close(handle->autocommit);
     if (handle->db != NULL) session_pool_close_database(handle->db, NULL);
     if (handle->pool != NULL) session_pool_close(handle->pool);
 }
 
-int tote_open(const char *path, int create, tote_db_t **out)
+int streamlite_open(const char *path, int create, streamlite_db_t **out)
 {
-    if (out == NULL) return TOTE_DB_INVALID;
+    if (out == NULL) return STREAMLITE_DB_INVALID;
     *out = NULL;
-    if (path == NULL) return TOTE_DB_INVALID;
+    if (path == NULL) return STREAMLITE_DB_INVALID;
     if (access(path, F_OK) != 0) {
-        if (!create) return TOTE_DB_NOT_FOUND;
+        if (!create) return STREAMLITE_DB_NOT_FOUND;
         database_t *fresh = NULL;
         database_status_t created = database_create(path, &fresh);
         if (created != DATABASE_OK) return map_database_status(created);
-        if (database_close(fresh) != DATABASE_OK) return TOTE_DB_IO;
+        if (database_close(fresh) != DATABASE_OK) return STREAMLITE_DB_IO;
     }
-    tote_db_t *handle = calloc(1, sizeof(*handle));
-    if (handle == NULL) return TOTE_DB_NOMEM;
+    streamlite_db_t *handle = calloc(1, sizeof(*handle));
+    if (handle == NULL) return STREAMLITE_DB_NOMEM;
     int status = map_session_status(session_pool_open(&UNLIMITED, &handle->pool));
     database_status_t opened = DATABASE_OK;
-    if (status == TOTE_OK) {
+    if (status == STREAMLITE_OK) {
         session_status_t made = session_pool_open_transactional(handle->pool, path, NULL, &handle->db, &opened);
         status = opened != DATABASE_OK ? map_database_status(opened) : map_session_status(made);
     }
-    if (status == TOTE_OK) status = map_session_status(session_open(handle->db, &handle->autocommit));
-    if (status != TOTE_OK) {
+    if (status == STREAMLITE_OK) status = map_session_status(session_open(handle->db, &handle->autocommit));
+    if (status != STREAMLITE_OK) {
         close_parts(handle);
         free(handle);
         return status;
@@ -155,14 +155,14 @@ int tote_open(const char *path, int create, tote_db_t **out)
     pthread_mutex_init(&handle->cancel_lock, NULL);
     handle->owner = getpid();
     *out = handle;
-    return TOTE_OK;
+    return STREAMLITE_OK;
 }
 
-int tote_close(tote_db_t **db)
+int streamlite_close(streamlite_db_t **db)
 {
-    if (db == NULL || *db == NULL) return TOTE_OK;
-    tote_db_t *handle = *db;
-    if (forked(handle)) return TOTE_DB_FORKED;
+    if (db == NULL || *db == NULL) return STREAMLITE_OK;
+    streamlite_db_t *handle = *db;
+    if (forked(handle)) return STREAMLITE_DB_FORKED;
     pthread_mutex_lock(&handle->mutex);
     if (handle->live_queues > 0 || handle->live_txns > 0) {
         pthread_mutex_unlock(&handle->mutex);
@@ -181,7 +181,7 @@ int tote_close(tote_db_t **db)
     return status != SESSION_OK ? map_session_status(status) : map_database_status(closed);
 }
 
-void tote_cancel(tote_db_t *db)
+void streamlite_cancel(streamlite_db_t *db)
 {
     if (db == NULL || forked(db)) return;
     pthread_mutex_lock(&db->cancel_lock);
@@ -189,15 +189,15 @@ void tote_cancel(tote_db_t *db)
     pthread_mutex_unlock(&db->cancel_lock);
 }
 
-/* mutex 안에서 부른다. 실행하는 동안 tote_cancel이 이 세션을 취소할 수 있다. */
-static void set_running(tote_db_t *db, session_t *session)
+/* mutex 안에서 부른다. 실행하는 동안 streamlite_cancel이 이 세션을 취소할 수 있다. */
+static void set_running(streamlite_db_t *db, session_t *session)
 {
     pthread_mutex_lock(&db->cancel_lock);
     db->running = session;
     pthread_mutex_unlock(&db->cancel_lock);
 }
 
-static session_t *session_for(tote_db_t *db, tote_txn_t *txn)
+static session_t *session_for(streamlite_db_t *db, streamlite_txn_t *txn)
 {
     return txn != NULL ? txn->session : db->autocommit;
 }
@@ -214,7 +214,7 @@ typedef struct {
 static void put_bytes(buffer_t *b, const void *bytes, size_t size)
 {
     if (b->error != ACKQ_OK) return;
-    size_t limit = tote_max_result_bytes();
+    size_t limit = streamlite_max_result_bytes();
     if (size > limit || b->size > limit - size) {
         b->error = ACKQ_LIMIT;
         return;
@@ -340,22 +340,22 @@ static void encode_result(buffer_t *b, result_t *result)
 }
 
 /* 입력 매개변수를 view로 바꾼다. 실패하면 상태를 돌려주고 *views는 NULL이다. */
-static int build_views(const tote_param_t *params, size_t count, value_view_t **views)
+static int build_views(const streamlite_param_t *params, size_t count, value_view_t **views)
 {
     *views = NULL;
-    if (count == 0) return TOTE_OK;
+    if (count == 0) return STREAMLITE_OK;
     value_view_t *built = calloc(count, sizeof(*built));
     if (built == NULL) return ACKQ_NOMEM;
     for (size_t i = 0; i < count; i++) {
-        const tote_param_t *p = &params[i];
+        const streamlite_param_t *p = &params[i];
         switch (p->type) {
-            case TOTE_PARAM_NULL: built[i] = (value_view_t){VALUE_NULL, 0, 0.0, NULL, 0}; break;
-            case TOTE_PARAM_INTEGER: built[i] = (value_view_t){VALUE_INTEGER, p->integer, 0.0, NULL, 0}; break;
-            case TOTE_PARAM_REAL: built[i] = (value_view_t){VALUE_REAL, 0, p->real, NULL, 0}; break;
-            case TOTE_PARAM_TEXT:
+            case STREAMLITE_PARAM_NULL: built[i] = (value_view_t){VALUE_NULL, 0, 0.0, NULL, 0}; break;
+            case STREAMLITE_PARAM_INTEGER: built[i] = (value_view_t){VALUE_INTEGER, p->integer, 0.0, NULL, 0}; break;
+            case STREAMLITE_PARAM_REAL: built[i] = (value_view_t){VALUE_REAL, 0, p->real, NULL, 0}; break;
+            case STREAMLITE_PARAM_TEXT:
                 built[i] = (value_view_t){VALUE_TEXT, 0, 0.0, p->size > 0 ? p->bytes : NULL, p->size};
                 break;
-            case TOTE_PARAM_BLOB:
+            case STREAMLITE_PARAM_BLOB:
                 built[i] = (value_view_t){VALUE_BLOB, 0, 0.0, p->size > 0 ? p->bytes : NULL, p->size};
                 break;
             default:
@@ -364,10 +364,10 @@ static int build_views(const tote_param_t *params, size_t count, value_view_t **
         }
     }
     *views = built;
-    return TOTE_OK;
+    return STREAMLITE_OK;
 }
 
-int tote_exec(tote_db_t *db, tote_txn_t *txn, const char *sql, const tote_param_t *params, size_t param_count,
+int streamlite_exec(streamlite_db_t *db, streamlite_txn_t *txn, const char *sql, const streamlite_param_t *params, size_t param_count,
                uint8_t **out, size_t *out_size)
 {
     TB_REQUEST_SCOPE(bench_request);
@@ -377,10 +377,10 @@ int tote_exec(tote_db_t *db, tote_txn_t *txn, const char *sql, const tote_param_
     *out = NULL;
     *out_size = 0;
     if (txn != NULL && txn->db != db) return ACKQ_INVALID;   /* 다른 database의 트랜잭션은 실행 전에 거절 */
-    if (forked(db)) return TOTE_DB_FORKED;
+    if (forked(db)) return STREAMLITE_DB_FORKED;
     value_view_t *views;
     int status = build_views(params, param_count, &views);
-    if (status != TOTE_OK) return status;
+    if (status != STREAMLITE_OK) return status;
     lexer_binding_t binding = {views, param_count};
     result_t *result = NULL;
     buffer_t buffer = {0};
@@ -407,7 +407,7 @@ int tote_exec(tote_db_t *db, tote_txn_t *txn, const char *sql, const tote_param_
     }
     *out = buffer.data;
     *out_size = buffer.size;
-    return TOTE_OK;
+    return STREAMLITE_OK;
 }
 
 /* ── 트랜잭션 ── */
@@ -415,7 +415,7 @@ int tote_exec(tote_db_t *db, tote_txn_t *txn, const char *sql, const tote_param_
 static int map_txn(txn_status_t status)
 {
     switch (status) {
-        case TXN_OK: return TOTE_OK;
+        case TXN_OK: return STREAMLITE_OK;
         case TXN_BUSY:
         case TXN_TIMEOUT: return ACKQ_BUSY;
         case TXN_NOMEM: return ACKQ_NOMEM;
@@ -428,51 +428,51 @@ static int map_txn(txn_status_t status)
     }
 }
 
-int tote_begin(tote_db_t *db, tote_txn_t **out)
+int streamlite_begin(streamlite_db_t *db, streamlite_txn_t **out)
 {
     TB_REQUEST_SCOPE(bench_request);
     if (db == NULL || out == NULL) return ACKQ_INVALID;
     *out = NULL;
-    if (forked(db)) return TOTE_DB_FORKED;
-    tote_txn_t *handle = calloc(1, sizeof(*handle));
+    if (forked(db)) return STREAMLITE_DB_FORKED;
+    streamlite_txn_t *handle = calloc(1, sizeof(*handle));
     if (handle == NULL) return ACKQ_NOMEM;
     session_txn_options_t options = {TXN_GUARANTEE_DURABLE, 0};
     TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
     pthread_mutex_lock(&db->mutex);
     TB_END(bench_lock);
-    int status = session_open(db->db, &handle->session) == SESSION_OK ? TOTE_OK : ACKQ_NOMEM;
-    if (status == TOTE_OK) {
+    int status = session_open(db->db, &handle->session) == SESSION_OK ? STREAMLITE_OK : ACKQ_NOMEM;
+    if (status == STREAMLITE_OK) {
         txn_status_t begun = session_txn_begin(handle->session, &options);
         status = map_txn(begun);
         if (begun != TXN_OK) session_close(handle->session);
     }
-    if (status == TOTE_OK) db->live_txns++;
+    if (status == STREAMLITE_OK) db->live_txns++;
     pthread_mutex_unlock(&db->mutex);
-    if (status != TOTE_OK) {
+    if (status != STREAMLITE_OK) {
         free(handle);
         return status;
     }
     handle->db = db;
     *out = handle;
-    return TOTE_OK;
+    return STREAMLITE_OK;
 }
 
 /* mutex 안에서 부른다. 트랜잭션 세션을 닫고 핸들을 해제한다. */
-static void forget_txn(tote_txn_t **txn)
+static void forget_txn(streamlite_txn_t **txn)
 {
-    tote_txn_t *handle = *txn;
+    streamlite_txn_t *handle = *txn;
     session_close(handle->session);
     handle->db->live_txns--;
     free(handle);
     *txn = NULL;
 }
 
-int tote_commit(tote_txn_t **txn)
+int streamlite_commit(streamlite_txn_t **txn)
 {
     TB_REQUEST_SCOPE(bench_request);
     if (txn == NULL || *txn == NULL) return ACKQ_INVALID;
-    tote_db_t *db = (*txn)->db;
-    if (forked(db)) return TOTE_DB_FORKED;
+    streamlite_db_t *db = (*txn)->db;
+    if (forked(db)) return STREAMLITE_DB_FORKED;
     TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
     pthread_mutex_lock(&db->mutex);
     TB_END(bench_lock);
@@ -486,12 +486,12 @@ int tote_commit(tote_txn_t **txn)
     return map_txn(status);
 }
 
-int tote_rollback(tote_txn_t **txn)
+int streamlite_rollback(streamlite_txn_t **txn)
 {
     TB_REQUEST_SCOPE(bench_request);
     if (txn == NULL || *txn == NULL) return ACKQ_INVALID;
-    tote_db_t *db = (*txn)->db;
-    if (forked(db)) return TOTE_DB_FORKED;
+    streamlite_db_t *db = (*txn)->db;
+    if (forked(db)) return STREAMLITE_DB_FORKED;
     TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
     pthread_mutex_lock(&db->mutex);
     TB_END(bench_lock);
@@ -501,22 +501,22 @@ int tote_rollback(tote_txn_t **txn)
     return map_txn(status);
 }
 
-int tote_txn_failed(const tote_txn_t *txn)
+int streamlite_txn_failed(const streamlite_txn_t *txn)
 {
     return txn != NULL && session_txn_failed(txn->session) ? 1 : 0;
 }
 
 /* ── 큐 ── */
 
-int tote_queue_open(tote_db_t *db, const char *name, int install, const tote_queue_options_t *options,
-                    tote_queue_t **out)
+int streamlite_queue_open(streamlite_db_t *db, const char *name, int install, const streamlite_queue_options_t *options,
+                    streamlite_queue_t **out)
 {
     if (db == NULL || out == NULL) return ACKQ_INVALID;
     *out = NULL;
-    if (forked(db)) return TOTE_DB_FORKED;
-    static const tote_queue_options_t defaults = {0};
-    const tote_queue_options_t *given = options != NULL ? options : &defaults;
-    tote_queue_t *handle = calloc(1, sizeof(*handle));
+    if (forked(db)) return STREAMLITE_DB_FORKED;
+    static const streamlite_queue_options_t defaults = {0};
+    const streamlite_queue_options_t *given = options != NULL ? options : &defaults;
+    streamlite_queue_t *handle = calloc(1, sizeof(*handle));
     if (handle == NULL) return ACKQ_NOMEM;
     ackq_options_t queue_options = {0};
     queue_options.name = name;
@@ -537,13 +537,13 @@ int tote_queue_open(tote_db_t *db, const char *name, int install, const tote_que
     }
     handle->db = db;
     *out = handle;
-    return TOTE_OK;
+    return STREAMLITE_OK;
 }
 
-void tote_queue_close(tote_queue_t **queue)
+void streamlite_queue_close(streamlite_queue_t **queue)
 {
     if (queue == NULL || *queue == NULL) return;
-    tote_db_t *db = (*queue)->db;
+    streamlite_db_t *db = (*queue)->db;
     if (forked(db)) return;
     pthread_mutex_lock(&db->mutex);
     ackq_close(&(*queue)->queue);
@@ -560,7 +560,7 @@ void tote_queue_close(tote_queue_t **queue)
 #define QUEUE_CALL(q, txn, call)                                              \
     do {                                                                      \
         if ((q) == NULL || ((txn) != NULL && (txn)->db != (q)->db)) return ACKQ_INVALID; \
-        if (forked((q)->db)) return TOTE_DB_FORKED;                           \
+        if (forked((q)->db)) return STREAMLITE_DB_FORKED;                           \
         TB_BEGIN(bench_lock, TB_HANDLE_LOCK);                                 \
         pthread_mutex_lock(&(q)->db->mutex);                                  \
         TB_END(bench_lock);                                                   \
@@ -571,7 +571,7 @@ void tote_queue_close(tote_queue_t **queue)
         pthread_mutex_unlock(&(q)->db->mutex);                                \
     } while (0)
 
-int tote_queue_put(tote_queue_t *q, tote_txn_t *txn, const uint8_t *payload, size_t size, const char *idem_key, uint64_t *id,
+int streamlite_queue_put(streamlite_queue_t *q, streamlite_txn_t *txn, const uint8_t *payload, size_t size, const char *idem_key, uint64_t *id,
              int *duplicate)
 {
     TB_REQUEST_SCOPE(bench_request);
@@ -582,33 +582,33 @@ int tote_queue_put(tote_queue_t *q, tote_txn_t *txn, const uint8_t *payload, siz
     return status;
 }
 
-int tote_queue_get(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t lease_ms, tote_queue_item_t *item)
+int streamlite_queue_get(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t id, uint64_t lease_ms, streamlite_queue_item_t *item)
 {
     TB_REQUEST_SCOPE(bench_request);
     int status;
     ackq_claim_t claim = {0};
     size_t count = 0;
     if (item == NULL) return ACKQ_INVALID;
-    *item = (tote_queue_item_t){0};
+    *item = (streamlite_queue_item_t){0};
     if (id == 0) {
         QUEUE_CALL(q, txn, ackq_claim(q->queue, session, 1, lease_ms, &claim, &count));
-        if (status == ACKQ_OK && count == 0) return TOTE_EMPTY;
+        if (status == ACKQ_OK && count == 0) return STREAMLITE_EMPTY;
     } else {
         QUEUE_CALL(q, txn, ackq_claim_id(q->queue, session, id, lease_ms, &claim));
     }
     if (status != ACKQ_OK) return status;
-    *item = (tote_queue_item_t){claim.id, claim.fence, claim.attempts, claim.lease_until_ms, claim.payload, claim.payload_size};
-    return TOTE_OK;
+    *item = (streamlite_queue_item_t){claim.id, claim.fence, claim.attempts, claim.lease_until_ms, claim.payload, claim.payload_size};
+    return STREAMLITE_OK;
 }
 
-void tote_queue_item_free(tote_queue_item_t *item)
+void streamlite_queue_item_free(streamlite_queue_item_t *item)
 {
     if (item == NULL) return;
     free(item->payload);
-    *item = (tote_queue_item_t){0};
+    *item = (streamlite_queue_item_t){0};
 }
 
-int tote_queue_ack(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t fence)
+int streamlite_queue_ack(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t id, uint64_t fence)
 {
     TB_REQUEST_SCOPE(bench_request);
     int status;
@@ -616,7 +616,7 @@ int tote_queue_ack(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t fence
     return status;
 }
 
-int tote_queue_extend(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t fence, uint64_t lease_ms,
+int streamlite_queue_extend(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t id, uint64_t fence, uint64_t lease_ms,
                       uint64_t *lease_until)
 {
     int status;
@@ -624,14 +624,14 @@ int tote_queue_extend(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t fe
     return status;
 }
 
-int tote_queue_fail(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t fence, const char *reason)
+int streamlite_queue_fail(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t id, uint64_t fence, const char *reason)
 {
     int status;
     QUEUE_CALL(q, txn, ackq_fail(q->queue, session, id, fence, reason));
     return status;
 }
 
-int tote_queue_nack(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t fence, uint64_t retry_delay_ms, const char *reason,
+int streamlite_queue_nack(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t id, uint64_t fence, uint64_t retry_delay_ms, const char *reason,
               int *terminal)
 {
     int status;
@@ -641,35 +641,35 @@ int tote_queue_nack(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t fenc
     return status;
 }
 
-int tote_queue_update(tote_queue_t *q, tote_txn_t *txn, uint64_t id, uint64_t fence, const uint8_t *payload, size_t size)
+int streamlite_queue_update(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t id, uint64_t fence, const uint8_t *payload, size_t size)
 {
     int status;
     QUEUE_CALL(q, txn, ackq_update(q->queue, session, id, fence, payload, size));
     return status;
 }
 
-int tote_queue_recover(tote_queue_t *q, tote_txn_t *txn, size_t limit, size_t *recovered)
+int streamlite_queue_recover(streamlite_queue_t *q, streamlite_txn_t *txn, size_t limit, size_t *recovered)
 {
     int status;
     QUEUE_CALL(q, txn, ackq_recover(q->queue, session, limit, recovered));
     return status;
 }
 
-int tote_queue_release_leases(tote_queue_t *q, tote_txn_t *txn, size_t limit, size_t *released)
+int streamlite_queue_release_leases(streamlite_queue_t *q, streamlite_txn_t *txn, size_t limit, size_t *released)
 {
     int status;
     QUEUE_CALL(q, txn, ackq_release_leases(q->queue, session, limit, released));
     return status;
 }
 
-int tote_queue_purge(tote_queue_t *q, tote_txn_t *txn, int include_failed, size_t limit, size_t *purged)
+int streamlite_queue_purge(streamlite_queue_t *q, streamlite_txn_t *txn, int include_failed, size_t limit, size_t *purged)
 {
     int status;
     QUEUE_CALL(q, txn, ackq_purge(q->queue, session, include_failed != 0, limit, purged));
     return status;
 }
 
-int tote_queue_stats(tote_queue_t *q, tote_txn_t *txn, uint64_t counts[4])
+int streamlite_queue_stats(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t counts[4])
 {
     int status;
     ackq_stats_t stats = {0};
@@ -682,7 +682,7 @@ int tote_queue_stats(tote_queue_t *q, tote_txn_t *txn, uint64_t counts[4])
     return status;
 }
 
-int tote_queue_list(tote_queue_t *q, tote_txn_t *txn, uint64_t after_id, size_t limit, int with_payload, tote_queue_list_item_t *items,
+int streamlite_queue_list(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t after_id, size_t limit, int with_payload, streamlite_queue_list_item_t *items,
               size_t *count)
 {
     int status;
@@ -699,7 +699,7 @@ int tote_queue_list(tote_queue_t *q, tote_txn_t *txn, uint64_t after_id, size_t 
     if (status == ACKQ_OK) {
         for (size_t i = 0; i < n; i++) {
             const ackq_item_t *src = &raw_items[i];
-            items[i] = (tote_queue_list_item_t){.id = src->id,
+            items[i] = (streamlite_queue_list_item_t){.id = src->id,
                                          .state = (int32_t)src->state,
                                          .fence = src->fence,
                                          .attempts = src->attempts,
@@ -717,7 +717,7 @@ int tote_queue_list(tote_queue_t *q, tote_txn_t *txn, uint64_t after_id, size_t 
     return status;
 }
 
-void tote_queue_list_free(tote_queue_list_item_t *items, size_t count)
+void streamlite_queue_list_free(streamlite_queue_list_item_t *items, size_t count)
 {
     if (items == NULL) return;
     for (size_t i = 0; i < count; i++) {

@@ -4,6 +4,7 @@ import argparse
 import copy
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +15,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bench"))
+OFF_BUILD = Path(os.environ.get("STREAMLITE_TEST_OFF_BUILD", ROOT / "build"))
+ON_BUILD = Path(os.environ.get("STREAMLITE_TEST_ON_BUILD", ROOT / "build-benchmark"))
 
 from common_cost import cases, collect, register, verify  # noqa: E402
 from common_cost_analysis import analyze, analyze_python, validate_native  # noqa: E402
@@ -24,25 +27,23 @@ import common_cost_analysis  # noqa: E402
 @pytest.mark.parametrize(
     "candidate,expected",
     [
-        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=1", True),
-        ("-UTOTE_BENCHMARK -DTOTE_BENCHMARK=1 -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=1", True),
-        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=0", False),
-        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=1 -DTOTE_TXN_WORKSPACE=1", False),
-        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=1 -DTOTE_ACKQ_CONDITIONAL=0", False),
-        ("-UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=2", False),
+        ("-USTREAMLITE_BENCHMARK -USTREAMLITE_ACKQ_CONDITIONAL -DSTREAMLITE_ACKQ_CONDITIONAL=1", True),
+        ("-USTREAMLITE_BENCHMARK -DSTREAMLITE_BENCHMARK=1 -USTREAMLITE_ACKQ_CONDITIONAL -DSTREAMLITE_ACKQ_CONDITIONAL=1", True),
+        ("-USTREAMLITE_BENCHMARK -USTREAMLITE_ACKQ_CONDITIONAL -DSTREAMLITE_ACKQ_CONDITIONAL=0", False),
+        ("-USTREAMLITE_BENCHMARK -USTREAMLITE_ACKQ_CONDITIONAL -DSTREAMLITE_ACKQ_CONDITIONAL=1 -DSTREAMLITE_TXN_WORKSPACE=1", False),
+        ("-USTREAMLITE_BENCHMARK -USTREAMLITE_ACKQ_CONDITIONAL -DSTREAMLITE_ACKQ_CONDITIONAL=1 -DSTREAMLITE_ACKQ_CONDITIONAL=0", False),
+        ("-USTREAMLITE_BENCHMARK -USTREAMLITE_ACKQ_CONDITIONAL -DSTREAMLITE_ACKQ_CONDITIONAL=2", False),
     ],
 )
 def test_conditional_registration_allows_only_the_selected_queue_switch(candidate: str, expected: bool) -> None:
-    reference = "SHARED_CFLAGS=-O2 -UTOTE_BENCHMARK -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=0"
+    reference = "SHARED_CFLAGS=-O2 -USTREAMLITE_BENCHMARK -USTREAMLITE_ACKQ_CONDITIONAL -DSTREAMLITE_ACKQ_CONDITIONAL=0"
     assert common_cost._conditional_flags_match(reference, "SHARED_CFLAGS=-O2 " + candidate) is expected
 
 
 @pytest.fixture
 def registration() -> dict[str, Any]:
     return register(
-        argparse.Namespace(
-            control=True, phase="cache", plan_commit="HEAD", off_build=ROOT / "build", on_build=ROOT / "build-benchmark"
-        )
+        argparse.Namespace(control=True, phase="cache", plan_commit="HEAD", off_build=OFF_BUILD, on_build=ON_BUILD)
     )
 
 
@@ -94,7 +95,7 @@ def test_native_collection_matches_sqlite_and_regenerates(tmp_path: Path, regist
 def test_native_wrong_effect_and_missing_measurements_are_rejected(
     tmp_path: Path, registration: dict[str, Any]
 ) -> None:
-    driver = ROOT / "build/common_cost_driver"
+    driver = OFF_BUILD / "common_cost_driver"
     database = tmp_path / "dropped.db"
     common = [str(database), "16", "8", "4", "32", "hit", "1", "1"]
     subprocess.run([str(driver), "fixture", *common, "0"], check=True, capture_output=True)
@@ -397,13 +398,11 @@ def test_cli_rejects_historical_options_outside_offline_analysis(command: str, o
 
 
 @pytest.mark.parametrize("scenario", ["sql", "queue", "conditional"])
-@pytest.mark.parametrize("condition", ["eager", "lazy"])
-@pytest.mark.parametrize("build_name", ["build", "build-benchmark"])
+@pytest.mark.parametrize("condition", ["lazy"])
+@pytest.mark.parametrize("build_name", [OFF_BUILD, ON_BUILD])
 def test_python_lifecycle_paths_preserve_exact_reopen(
-    tmp_path: Path, scenario: str, condition: str, build_name: str
+    tmp_path: Path, scenario: str, condition: str, build_name: Path
 ) -> None:
-    import os
-
     command = [
         sys.executable,
         str(ROOT / "bench/common_cost_worker.py"),
@@ -424,13 +423,13 @@ def test_python_lifecycle_paths_preserve_exact_reopen(
     env = {
         **os.environ,
         "PYTHONPATH": str(ROOT / "python"),
-        "TOTEDB_LIB": str(ROOT / build_name / f"lib/libtotedb.{ext}"),
+        "STREAMLITE_LIB": str(build_name / f"lib/libstreamlite.{ext}"),
     }
     result = subprocess.run(command, capture_output=True, text=True, env=env, check=True)
     sample = json.loads(result.stdout)
     assert sample["completed"] == (8 if scenario == "conditional" else 2)
     assert sample["scenario"] == scenario
-    assert (sample["diagnostics"] is None) == (build_name == "build")
+    assert (sample["diagnostics"] is None) == (build_name == OFF_BUILD)
 
 
 def test_formal_registration_refuses_dirty_source_and_conditional_without_candidate(
@@ -446,9 +445,7 @@ def test_formal_registration_refuses_dirty_source_and_conditional_without_candid
             " M src/sql/database.c" if command[:3] == ["git", "status", "--porcelain"] else original(command, **kwargs)
         ),
     )
-    args = argparse.Namespace(
-        control=False, phase="cache", plan_commit="HEAD", off_build=ROOT / "build", on_build=ROOT / "build-benchmark"
-    )
+    args = argparse.Namespace(control=False, phase="cache", plan_commit="HEAD", off_build=OFF_BUILD, on_build=ON_BUILD)
     with pytest.raises(ValueError, match="clean source"):
         register(args)
     args.control, args.phase = True, "conditional"

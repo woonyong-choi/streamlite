@@ -340,7 +340,7 @@ static void encode_decode_roundtrips_and_fixes_layout(void)
     catalog_t *empty;
     assert(catalog_open_empty(&empty) == CATALOG_OK);
     snapshot_t empty_shot = snapshot(empty);
-    assert(empty_shot.size == 36 && memcmp(empty_shot.bytes, "LRCT\x01\x00\x00\x00\x24\x00\x00\x00", 12) == 0);
+    assert(empty_shot.size == 36 && memcmp(empty_shot.bytes, "SLCT\x01\x00\x00\x00\x24\x00\x00\x00", 12) == 0);
     catalog_t *back;
     assert(catalog_decode(empty_shot.bytes, empty_shot.size, &back) == CATALOG_OK);
     assert(catalog_table_count(back) == 0 && catalog_generation(back) == 0);

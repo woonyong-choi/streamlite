@@ -288,7 +288,7 @@ class QueueDiagnoseTest(unittest.TestCase):
             ):
                 invocation = _invocation(
                     self.directory,
-                    Variant(str(index), "totedb", library),
+                    Variant(str(index), "streamlite", library),
                     "perf",
                     0,
                     Condition("mixed", 1, 256, 1),
@@ -385,7 +385,7 @@ class QueueDiagnoseTest(unittest.TestCase):
             directory.mkdir()
             library = (self.directory / f"{name}.so").resolve()
             result = _process(
-                [sys.executable, "-c", 'import os;print(os.environ["TOTEDB_LIB"])'],
+                [sys.executable, "-c", 'import os;print(os.environ["STREAMLITE_LIB"])'],
                 directory,
                 library,
                 5,
@@ -408,7 +408,7 @@ class QueueDiagnoseTest(unittest.TestCase):
             self.assertTrue(
                 _raw_problems(
                     record["raw"],
-                    Trial(Condition("mixed", 1, 256, 1), "totedb", self.directory),
+                    Trial(Condition("mixed", 1, 256, 1), "streamlite", self.directory),
                 )
             )
             records = self._records()
@@ -456,7 +456,7 @@ class QueueDiagnoseTest(unittest.TestCase):
         args = self._args(library, self.directory / "trace")
         args.command, args.engine, args.library, args.perf, args.workers = (
             "trace",
-            "totedb",
+            "streamlite",
             library,
             None,
             1,
@@ -478,7 +478,7 @@ class QueueDiagnoseTest(unittest.TestCase):
         for started in (False, True):
             invocation = _invocation(
                 self.directory,
-                Variant(str(started), "totedb", library),
+                Variant(str(started), "streamlite", library),
                 "trace",
                 0,
                 Condition("mixed", 1, 256, 1),
@@ -506,7 +506,7 @@ class QueueDiagnoseTest(unittest.TestCase):
             self.assertEqual(result["status"], "failed" if started else "unavailable")
 
     def test_trial_failure_preserves_spec_and_partial_stdout(self) -> None:
-        variant = Variant("baseline", "totedb", self.directory / "library.so")
+        variant = Variant("baseline", "streamlite", self.directory / "library.so")
         invocation = _invocation(
             self.directory, variant, "preflight", 0, Condition("mixed", 1, 256, 1), 5
         )
@@ -526,7 +526,7 @@ class QueueDiagnoseTest(unittest.TestCase):
         spec = json.loads(
             (invocation.spec.evidence_directory / "spec.json").read_bytes()
         )
-        self.assertEqual(spec["engine"], "totedb")
+        self.assertEqual(spec["engine"], "streamlite")
         self.assertEqual(
             (invocation.spec.directory / "queue.db").read_bytes(), b"preserved"
         )
@@ -577,13 +577,13 @@ class QueueDiagnoseTest(unittest.TestCase):
             )
             self.assertEqual(
                 invocation.spec.engine,
-                "sqlite-wal" if invocation.variant.name == "control" else "totedb",
+                "sqlite-wal" if invocation.variant.name == "control" else "streamlite",
             )
 
     def test_small_prebuilt_same_library_smoke(self) -> None:
         extension = "dylib" if sys.platform == "darwin" else "so"
         library = Path(
-            os.environ.get("TOTEDB_LIB", ROOT / f"build/lib/libtotedb.{extension}")
+            os.environ.get("STREAMLITE_LIB", ROOT / f"build/lib/libstreamlite.{extension}")
         ).resolve()
         if not library.is_file():
             self.skipTest("prebuilt library is required; tests never build")
@@ -619,7 +619,7 @@ class QueueDiagnoseTest(unittest.TestCase):
             self.assertEqual(record["raw"]["file_sizes"]["phase"], "after_close")
             self.assertEqual(
                 record["engine"],
-                "sqlite-wal" if record["variant"] == "control" else "totedb",
+                "sqlite-wal" if record["variant"] == "control" else "streamlite",
             )
         manifest = json.loads((output / "manifest.json").read_bytes())
         self.assertTrue(manifest["libraries_unchanged"])
@@ -638,7 +638,7 @@ class QueueDiagnoseTest(unittest.TestCase):
 
     def _record(self, variant: str, phase: str, repeat: int, elapsed: float) -> dict:
         condition = dataclasses.asdict(Condition("mixed", 1, 256, 1))
-        engine = "sqlite-wal" if variant == "control" else "totedb"
+        engine = "sqlite-wal" if variant == "control" else "streamlite"
         return {
             "variant": variant,
             "phase": phase,

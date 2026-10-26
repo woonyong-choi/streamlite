@@ -6,7 +6,7 @@ INCLUDES = -Iinclude
 # macOS 26(Darwin 25) 이상에서는 ASan 런타임이 초기화 도중 자기 자신을
 # 재진입해(AsanInitInternal → ... → malloc → AsanInitFromRtl) spin lock 에
 # 걸린다. 프로세스가 main() 에 닿지 못하므로 ASan 을 켠 빌드는 무엇을 하든
-# 멈춘다. ToteDB 의 문제가 아니라 플랫폼 문제이고, 빈 main() 으로도 재현된다.
+# 멈춘다. StreamLite 의 문제가 아니라 플랫폼 문제이고, 빈 main() 으로도 재현된다.
 # 그 환경에서는 UBSan 만 켠다. Linux CI 는 아래 기본값대로 둘 다 켠다.
 #
 #   make SANITIZE=address,undefined   강제로 둘 다
@@ -40,7 +40,7 @@ ifneq ($(SQL_TEMPLATE_CACHE),1)
 $(error SQL_TEMPLATE_CACHE must be 0 or 1)
 endif
 endif
-CACHE_FLAGS = -UTOTE_SQL_TEMPLATE_CACHE -DTOTE_SQL_TEMPLATE_CACHE=$(SQL_TEMPLATE_CACHE)
+CACHE_FLAGS = -USTREAMLITE_SQL_TEMPLATE_CACHE -DSTREAMLITE_SQL_TEMPLATE_CACHE=$(SQL_TEMPLATE_CACHE)
 override CFLAGS += $(CACHE_FLAGS)
 
 TXN_WORKSPACE ?= 0
@@ -49,7 +49,7 @@ ifneq ($(TXN_WORKSPACE),1)
 $(error TXN_WORKSPACE must be 0 or 1)
 endif
 endif
-WORKSPACE_FLAGS = -UTOTE_TXN_WORKSPACE -DTOTE_TXN_WORKSPACE=$(TXN_WORKSPACE)
+WORKSPACE_FLAGS = -USTREAMLITE_TXN_WORKSPACE -DSTREAMLITE_TXN_WORKSPACE=$(TXN_WORKSPACE)
 override CFLAGS += $(WORKSPACE_FLAGS)
 
 ACKQ_CONDITIONAL ?= 0
@@ -58,7 +58,7 @@ ifneq ($(ACKQ_CONDITIONAL),1)
 $(error ACKQ_CONDITIONAL must be 0 or 1)
 endif
 endif
-CONDITIONAL_FLAGS = -UTOTE_ACKQ_CONDITIONAL -DTOTE_ACKQ_CONDITIONAL=$(ACKQ_CONDITIONAL)
+CONDITIONAL_FLAGS = -USTREAMLITE_ACKQ_CONDITIONAL -DSTREAMLITE_ACKQ_CONDITIONAL=$(ACKQ_CONDITIONAL)
 override CFLAGS += $(CONDITIONAL_FLAGS)
 
 BENCHMARK ?= 0
@@ -73,11 +73,11 @@ BUILD_DIR ?= build-benchmark
 ifeq ($(abspath $(BUILD_DIR)),$(abspath build))
 $(error BENCHMARK=1 cannot use the normal build directory)
 endif
-BENCHMARK_FLAGS = -UTOTE_BENCHMARK -DTOTE_BENCHMARK=1
+BENCHMARK_FLAGS = -USTREAMLITE_BENCHMARK -DSTREAMLITE_BENCHMARK=1
 BENCHMARK_OBJ = $(BUILD_DIR)/benchmark.o
 else
 BUILD_DIR ?= build
-BENCHMARK_FLAGS = -UTOTE_BENCHMARK
+BENCHMARK_FLAGS = -USTREAMLITE_BENCHMARK
 endif
 override CFLAGS += $(BENCHMARK_FLAGS)
 SHARED_CFLAGS ?= -O2 -g $(WARNFLAGS) $(INCLUDES)
@@ -103,6 +103,10 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.c $(BUILD_FINGERPRINT)
 $(BUILD_DIR)/tests/%.o: tests/%.c $(BUILD_FINGERPRINT)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/tests/test_database_bounded_open.o $(BUILD_DIR)/tests/test_database_workspace.o: $(BUILD_DIR)/tests/%.o: tests/%.c $(BUILD_FINGERPRINT)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -DSTREAMLITE_TEST_BUILD_DIR='"$(BUILD_DIR)"' $(DEPFLAGS) -c -o $@ $<
 
 STORAGE_OBJS = $(BENCHMARK_OBJ) $(BUILD_DIR)/storage/record.o $(BUILD_DIR)/storage/record_page.o \
                $(BUILD_DIR)/storage/overflow.o $(BUILD_DIR)/storage/checksum.o $(BUILD_DIR)/storage/value.o $(BUILD_DIR)/storage/catalog.o \
@@ -743,7 +747,7 @@ clean:
 -include src/queue/queue.mk
 
 # 기본 대상: DB와 큐를 묶은 공유 라이브러리(파이썬 바인딩이 쓴다)
-all: $(TOTEDB_SHARED_LIB)
+all: $(STREAMLITE_SHARED_LIB)
 
 $(shell find $(BUILD_DIR) -name '*.o' 2>/dev/null): $(BUILD_FINGERPRINT)
 
@@ -752,8 +756,8 @@ test-benchmark:
 	$(PYTHON) -m unittest discover -s tests -p test_benchmark_build.py
 	$(MAKE) BENCHMARK=1 BUILD_DIR=build-benchmark build-benchmark/test_benchmark
 	./build-benchmark/test_benchmark
-	$(MAKE) BENCHMARK=1 BUILD_DIR=build-benchmark build-benchmark/test_totedb
-	./build-benchmark/test_totedb
+	$(MAKE) BENCHMARK=1 BUILD_DIR=build-benchmark build-benchmark/test_streamlite
+	./build-benchmark/test_streamlite
 
 $(BUILD_DIR)/benchmark_test.o: src/benchmark.c src/benchmark.h $(BUILD_FINGERPRINT)
 	$(CC) $(CFLAGS) -Dclock_gettime=tb_test_clock -c -o $@ $<
@@ -781,14 +785,14 @@ $(BUILD_DIR)/test_pending_query_native: $(BUILD_DIR)/tests/test_pending_query_na
 
 -include $(BUILD_DIR)/pending_query_session.d $(BUILD_DIR)/tests/test_pending_query_native.d
 
-$(BUILD_DIR)/pending_query_driver: bench/pending_query_driver.c include/queue/ack_queue.h include/sql/session.h $(TOTEDB_SHARED_LIB) $(BUILD_FINGERPRINT)
-	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(TOTEDB_SHARED_LIB)) -ltotedb -Wl,-rpath,$(abspath $(dir $(TOTEDB_SHARED_LIB)))
+$(BUILD_DIR)/pending_query_driver: bench/pending_query_driver.c include/queue/ack_queue.h include/sql/session.h $(STREAMLITE_SHARED_LIB) $(BUILD_FINGERPRINT)
+	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(STREAMLITE_SHARED_LIB)) -lstreamlite -Wl,-rpath,$(abspath $(dir $(STREAMLITE_SHARED_LIB)))
 
-$(BUILD_DIR)/common_cost_driver: bench/common_cost_driver.c src/benchmark.h src/sql/database_cache.h src/sql/database_workspace.h $(TOTEDB_SHARED_LIB) $(BUILD_FINGERPRINT)
-	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(TOTEDB_SHARED_LIB)) -ltotedb -Wl,-rpath,$(abspath $(dir $(TOTEDB_SHARED_LIB)))
+$(BUILD_DIR)/common_cost_driver: bench/common_cost_driver.c src/benchmark.h src/sql/database_cache.h src/sql/database_workspace.h $(STREAMLITE_SHARED_LIB) $(BUILD_FINGERPRINT)
+	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(STREAMLITE_SHARED_LIB)) -lstreamlite -Wl,-rpath,$(abspath $(dir $(STREAMLITE_SHARED_LIB)))
 
-$(BUILD_DIR)/counter_driver: bench/counter_driver.c src/benchmark.h include/totedb.h $(TOTEDB_SHARED_LIB) $(BUILD_FINGERPRINT)
-	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(TOTEDB_SHARED_LIB)) -ltotedb -lsqlite3 -Wl,-rpath,$(abspath $(dir $(TOTEDB_SHARED_LIB)))
+$(BUILD_DIR)/counter_driver: bench/counter_driver.c src/benchmark.h include/streamlite.h $(STREAMLITE_SHARED_LIB) $(BUILD_FINGERPRINT)
+	$(CC) $(SHARED_CFLAGS) -o $@ $< -L$(dir $(STREAMLITE_SHARED_LIB)) -lstreamlite -lsqlite3 -Wl,-rpath,$(abspath $(dir $(STREAMLITE_SHARED_LIB)))
 
 .PHONY: ycsb-build ycsb-test
 ycsb-build:
@@ -798,5 +802,5 @@ ycsb-test:
 	$(PYTHON) bench/ycsb/run.py test
 
 .PHONY: queue-contention-test
-queue-contention-test: $(TOTEDB_SHARED_LIB)
+queue-contention-test: $(STREAMLITE_SHARED_LIB)
 	$(PYTHON) -m unittest discover -s tests -p test_queue_contention.py -v

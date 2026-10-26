@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 PREFLIGHT_JOBS = 12
 OPERATIONS = ("put", "claim", "ack", "outbox", "empty_claim")
-VARIANT_ENGINES = {"baseline": "totedb", "candidate": "totedb", "control": "sqlite-wal"}
+VARIANT_ENGINES = {"baseline": "streamlite", "candidate": "streamlite", "control": "sqlite-wal"}
 
 
 def raw_problems(raw: dict[str, Any] | None, spec: Trial) -> list[str]:

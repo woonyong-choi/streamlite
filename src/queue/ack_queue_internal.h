@@ -9,15 +9,19 @@
 /* 문장 하나의 최대 SQL 길이. 이름은 ACKQ_NAME_MAX 이하라 가장 긴 문장도 들어간다. */
 #define ACKQ_SQL_MAX 512u
 
-#ifndef TOTE_ACKQ_CONDITIONAL
-#define TOTE_ACKQ_CONDITIONAL 0
+/* 큐 테이블 이름은 ACKQ_TABLE_PREFIX + 이름, key 테이블 이름은 그 뒤에 ACKQ_KEYS_SUFFIX를 붙인다 */
+#define ACKQ_TABLE_PREFIX "streamlite_queue_"
+#define ACKQ_KEYS_SUFFIX "_keys"
+
+#ifndef STREAMLITE_ACKQ_CONDITIONAL
+#define STREAMLITE_ACKQ_CONDITIONAL 0
 #endif
 
 struct ackq {
     session_db_t *db;               /* 설치한 데이터베이스. 연산의 세션은 이 데이터베이스의 것이어야 한다 */
     char name[ACKQ_NAME_MAX + 1];
-    char table[ACKQ_NAME_MAX + 12];  /* "tote_queue_" + 이름 + NUL */
-    char keys[ACKQ_NAME_MAX + 17];   /* table + "_keys" */
+    char table[sizeof(ACKQ_TABLE_PREFIX) + ACKQ_NAME_MAX];                        /* 접두어 + 이름 + NUL */
+    char keys[sizeof(ACKQ_TABLE_PREFIX) + ACKQ_NAME_MAX + sizeof(ACKQ_KEYS_SUFFIX) - 1]; /* table + 접미어 */
     uint32_t max_attempts;
     size_t max_payload;
     uint64_t retention_ms;           /* 0이면 key를 남기지 않는다 */

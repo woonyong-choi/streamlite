@@ -2,6 +2,22 @@
 
 버전별 주요 변경을 적는다. 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/). 버전: [유의적 버전](https://semver.org/lang/ko/). 1.0 전에는 파일 형식과 API가 호환 없이 바뀔 수 있다.
 
+## 0.3.0 - 미배포
+
+### 변경
+
+- 공개 이름을 StreamLite로 변경: 배포·설치 이름과 Python import `streamlite`, C API `streamlite_*`, 공유 라이브러리 `libstreamlite`. 이전 이름의 별칭은 제공하지 않는다.
+- DB 파일 형식을 형식 4 하나로 정리: 16바이트 전체 magic과 SL codec을 쓰며, 이전 ToteDB 형식 파일을 읽는 reader는 제공하지 않는다.
+
+### 수정
+
+- 긴 큐 이름의 경계 처리 수정
+- free-list 경계 처리 수정
+
+### 제거
+
+- 더 이상 쓰지 않는 이전 ABI 실험 게이트 제거
+
 ## 0.2.0 - 2026-10-19
 
 ### 추가

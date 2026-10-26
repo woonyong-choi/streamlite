@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -12,22 +13,18 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "bench"))
+OFF_BUILD = Path(os.environ.get("STREAMLITE_TEST_OFF_BUILD", ROOT / "build"))
+ON_BUILD = Path(os.environ.get("STREAMLITE_TEST_ON_BUILD", ROOT / "build-benchmark"))
 
 import common_cost as campaign  # noqa: E402
 import common_cost_analysis as analysis  # noqa: E402
 
 
-@pytest.fixture(scope="module", params=["cache", "lifecycle", "conditional"])
+@pytest.fixture(scope="module", params=["cache", "conditional"])
 def collected(request: pytest.FixtureRequest) -> tuple[Path, dict[str, Any]]:
     phase = request.param
     registration = campaign.register(
-        argparse.Namespace(
-            control=True,
-            phase="cache" if phase == "cache" else "lifecycle",
-            plan_commit="HEAD",
-            off_build=ROOT / "build",
-            on_build=ROOT / "build-benchmark",
-        )
+        argparse.Namespace(control=True, phase="cache", plan_commit="HEAD", off_build=OFF_BUILD, on_build=ON_BUILD)
     )
     if phase == "conditional":
         registration["phase"] = phase
@@ -207,9 +204,7 @@ def test_verify_retains_case_and_source_guards(
 @pytest.mark.parametrize("is_matching", [False, True])
 def test_collect_preserves_existing_registration_or_rejects_mismatch(is_matching: bool) -> None:
     registration = campaign.register(
-        argparse.Namespace(
-            control=True, phase="cache", plan_commit="HEAD", off_build=ROOT / "build", on_build=ROOT / "build-benchmark"
-        )
+        argparse.Namespace(control=True, phase="cache", plan_commit="HEAD", off_build=OFF_BUILD, on_build=ON_BUILD)
     )
     registration["cases"] = registration["cases"][:1]
     prefix = ROOT / "build" / f"task18b-registration-{uuid.uuid4().hex[:8]}"

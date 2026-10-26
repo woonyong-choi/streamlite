@@ -26,7 +26,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[3]
 BASE = "d79ad8c8"
-ENGINES = ("tote", "sqlite-each", "sqlite-reuse")
+ENGINES = ("streamlite", "sqlite-each", "sqlite-reuse")
 PHASES = "request parse exec metadata publish row_index handle_lock file_lock read write sync lock_syscall".split()
 COST_FIELDS = "wall_ns cpu_ns exclusive_wall_ns exclusive_cpu_ns attempts bytes errors short_io eintr".split()
 TIMERS = ("begin_ns", "prepare_ns", "exec_ns", "commit_ns", "output_client_ns")
@@ -146,7 +146,7 @@ def _run(command: list[str], directory: Path, timeout_s: float) -> dict[str, Any
         "SANITIZE": "",
         "PYTHON": sys.executable,
         "BUILD_DIR": "build",
-        "TOTEDB_LIB": str(ROOT / "build/lib" / f"libtotedb.{suffix}"),
+        "STREAMLITE_LIB":str(ROOT / "build/lib" / f"libstreamlite.{suffix}"),
     }
     env = {**os.environ, **forced}
     for (
@@ -240,7 +240,7 @@ def _build(output: Path, run_id: str) -> dict[str, Any]:
     }
     suffix = "dylib" if sys.platform == "darwin" else "so"
     for mode, folder in (("off", "build"), ("on", "build-benchmark")):
-        library = ROOT / folder / "lib" / f"libtotedb.{suffix}"
+        library = ROOT / folder / "lib" / f"libstreamlite.{suffix}"
         command = [
             sys.executable,
             str(ROOT / "tools/verify_benchmark.py"),
@@ -255,7 +255,7 @@ def _build(output: Path, run_id: str) -> dict[str, Any]:
     for folder in ("build", "build-benchmark"):
         for path in (
             ROOT / folder / "counter_driver",
-            ROOT / folder / "lib" / f"libtotedb.{suffix}",
+            ROOT / folder / "lib" / f"libstreamlite.{suffix}",
         ):
             artifacts[path.relative_to(ROOT).as_posix()] = (
                 _digest(path) if path.is_file() else None
@@ -279,7 +279,7 @@ def _build(output: Path, run_id: str) -> dict[str, Any]:
             [
                 flag
                 for flag in shlex.split(shared)
-                if not flag.startswith(("-UTOTE_BENCHMARK", "-DTOTE_BENCHMARK"))
+                if not flag.startswith(("-USTREAMLITE_BENCHMARK", "-DSTREAMLITE_BENCHMARK"))
             ]
         )
     results["compiler-flags"] = {
@@ -407,13 +407,13 @@ def _read_native(directory: Path, spec: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_records(records: Any, spec: dict[str, Any]) -> dict[str, Any]:
-    expected = spec["n"] * 3 if spec["mode"] == "on" and spec["engine"] == "tote" else 0
+    expected = spec["n"] * 3 if spec["mode"] == "on" and spec["engine"] == "streamlite" else 0
     if not isinstance(records, list) or len(records) != expected:
         raise ValueError("native trace record count mismatch")
     totals = {phase: {key: 0 for key in COST_FIELDS} for phase in PHASES}
     identities = set()
     sequences = []
-    operations = ("tote_begin", "tote_exec", "tote_commit")
+    operations = ("streamlite_begin", "streamlite_exec", "streamlite_commit")
     for index, record in enumerate(records):
         for key in ("incomplete", "overflow", "dropped"):
             if _integer(record[key], key) != 0:
@@ -529,7 +529,7 @@ def _native_summary(output: Path, run_id: str) -> dict[str, Any]:
     comparisons = []
     for n in (128, 1024):
         for baseline in ENGINES[1:]:
-            pair = _paired(groups[(n, "off", "tote")], groups[(n, "off", baseline)])
+            pair = _paired(groups[(n, "off", "streamlite")], groups[(n, "off", baseline)])
             preflight_ok = all(
                 any(
                     r["n"] == n
@@ -538,7 +538,7 @@ def _native_summary(output: Path, run_id: str) -> dict[str, Any]:
                     and r["phase"] == "preflight"
                     for r in rows
                 )
-                for engine in ("tote", baseline)
+                for engine in ("streamlite", baseline)
             )
             if not preflight_ok:
                 pair = _paired([], [])
@@ -546,14 +546,14 @@ def _native_summary(output: Path, run_id: str) -> dict[str, Any]:
     perturbation = [
         {
             "n": n,
-            "metric": "on/off tote throughput; diagnostic only",
+            "metric": "on/off streamlite throughput; diagnostic only",
             **(
-                _paired(groups[(n, "on", "tote")], groups[(n, "off", "tote")])
+                _paired(groups[(n, "on", "streamlite")], groups[(n, "off", "streamlite")])
                 if all(
                     any(
                         row["n"] == n
                         and row["mode"] == mode
-                        and row["engine"] == "tote"
+                        and row["engine"] == "streamlite"
                         and row["phase"] == "preflight"
                         for row in rows
                     )

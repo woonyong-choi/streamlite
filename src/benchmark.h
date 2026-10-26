@@ -1,7 +1,7 @@
-#ifndef TOTE_BENCHMARK_H
-#define TOTE_BENCHMARK_H
+#ifndef STREAMLITE_BENCHMARK_H
+#define STREAMLITE_BENCHMARK_H
 
-#ifdef TOTE_BENCHMARK
+#ifdef STREAMLITE_BENCHMARK
 #include <stddef.h>
 #include <stdint.h>
 

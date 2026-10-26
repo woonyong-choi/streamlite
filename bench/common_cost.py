@@ -147,14 +147,13 @@ def register(args: argparse.Namespace) -> dict[str, Any]:
     if args.phase == "conditional":
         _check_conditional_eligibility(args)
     builds = {"off": _build_identity(args.off_build, instrumented=0)}
-    if args.phase in ("cache", "lifecycle", "conditional"):
-        builds["on"] = _build_identity(args.on_build, instrumented=1)
-        shared = [
-            next(line for line in builds[name]["fingerprint"].splitlines() if line.startswith("SHARED_CFLAGS="))
-            for name in ("off", "on")
-        ]
-        if shared[0] != shared[1].replace("-UTOTE_BENCHMARK -DTOTE_BENCHMARK=1", "-UTOTE_BENCHMARK"):
-            raise ValueError("ON/OFF builds differ beyond instrumentation")
+    builds["on"] = _build_identity(args.on_build, instrumented=1)
+    shared = [
+        next(line for line in builds[name]["fingerprint"].splitlines() if line.startswith("SHARED_CFLAGS="))
+        for name in ("off", "on")
+    ]
+    if shared[0] != shared[1].replace("-USTREAMLITE_BENCHMARK -DSTREAMLITE_BENCHMARK=1", "-USTREAMLITE_BENCHMARK"):
+        raise ValueError("ON/OFF builds differ beyond instrumentation")
     if args.phase == "conditional":
         builds["candidate"] = _build_identity(args.candidate_build, instrumented=0)
         builds["candidate_on"] = _build_identity(args.candidate_on_build, instrumented=1)
@@ -197,9 +196,6 @@ def register(args: argparse.Namespace) -> dict[str, Any]:
         if sys.platform == "darwin"
         else _run(["ldd", builds["off"]["library"]]),
         "baseline_source": _run(["git", "rev-parse", plan["baseline_commit"]]).strip(),
-        "lifecycle_baseline_sha256": hashlib.sha256(
-            _run(["git", "show", f"{plan['lifecycle_baseline_commit']}:python/totedb/database.py"], binary=True)
-        ).hexdigest(),
     }
 
 
@@ -361,7 +357,7 @@ def _finish_manifest(path: Path, manifest: dict[str, Any], deadline: _CampaignDe
 
 def _registration_sources() -> list[str]:
     files = ["Makefile", "docs/design/streamlite.md"]
-    for folder in ("src", "include", "python/totedb", "bench"):
+    for folder in ("src", "include", "python/streamlite", "bench"):
         files.extend(
             str(path.relative_to(ROOT))
             for path in (ROOT / folder).rglob("*")
@@ -384,7 +380,6 @@ def _require_clean() -> None:
 
 
 def _environment() -> dict[str, Any]:
-    import _sqlite3  # noqa: PLC0415
     import numpy  # noqa: PLC0415
     import scipy  # noqa: PLC0415
     import sqlite3  # noqa: PLC0415
@@ -396,10 +391,6 @@ def _environment() -> dict[str, Any]:
         "numpy": numpy.__version__,
         "scipy": scipy.__version__,
         "sqlite_python": sqlite3.sqlite_version,
-        "sqlite_module_sha256": _digest(Path(_sqlite3.__file__)),
-        "sqlite_dependencies": _run(["otool", "-L", _sqlite3.__file__])
-        if sys.platform == "darwin"
-        else _run(["ldd", _sqlite3.__file__]),
         "compiler": _run(["gcc", "--version"]),
         "disk": _run(["df", "-P", str(ROOT)]),
         "hardware": _run(["sysctl", "-n", "machdep.cpu.brand_string", "hw.memsize", "hw.ncpu"])
@@ -419,11 +410,11 @@ def _filesystem() -> dict[str, Any]:
 
 
 def _conditional_flags_match(reference: str, candidate: str) -> bool:
-    baseline_flag = "-DTOTE_ACKQ_CONDITIONAL=0"
-    candidate_flag = "-DTOTE_ACKQ_CONDITIONAL=1"
+    baseline_flag = "-DSTREAMLITE_ACKQ_CONDITIONAL=0"
+    candidate_flag = "-DSTREAMLITE_ACKQ_CONDITIONAL=1"
     if reference.split().count(baseline_flag) != 1 or candidate.split().count(candidate_flag) != 1:
         return False
-    normalized = candidate.replace("-UTOTE_BENCHMARK -DTOTE_BENCHMARK=1", "-UTOTE_BENCHMARK")
+    normalized = candidate.replace("-USTREAMLITE_BENCHMARK -DSTREAMLITE_BENCHMARK=1", "-USTREAMLITE_BENCHMARK")
     return normalized.replace(candidate_flag, baseline_flag) == reference
 
 
@@ -435,7 +426,7 @@ def _build_identity(path: Path, *, instrumented: int) -> dict[str, Any]:
     shared = next(line for line in flags.splitlines() if line.startswith("SHARED_CFLAGS="))
     if "-O2" not in shared or "-fsanitize" in shared:
         raise ValueError("outcomes require the optimized unsanitized shared path")
-    library = build / f"lib/libtotedb.{EXT}"
+    library = build / f"lib/libstreamlite.{EXT}"
     driver = build / "common_cost_driver"
     return {
         "directory": str(build),
@@ -486,8 +477,6 @@ def _validate_registration(registration: dict[str, Any]) -> None:
         "hardware",
         "filesystem",
         "sqlite_python",
-        "sqlite_module_sha256",
-        "sqlite_dependencies",
     ):
         if current[name] != registration["environment"][name]:
             raise ValueError(f"environment changed after registration: {name}")
@@ -533,7 +522,7 @@ def _worker_command(
         "--payload",
         str(case["payload"]),
     ]
-    return command, {**os.environ, "TOTEDB_LIB": build["library"], "PYTHONPATH": str(ROOT / "python")}
+    return command, {**os.environ, "STREAMLITE_LIB": build["library"], "PYTHONPATH": str(ROOT / "python")}
 
 
 def _native_command(registration: dict[str, Any], case: dict[str, Any], destination: Path, mode: str) -> list[str]:
@@ -688,7 +677,7 @@ def main() -> int:
     parser.add_argument("command", choices=("register", "collect", "verify", "analyze"))
     parser.add_argument("--registration", type=Path, required=True)
     parser.add_argument("--prefix", type=Path)
-    parser.add_argument("--phase", choices=("cache", "lifecycle", "conditional"), default="cache")
+    parser.add_argument("--phase", choices=("cache", "conditional"), default="cache")
     parser.add_argument("--off-build", type=Path, default=ROOT / "build")
     parser.add_argument("--on-build", type=Path, default=ROOT / "build-benchmark")
     parser.add_argument("--candidate-build", type=Path)

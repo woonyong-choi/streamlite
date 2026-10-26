@@ -11,8 +11,8 @@
 GCC 또는 Clang, GNU Make, Python 3, pytest가 필요하다. `CC` 기본값은 `gcc`이고 `make CC=clang`으로 Clang을 선택한다. SQLite 대조 시험에는 `libsqlite3-dev`가 필요하다. 플랫폼별 조건과 전체 대상은 [빌드와 시험](../docs/build-and-test.md)에 있다.
 
 ```sh
-git clone https://github.com/woonyong-choi/totedb.git
-cd totedb
+git clone https://github.com/woonyong-choi/streamlite.git
+cd streamlite
 make all
 ```
 

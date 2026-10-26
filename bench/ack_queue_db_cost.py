@@ -10,7 +10,7 @@
 payload 크기에 따라 meta_scan이 늘어나면 SQL 계층이 projection 없이 행 전체를 읽는다는 뜻이다
 (이 스크립트가 그 여부를 보인다).
 
-사용법: TOTEDB_LIB=... PYTHONPATH=python python3 bench/ack_queue_db_cost.py --sizes 100,200 --payloads 256,4096,16384
+사용법: STREAMLITE_LIB=... PYTHONPATH=python python3 bench/ack_queue_db_cost.py --sizes 100,200 --payloads 256,4096,16384
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from totedb import Database
+from streamlite import Database
 
 SCHEMA = (
     "CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, state INTEGER NOT NULL, ready_at INTEGER NOT NULL,"
@@ -43,7 +43,7 @@ def measure(rows: int, payload_bytes: int, repeats: int) -> dict[str, float]:
     """한 (n, s) 조합에서 문장별 한 번의 중앙값 시간(밀리초)."""
     result: dict[str, float] = {"n": rows, "payload_bytes": payload_bytes}
     with tempfile.TemporaryDirectory(prefix="ackq-dbcost-") as tmp:
-        db = Database(Path(tmp) / "db.totedb", busy_timeout_s=60.0)
+        db = Database(Path(tmp) / "db.streamlite", busy_timeout_s=60.0)
         db.execute(SCHEMA)
         body = bytes(index % 251 for index in range(payload_bytes))
         for _ in range(rows):

@@ -1,6 +1,6 @@
 # 폴더 구조 규칙
 
-ToteDB의 소스, 시험, 문서와 빌드 산출물을 두는 자리다. 구성 요소의 호출 관계는 [아키텍처](../architecture.md)에 있다.
+StreamLite의 소스, 시험, 문서와 빌드 산출물을 두는 자리다. 구성 요소의 호출 관계는 [아키텍처](../architecture.md)에 있다.
 
 ## 폴더
 
@@ -11,7 +11,7 @@ ToteDB의 소스, 시험, 문서와 빌드 산출물을 두는 자리다. 구성
 | `src/sql/` | lexer, 문장 구조, 식 평가, SQL 실행, 세션, 결과 |
 | `src/queue/` | 선택형 ACK 큐와 큐 시험 빌드 규칙 |
 | `src/capi/` | 다른 언어가 호출하는 평탄한 C API |
-| `python/totedb/` | ctypes 기반 Python 패키지 |
+| `python/streamlite/` | ctypes 기반 Python 패키지 |
 | `tests/` | C·Python 시험, 실패 주입, SQL 비교, 패키지 검사 |
 | `bench/` | 입력과 결과를 대조하는 성능 측정 도구 |
 | `examples/outbox/` | Python 생산자와 C worker가 같은 큐를 쓰는 예제 |

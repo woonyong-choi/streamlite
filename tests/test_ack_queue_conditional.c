@@ -306,7 +306,7 @@ static void test_query_budget(unsigned condition, bool candidate)
     CHECK(close_db(db), "close bounded session");
     db = open_db();
     char sql[256];
-    snprintf(sql, sizeof(sql), "SELECT fence FROM tote_queue_%s WHERE id = 1", name);
+    snprintf(sql, sizeof(sql), "SELECT fence FROM streamlite_queue_%s WHERE id = 1", name);
     CHECK(scalar_int(db, sql) == (candidate ? 0 : 1), "reopened state matches success or definite refusal");
     CHECK(close_db(db), "close budget audit");
 }

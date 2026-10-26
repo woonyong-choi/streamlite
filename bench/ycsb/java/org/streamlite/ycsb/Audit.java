@@ -1,4 +1,4 @@
-package org.totedb.ycsb;
+package org.streamlite.ycsb;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;

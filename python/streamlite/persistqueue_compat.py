@@ -27,9 +27,9 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
 
-from totedb.queue import Queue, Claim, ClaimToken, ItemInfo, ItemState
-from totedb.database import Database
-from totedb.errors import ToteDBError, NotFoundError, StaleError
+from streamlite.queue import Queue, Claim, ClaimToken, ItemInfo, ItemState
+from streamlite.database import Database
+from streamlite.errors import StreamLiteError, NotFoundError, StaleError
 
 __all__ = ["Empty", "SQLiteAckQueue", "UnknownClaimError"]
 
@@ -43,7 +43,7 @@ class Empty(Exception):  # noqa: N818 - persistqueue.exceptions.Empty와 같은 
     """가져올 작업이 없다."""
 
 
-class UnknownClaimError(ToteDBError):
+class UnknownClaimError(StreamLiteError):
     """이 프로세스가 claim한 적 없는 id에 ack·nack·update를 했다(fence를 알 수 없다)."""
 
 
@@ -82,7 +82,7 @@ class SQLiteAckQueue:
         del multithreading  # 항상 스레드 안전하다
         directory = Path(path)
         directory.mkdir(parents=True, exist_ok=True)
-        self._db = Database(directory / "data.totedb")
+        self._db = Database(directory / "data.streamlite")
         self._queue = Queue(self._db, "ack_queue", max_attempts=max_attempts, clock=clock)
         self._serializer: Serializer = serializer or _JsonSerializer()
         self._lease_ms = lease_ms

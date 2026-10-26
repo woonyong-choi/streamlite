@@ -22,7 +22,7 @@
  */
 
 #define DIR_NAME "build/test_database_sqlite_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 #define SCRIPT_PATH DIR_NAME "/script.sql"
 
 typedef enum { STEP_OK, STEP_ERROR, STEP_SELECT, STEP_REOPEN } step_kind_t;

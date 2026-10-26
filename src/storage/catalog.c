@@ -602,7 +602,7 @@ catalog_status_t catalog_encode(const catalog_t *catalog, uint8_t **bytes, size_
     size_t total = catalog->encoded_bytes;
     uint8_t *buffer = malloc(total);
     if (buffer == NULL) return CATALOG_NOMEM;
-    memcpy(buffer, "LRCT", 4);
+    memcpy(buffer, "SLCT", 4);
     put_u16(buffer + 4, FORMAT_VERSION);
     put_u16(buffer + 6, 0);
     le_put_u32(buffer + 8, (uint32_t)total);
@@ -760,7 +760,7 @@ static catalog_status_t check_envelope(const uint8_t *bytes, size_t size)
 {
     if (size < HEADER_BYTES + CHECKSUM_BYTES) return CATALOG_CORRUPT;
     if (size > CATALOG_MAX_ENCODED_BYTES) return CATALOG_LIMIT;
-    if (memcmp(bytes, "LRCT", 4) != 0) return CATALOG_CORRUPT;
+    if (memcmp(bytes, "SLCT", 4) != 0) return CATALOG_CORRUPT;
     uint64_t version = get_le(bytes + 4, 2);
     if (version != FORMAT_VERSION) return CATALOG_UNSUPPORTED;
     if (get_le(bytes + 6, 2) != 0) return CATALOG_CORRUPT;

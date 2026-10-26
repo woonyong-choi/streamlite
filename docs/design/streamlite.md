@@ -3,8 +3,8 @@
 | 항목 | 값 |
 |---|---|
 | 상태 | 제안 |
-| 관련 검토 | [구조 결정 #257](https://github.com/woonyong-choi/totedb/issues/257), [브랜드 전환 #258](https://github.com/woonyong-choi/totedb/issues/258) |
-| 브랜드 | StreamLite, 기존 배포·API의 ToteDB 명칭 유지 |
+| 관련 검토 | [구조 결정 #257](https://github.com/woonyong-choi/streamlite/issues/257), [브랜드 전환 #258](https://github.com/woonyong-choi/streamlite/issues/258) |
+| 브랜드 | StreamLite, 배포·import·C API·라이브러리·DB 파일 형식 모두 StreamLite 이름 |
 
 ## 요약
 
@@ -12,7 +12,7 @@ StreamLite는 SQL, 영속 이벤트 스트림, ACK 작업 처리를 각각 선�
 
 새 엔진의 기본 방향은 page/redo WAL, bytes 상한이 있는 buffer pool, MVCC, 조기 key 잠금으로 권고한다. 작은 상태의 잦은 변경을 durable commit과 본문 page 반영으로 분리하고, 같은 leaf의 다른 행을 쓰는 거래가 매번 옛 root를 병합하지 않게 하기 위해서다. 선택 근거와 반증 조건은 [성능과 안전을 함께 고르는 순서](#성능과-안전을-함께-고르는-순서)에 있다. 이는 현재 요구에서 도출한 설계 권고이며 새 backend의 구현·동등 조건 실측·제품 전환 승인은 아니다.
 
-기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache와 transaction workspace는 기본 OFF인 내부 비교 경로로 분리하며 성능 채택은 측정 전이다. Python의 큐 등록부는 첫 명시 사용 때 생성하며 수명·실패 회귀를 검증했다. 영속 fanout 스트림·새 backend·실제 동시 writer는 구현 완료가 아니다. StreamLite 표시명을 채택해도 기존 `totedb` 패키지·Python import·`tote_*` C ABI·`libtotedb`·DB 파일 형식은 그대로 둔다.
+기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache와 transaction workspace는 기본 OFF인 내부 비교 경로로 분리하며 성능 채택은 측정 전이다. Python의 큐 등록부는 첫 명시 사용 때 생성하며 수명·실패 회귀를 검증했다. 영속 fanout 스트림·새 backend·실제 동시 writer는 구현 완료가 아니다. 배포·설치 이름과 Python import는 `streamlite`, C API는 `streamlite_*`, 공유 라이브러리는 `libstreamlite`다. DB 파일은 `STREAMLITE` 16바이트 magic·형식 4·`SLPG` envelope 하나만 읽고 쓰며 이전 이름의 별칭이나 이전 형식 reader·변환기는 두지 않는다.
 
 ### 하지 않는 것
 
@@ -189,13 +189,13 @@ workspace의 문장 밖 보유량은 현재 작업 catalog와 같은 DB resident
 | transaction workspace | 작업당 요청 bytes 8MiB와 기존 shared 예산을 모두 적용 | 작은 commit group과 초과 거절을 검증하는 출발값이며, 부족하면 NOMEM·실패 상태와 명시적 rollback |
 | scope와 최고치 | resident cache/workspace + 실행 query + 보유 result를 중복 없이 합산 | 재할당 old+new·퇴출 대기·동시 결과를 포함하며, 예약 실패 뒤 카운터와 소유권 보존 |
 
-실제 부하에서 miss·admission 거절·NOMEM·추가 복제·처리량·tail·전체 메모리가 불리하면 한도나 cache 공유 방식을 독립 가설로 다시 검토한다. 수집 뒤 목표를 맞추려고 실패 표본을 버리거나 한도를 바꾸지 않는다. G5의 실제 workload·수치 판정 기준은 수집기 사전 계획에서 따로 고정한다. [현재 C API](../../src/capi/totedb.c#L119-L142)의 무제한 pool 설정을 이 시험값으로 바꿨다거나, 여러 pool의 프로세스 전체 상한을 구현했다고 주장하지 않는다.
+실제 부하에서 miss·admission 거절·NOMEM·추가 복제·처리량·tail·전체 메모리가 불리하면 한도나 cache 공유 방식을 독립 가설로 다시 검토한다. 수집 뒤 목표를 맞추려고 실패 표본을 버리거나 한도를 바꾸지 않는다. G5의 실제 workload·수치 판정 기준은 수집기 사전 계획에서 따로 고정한다. [현재 C API](../../src/capi/streamlite.c#L119-L142)의 무제한 pool 설정을 이 시험값으로 바꿨다거나, 여러 pool의 프로세스 전체 상한을 구현했다고 주장하지 않는다.
 
 ### 선택형 수명과 조건부 갱신
 
 SQL만 쓰는 Python DB는 큐 전용 빈 set을 만들지 않고 종료 때 빈 목록을 복제하지 않는 경로를 선택한다. 하위 자원 등록은 기능을 처음 명시적으로 사용할 때 지연 생성한다. 공통 소유 자원 등록부가 필요하면 generic 수명 관리와 queue/stream 전용 호출·분기를 실제 경로에서 구분한다. `_queues`를 다른 이름으로 바꾸는 것만으로 전용 비용을 제거했다고 판정하지 않는다. SQL 실행에는 기능 전용 polling·dispatcher·등록 호출을 넣지 않는다.
 
-등록한 자원은 기존처럼 DB보다 오래 살지 않는 강한 소유 관계와 명시적 unregister를 유지한다. 닫기 중 등록부가 바뀌어도 각 자원의 해제를 중복하지 않고, 해제 오류가 나면 살아 있는 handle을 잃지 않는다. [현재 Python close](../../python/totedb/database.py#L265-L288)처럼 열린 native transaction 때문에 DB close가 Busy이면 DB는 열려 있고 먼저 닫힌 큐는 닫힌 상태인 경계를 보존한다. 이를 조용히 transaction 자동 rollback으로 바꾸지 않는다. 공통 close 검사까지 비용 0이라고 약속하지 않고 생성·실행·종료를 각각 관측한다.
+등록한 자원은 기존처럼 DB보다 오래 살지 않는 강한 소유 관계와 명시적 unregister를 유지한다. 닫기 중 등록부가 바뀌어도 각 자원의 해제를 중복하지 않고, 해제 오류가 나면 살아 있는 handle을 잃지 않는다. [현재 Python close](../../python/streamlite/database.py#L265-L288)처럼 열린 native transaction 때문에 DB close가 Busy이면 DB는 열려 있고 먼저 닫힌 큐는 닫힌 상태인 경계를 보존한다. 이를 조용히 transaction 자동 rollback으로 바꾸지 않는다. 공통 close 검사까지 비용 0이라고 약속하지 않고 생성·실행·종료를 각각 관측한다.
 
 현재 Python 구현은 SQL 단독 생성에서 큐 등록부를 할당하지 않는다. 첫 큐 사용 때 기존 instance dict에 등록부를 두고, 이후 같은 등록부를 사용한다. 마지막 큐가 닫혀도 빈 등록부는 DB 수명 동안 유지한다. close의 등록부 존재 검사와 기능을 사용한 뒤 snapshot 복제는 남는다. 큐를 여는 데 성공한 뒤 Python 등록 할당이 실패하면 native handle을 해제하고 `MemoryError`를 그대로 전달한다. 설치 과정에서 이미 commit한 큐 테이블까지 되돌리지는 않는다. [수명 시험](../../tests/test_queue_lifecycle.py)은 강한 소유·반복 close·Busy 뒤 commit/rollback·재개방·Python 등록 할당/close 오류와 동시 첫 등록을 검사한다. 호출·등록부 할당 관측은 SQL 단독 경로의 빈 set/목록 제거를 확인하며, import·공통 DB 상태·전체 RSS나 비계측 지연의 비용 0을 입증하지 않는다. stream 수명은 구현 전이며 실제 기능을 추가할 때 같은 계약을 적용한다.
 
@@ -307,7 +307,7 @@ WAL의 복구 재생과 checkpoint·version GC는 COW의 root 선택·manifest �
 
 같은 leaf의 A와 B를 각각 바꾸는 두 writer를 예로 든다. A의 새 version이 미확정이어도 B는 자기 key를 잠그고 version을 추가한 뒤 자기 WAL commit을 동기화할 수 있다. A 때문에 그 frame의 writeback은 기다리지만 B의 durable 성공까지 A의 종료를 기다릴 필요는 없다. 재시작하면 유효한 commit을 가진 B만 새 값으로 보이고 A의 이전 값은 남는다. 이 입력에서 B가 항상 A의 종료까지 막히면 독립 writer 요구를 통과하지 못한다. frame 압력으로 거절되는 경우는 별도 자원·공정성 결과로 남긴다.
 
-이 절은 [#266](https://github.com/woonyong-choi/totedb/issues/266)의 격리된 비교용 형식과 내부 계약이다. 기존 8192B `LRPG`/`TOTEDB` 형식 3, `database_txn_begin`의 SNAPSHOT 기본값, C ABI와 Python API는 바꾸지 않는다. 새 파일 집합은 독립 DB UUID와 backend 식별자를 가지며 기존 파일을 새 decoder로 열거나 자동 변환하지 않는다. 새 후보도 8192B page를 사용해 page 크기 변화의 효과를 분리한다. UUID·version·byte order·길이·backend가 다르면 쓰기 없이 거절한다. 생성은 배타 생성과 부모 directory 동기화를 포함하며 이미 있는 경로를 덮지 않는다.
+이 절은 [#266](https://github.com/woonyong-choi/streamlite/issues/266)의 격리된 비교용 형식과 내부 계약이다. 현행 8192B `SLPG`/`STREAMLITE` 형식 4, `database_txn_begin`의 SNAPSHOT 기본값, C ABI와 Python API는 바꾸지 않는다. 새 파일 집합은 독립 DB UUID와 backend 식별자를 가지며 기존 파일을 새 decoder로 열거나 자동 변환하지 않는다. 새 후보도 8192B page를 사용해 page 크기 변화의 효과를 분리한다. UUID·version·byte order·길이·backend가 다르면 쓰기 없이 거절한다. 생성은 배타 생성과 부모 directory 동기화를 포함하며 이미 있는 경로를 덮지 않는다.
 
 | 내부 경계 | 입력과 출력 | 소유자·실패 책임 |
 |---|---|---|
@@ -581,7 +581,7 @@ epoch는 벽시계 TTL로 지우지 않는다. 현재 epoch에서는 항목을 �
 
 ### 후보의 자원·대기 한도
 
-아래 값은 [#266](https://github.com/woonyong-choi/totedb/issues/266)의 가역적인 내부 검증 설정이다. 무제한 예약·본문·복구 log를 막는 출발점이며 고객 SLO·성능 합격선·기존 공개 API의 새 제한이 아니다. 정식 비교는 같은 값과 구현된 회계를 첫 표본 전에 고정한다. overflow·OOM·disk full을 값 상향이나 sample 제외로 처리하지 않는다.
+아래 값은 [#266](https://github.com/woonyong-choi/streamlite/issues/266)의 가역적인 내부 검증 설정이다. 무제한 예약·본문·복구 log를 막는 출발점이며 고객 SLO·성능 합격선·기존 공개 API의 새 제한이 아니다. 정식 비교는 같은 값과 구현된 회계를 첫 표본 전에 고정한다. overflow·OOM·disk full을 값 상향이나 sample 제외로 처리하지 않는다.
 
 | 대상 | 검증 설정 | 한도에서의 동작·선택 이유 |
 |---|---|---|
@@ -692,9 +692,9 @@ steady 구간의 cleanup·checkpoint·GC는 실제 실행한 CPU·I/O·지연에
 
 작업 목록의 ID·상태만 확인하는데 모든 본문까지 복원하면, 필요한 화면 결과는 작아도 backlog와 payload에 따라 메모리 비용이 커질 수 있다. 이는 [개발 선택 D51](../development-report.md#d51-제한된-sql-cache-목표와-아직-충족하지-못한-요구)의 아직 검증하지 못한 원래 문제다. 쓰기 처리량이나 일정 backlog의 삭제 반복과 별도로, 조회할 결과를 고정한 메모리 비교가 필요하다.
 
-현재 [호환 계층](../../python/totedb/persistqueue_compat.py)의 `queue()`는 `iter_items(..., with_payload=True)` 전체를 list로 모으고 `_row`에서 각 payload를 역직렬화한다. 내부 페이지 크기가 100이어도 반환 list 전체를 유지한다. [Python Queue](../../python/totedb/queue.py)의 `list_items(after_id, limit, with_payload=False)`는 한 page를 반환하고 `iter_items`는 page를 차례로 제공한다. `list(iter_items(...))`나 호출자의 별도 저장 목록은 다시 전체 결과를 유지할 수 있다. 이 소스 대조는 실제 소비 프로젝트의 교체나 메모리 절감 실측이 아니다.
+현재 [호환 계층](../../python/streamlite/persistqueue_compat.py)의 `queue()`는 `iter_items(..., with_payload=True)` 전체를 list로 모으고 `_row`에서 각 payload를 역직렬화한다. 내부 페이지 크기가 100이어도 반환 list 전체를 유지한다. [Python Queue](../../python/streamlite/queue.py)의 `list_items(after_id, limit, with_payload=False)`는 한 page를 반환하고 `iter_items`는 page를 차례로 제공한다. `list(iter_items(...))`나 호출자의 별도 저장 목록은 다시 전체 결과를 유지할 수 있다. 이 소스 대조는 실제 소비 프로젝트의 교체나 메모리 절감 실측이 아니다.
 
-[native 목록 코드](../../src/queue/ack_queue.c)의 `ackq_list`는 metadata 후보를 제한하고 `fill_item`에서 `with_payload`일 때 반환할 본문을 얻는다. [C ABI](../../src/capi/totedb.c)의 `tote_queue_list`는 payload 포인터 소유권을 넘기고 Python `_to_info`는 필요한 경우 `ctypes.string_at`으로 Python bytes를 만든다. Python `list_items`는 `finally`에서 C payload를 해제하지만 반환한 Python 객체는 호출자가 계속 소유한다. page 전환의 겹친 수명, metadata·결과·cache·schema 메모리까지 관측해야 하며 payload의 논리 저장 1개를 메모리 복사 0개로 해석하지 않는다.
+[native 목록 코드](../../src/queue/ack_queue.c)의 `ackq_list`는 metadata 후보를 제한하고 `fill_item`에서 `with_payload`일 때 반환할 본문을 얻는다. [C ABI](../../src/capi/streamlite.c)의 `streamlite_queue_list`는 payload 포인터 소유권을 넘기고 Python `_to_info`는 필요한 경우 `ctypes.string_at`으로 Python bytes를 만든다. Python `list_items`는 `finally`에서 C payload를 해제하지만 반환한 Python 객체는 호출자가 계속 소유한다. page 전환의 겹친 수명, metadata·결과·cache·schema 메모리까지 관측해야 하며 payload의 논리 저장 1개를 메모리 복사 0개로 해석하지 않는다.
 
 먼저 고정된 사용자 과제를 정한다. 한 page의 metadata만 필요한 과제, 본문이 포함된 한 page, 모든 항목을 하나씩 처리하는 과제, 전체 복원 목록을 유지하는 과제는 서로 다른 결과다. 공통 필드·시간 단위·직렬화·상태·ID 순서를 맞추고 누락·중복·본문 checksum을 확인한다. metadata 과제에서 호환 전체 목록을 읽은 뒤 같은 필드와 앞 page만 남기는 기존 경로의 내부 비용은 측정에 포함한다. 이때 최종 소비 결과가 같다는 사실과 API 반환 형태가 다르다는 사실을 함께 기록한다. 서로 다른 과제의 지연·메모리 비를 같은 우위로 계산하지 않는다.
 
@@ -718,7 +718,7 @@ G5에는 조회별 필요한 필드·상태·결과 수명, backlog/page/payload
 
 ### pending 조회 수집의 사전 계획
 
-[#265](https://github.com/woonyong-choi/totedb/issues/265)의 [수집기](../../bench/pending_query.py)와 [고정 입력·판정 설정](../../bench/pending_query_plan.json)은 현재 COW 제품 코드 `9d70c9b4`를 대상으로 한다. 수집기·설정을 함께 담은 commit을 먼저 고정하고 정식 수집에서 그 조상을 검사한다. 작은 정상·실패 대조는 수집기 검증이며 메모리 절감 효과나 원 소비 프로젝트 교체의 근거가 아니다.
+[#265](https://github.com/woonyong-choi/streamlite/issues/265)의 [수집기](../../bench/pending_query.py)와 [고정 입력·판정 설정](../../bench/pending_query_plan.json)은 현재 COW 제품 코드 `9d70c9b4`를 대상으로 한다. 수집기·설정을 함께 담은 commit을 먼저 고정하고 정식 수집에서 그 조상을 검사한다. 작은 정상·실패 대조는 수집기 검증이며 메모리 절감 효과나 원 소비 프로젝트 교체의 근거가 아니다.
 
 Q1–Q4는 ID·상태·초 단위 timestamp, 본문 과제에서는 복원한 `data`까지 같은 ID 오름차순 digest를 요구한다. READY 합성 입력의 ID는 1부터 backlog까지, timestamp는 1초다. 본문 값은 `{"id": 정수, "body": "x" 반복}`이고 세 경로 모두 기본 `json.dumps`의 UTF-8 bytes와 같은 `json.loads`를 쓴다. 256B·4,096B는 body 문자열 길이이며 JSON 전체 크기가 아니다. 실제 persist-queue 1.1.0의 공개 `queue()`, 현재 호환 `queue()`, native 목록 API를 별도 조건으로 둔다. vendor fixture는 공개 `put()`으로 만들고 합성 SQLite 파일의 timestamp만 정규화한다. vendor의 `SELECT *`에는 ORDER BY 보장이 없으므로 기대 순서와 다르면 비교 실패로 남긴다.
 
@@ -920,7 +920,7 @@ WAL을 새 엔진의 기본 방향으로 권고하더라도 제품 채택은 이
 
 ### 공통 비용 수집의 사전 계획
 
-같은 1,024개 UPDATE를 cache/workspace 네 조건으로 실행하고 마지막 전체 행·본문을 SQLite 계산과 대조한다. 문장이 적어졌다는 사실이나 workspace의 사본 flush 수만으로 성능을 채택하지 않는다. [수집기](../../bench/common_cost.py), [입력·한도](../../bench/common_cost_plan.json), [native 실행기](../../bench/common_cost_driver.c), [Python 실행기](../../bench/common_cost_worker.py), [분석기](../../bench/common_cost_analysis.py)가 이 계획을 실행한다. 추적은 [#239](https://github.com/woonyong-choi/totedb/issues/239), cache·workspace·조건부 SQL·선택형 수명의 각 후속 이슈를 사용한다.
+같은 1,024개 UPDATE를 cache/workspace 네 조건으로 실행하고 마지막 전체 행·본문을 SQLite 계산과 대조한다. 문장이 적어졌다는 사실이나 workspace의 사본 flush 수만으로 성능을 채택하지 않는다. [수집기](../../bench/common_cost.py), [입력·한도](../../bench/common_cost_plan.json), [native 실행기](../../bench/common_cost_driver.c), [Python 실행기](../../bench/common_cost_worker.py), [분석기](../../bench/common_cost_analysis.py)가 이 계획을 실행한다. 추적은 [#239](https://github.com/woonyong-choi/streamlite/issues/239), cache·workspace·조건부 SQL·선택형 수명의 각 후속 이슈를 사용한다.
 
 | 항목 | 고정한 값과 이유 |
 |---|---|
@@ -983,7 +983,7 @@ campaign의 1,800초는 수집 시작부터 fixture 생성·복제, worker, 결�
 
 전체 표본의 worker RSS 최고는 98.594MiB, shared 요청 최고는 83.818MiB, workspace 내부 계상 최고는 0.680MiB였다. 대응 RSS 증가 최대 2.625MiB와 논리 DB 크기 비 최대 1.000은 자원 보호 기준 안이다. 세 RSS 비율 구간은 퇴화해 판정 근거에서 제외하지 않고 보류 사유로 남겼다. 공유 호스트의 수집 전 보존한 load average는 15.05/11.07/9.76이었고 코어는 10개다. 교대 순서는 유지했지만 이 변동을 장비·고객 모집단의 특성이나 두 기능의 무효과로 확정하지 않는다. 기본 OFF와 내부 비교 코드를 유지한다.
 
-다음 단일 비용 가설은 [#239](https://github.com/woonyong-choi/totedb/issues/239)의 H4로 정한다. 같은 durable 응답과 barrier 횟수를 유지하면서 commit barrier의 wall/CPU 대기와 metadata·data write 작업을 나눠 확인한다. 계측 진단에서 batch 1의 fsync 배타 wall 시간은 ON 업무 완료 시간의 50.5–68.7%, batch 32는 18.3–42.2%였다. 이는 각 부하·조건 한 번씩의 기술 관측이며 OFF 기여율·장치 지연·인과 효과로 확대하지 않는다. hit·256B·batch 32에서 workspace는 catalog clone 1,024→32회, pwrite 3,136→742회였지만 barrier는 두 경로 모두 32회다. 중간 작업 감소와 전체 성능 채택은 별개다.
+다음 단일 비용 가설은 [#239](https://github.com/woonyong-choi/streamlite/issues/239)의 H4로 정한다. 같은 durable 응답과 barrier 횟수를 유지하면서 commit barrier의 wall/CPU 대기와 metadata·data write 작업을 나눠 확인한다. 계측 진단에서 batch 1의 fsync 배타 wall 시간은 ON 업무 완료 시간의 50.5–68.7%, batch 32는 18.3–42.2%였다. 이는 각 부하·조건 한 번씩의 기술 관측이며 OFF 기여율·장치 지연·인과 효과로 확대하지 않는다. hit·256B·batch 32에서 workspace는 catalog clone 1,024→32회, pwrite 3,136→742회였지만 barrier는 두 경로 모두 32회다. 중간 작업 감소와 전체 성능 채택은 별개다.
 
 H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 barrier·도착·반환 조건과 호스트 상태를 고정해 검증한다. sync 생략·자동 거래 합치기로 기존 응답 계약을 바꾸지 않는다. 이번 단일 writer COW 결과는 새 WAL·MVCC·실제 독립 writer의 실측이 아니며, 현재 WAL 권고와 buffered-COW 대조 후보를 유지한다.
 
@@ -1029,15 +1029,15 @@ H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 bar
 
 | 결과 | 후속 과업 | 선행 조건과 보존할 검증 경계 |
 |---|---|---|
-| 준비 결과 cache | [#261](https://github.com/woonyong-choi/totedb/issues/261) | 공통 실행 계약으로 구현 착수, binding/schema·소유권·예산 회귀 뒤 #239의 hit/miss·비계측 업무 판정 |
-| transaction 변경 누적 | [#262](https://github.com/woonyong-choi/totedb/issues/262) | #239의 공통 비용 선택과 G1–G3, cache/workspace 교차·오류/rollback·삭제/회수·peak memory |
-| 실제 독립 writer | [#263](https://github.com/woonyong-choi/totedb/issues/263) | #238·#257의 계약과 #266 뒤 제품 통합, 비교용 원형의 프로세스별 실행 중첩·shared leaf·격리·UNKNOWN·회수 검증은 비교 전에 수행 |
-| 소비자별 stream | [#264](https://github.com/woonyong-choi/totedb/issues/264) | #257의 전달·보존·실패 계약, fanout·lease/fence·replay·redrive·같은 DB 거래·형식 변경 시 이관/복원 |
-| pending 조회 메모리 | [#265](https://github.com/woonyong-choi/totedb/issues/265) | G5와 Q1–Q5, 같은 소비 결과·실제 serializer·소유권·caller 축적·backlog별 전체 메모리와 읽기량 |
-| buffered COW와 WAL/MVCC 총비용 | [#266](https://github.com/woonyong-choi/totedb/issues/266) | #238·#257 계약과 #261·#262 공통 개선, 비교용 prototype의 안전성·정리/회수·checkpoint/GC·실패 포함 판정 |
-| SQLite·로컬 JetStream 제품 대안 | [#267](https://github.com/woonyong-choi/totedb/issues/267) | #263·#264의 필요한 구현/복구와 G5, 전달 의미·전체 앱 비용·외부 SQL 경계·같은 보장의 채택 조건 |
-| 조건부 claim·ACK | [#268](https://github.com/woonyong-choi/totedb/issues/268) | #239·#257의 SQL/결과 선택, 최소 후보·expiry·stale/중복 ACK·실패 readback·실제 scan/쓰기/복사 비용 |
-| 미사용 큐 초기화·종료 비용 | [#269](https://github.com/woonyong-choi/totedb/issues/269) | 선택형 수명 계약으로 구현 착수, SQL 단독 전용 비용과 명시 사용의 등록/해제·Busy close 회귀 뒤 효과 판정 |
+| 준비 결과 cache | [#261](https://github.com/woonyong-choi/streamlite/issues/261) | 공통 실행 계약으로 구현 착수, binding/schema·소유권·예산 회귀 뒤 #239의 hit/miss·비계측 업무 판정 |
+| transaction 변경 누적 | [#262](https://github.com/woonyong-choi/streamlite/issues/262) | #239의 공통 비용 선택과 G1–G3, cache/workspace 교차·오류/rollback·삭제/회수·peak memory |
+| 실제 독립 writer | [#263](https://github.com/woonyong-choi/streamlite/issues/263) | #238·#257의 계약과 #266 뒤 제품 통합, 비교용 원형의 프로세스별 실행 중첩·shared leaf·격리·UNKNOWN·회수 검증은 비교 전에 수행 |
+| 소비자별 stream | [#264](https://github.com/woonyong-choi/streamlite/issues/264) | #257의 전달·보존·실패 계약, fanout·lease/fence·replay·redrive·같은 DB 거래·형식 변경 시 이관/복원 |
+| pending 조회 메모리 | [#265](https://github.com/woonyong-choi/streamlite/issues/265) | G5와 Q1–Q5, 같은 소비 결과·실제 serializer·소유권·caller 축적·backlog별 전체 메모리와 읽기량 |
+| buffered COW와 WAL/MVCC 총비용 | [#266](https://github.com/woonyong-choi/streamlite/issues/266) | #238·#257 계약과 #261·#262 공통 개선, 비교용 prototype의 안전성·정리/회수·checkpoint/GC·실패 포함 판정 |
+| SQLite·로컬 JetStream 제품 대안 | [#267](https://github.com/woonyong-choi/streamlite/issues/267) | #263·#264의 필요한 구현/복구와 G5, 전달 의미·전체 앱 비용·외부 SQL 경계·같은 보장의 채택 조건 |
+| 조건부 claim·ACK | [#268](https://github.com/woonyong-choi/streamlite/issues/268) | #239·#257의 SQL/결과 선택, 최소 후보·expiry·stale/중복 ACK·실패 readback·실제 scan/쓰기/복사 비용 |
+| 미사용 큐 초기화·종료 비용 | [#269](https://github.com/woonyong-choi/streamlite/issues/269) | 선택형 수명 계약으로 구현 착수, SQL 단독 전용 비용과 명시 사용의 등록/해제·Busy close 회귀 뒤 효과 판정 |
 | 기존 기본키 조회의 규모 검증 | [#158](https://github.com/woonyong-choi/totedb/issues/158) | 기존 구현·실패 표본을 보존하고 1천·1만·10만 행의 스캔 수와 p50/p95/p99를 같은 조건으로 3회 측정, 시간 제한의 부분 적재를 요청 규모 완료로 세지 않는 조건 |
 
 공통 실행 계약을 먼저 구체화한 뒤 cache·workspace·선택형 수명·조건부 SQL을 각각 구현하고 검증한다. 수집기와 사전 계획을 고정한 뒤 대응 실측으로 각 비용을 판정한다. pending 조회와 기존 기본키 규모 검증은 별도 입력·결과로 남긴다. 앞선 보고서나 이슈 연결만으로 이 실측을 완료하지 않는다.
@@ -1046,7 +1046,7 @@ H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 bar
 
 각 단계는 필요한 계약, 코드와 실제 검증 근거로 닫는다. 가역적인 시험용 선택은 이유와 반증 조건을 적어 진행하며 전체 설계의 공개 통합을 기다리는 무기한 보류로 바꾸지 않는다. correctness나 필수 요구가 미충족이면 다음 안전 단계 전에 해당 결함의 수리 과업을 넣는다. 부적합한 후보의 제외는 근거로 남기되, 제품의 필수 요구까지 완료한 것으로 처리하지 않는다.
 
-[다중 쓰기 안전성 #238](https://github.com/woonyong-choi/totedb/issues/238)과 [공통 비용 개선 #239](https://github.com/woonyong-choi/totedb/issues/239)는 기존 결정 범위를 재사용한다. COW/WAL 비교용 prototype과 선택한 backend의 제품 구현은 구분한다. [표시명 변경 #258](https://github.com/woonyong-choi/totedb/issues/258)의 범위는 기존 패키지·import·ABI·파일 유지다. 후속 구현도 이를 보존하고, 형식 변경이 필요하면 별도 계약과 이관·mixed-version 거절·복원 검사를 거친다. 이 연결로 rename·기존 파일 cutover·운영 배포 권한을 넓히지 않는다.
+[다중 쓰기 안전성 #238](https://github.com/woonyong-choi/streamlite/issues/238)과 [공통 비용 개선 #239](https://github.com/woonyong-choi/streamlite/issues/239)는 기존 결정 범위를 재사용한다. COW/WAL 비교용 prototype과 선택한 backend의 제품 구현은 구분한다. [표시명 변경 #258](https://github.com/woonyong-choi/streamlite/issues/258)의 범위는 기존 패키지·import·ABI·파일 유지다. 후속 구현도 이를 보존하고, 형식 변경이 필요하면 별도 계약과 이관·mixed-version 거절·복원 검사를 거친다. 이 연결로 rename·기존 파일 cutover·운영 배포 권한을 넓히지 않는다.
 
 ### 요구사항
 
@@ -1080,11 +1080,11 @@ H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 bar
 
 ## 미해결
 
-- G1 격리·충돌: 내부 후보는 SNAPSHOT·locking 읽기와 FIFO·교착 victim·대기/잠금 한도를 위 계약으로 구분한다. 공개 API·기본값·전체 지원 문장과 실제 key/range/schema 구현·반환 결과 보존은 검증 전이다 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G2 불확정 결과: 비교 후보는 영속 요청 ID·결과 조회와 epoch/floor 보존을 선택한다. 실제 restart·동일/다른 내용·없는/만료 ID·본문 수명 구현과 제품의 조회 기간·보존 종료 API는 검증 전이다. 동적 SQL/callback의 자동 재실행은 지원 범위에 넣지 않는다 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G3 자원·보존: payload·메모리·pin·spill·in-flight·ACK holes·로그·실패/결과 기록의 bytes와 개수 한도, 유한 대기 시간, replay·멱등 보존 기간의 확정. 한도 도달 시 publish 거절 권고와 명시적 consumer expiry·데이터 손실 정책 비교 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G4 프로세스·이관: membership·lease·내구 owner epoch와 배타 복구 계약의 실제 프로세스 간 구현·사망/정지/fork 검증, 이관·역이관은 미완료다. 별도 시험 형식 선택을 기존 DB 전환으로 적용하지 않는다 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G5 비교 실행: E0–E7·조회 Q1–Q5의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·조회 결과 수명·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- G6 WAL·version 형식: 내부 형식·NO-STEAL·논리 abort·checkpoint/GC 계약은 위 절을 따른다. 후보 파일의 record/segment·거래/group·결과 복구는 위 진입점으로 연결한다. 제품 가시성·구조 변경·공유 frame과 실제 writer의 구현, R01–R18 전체 실패 증명과 양쪽 후보의 비용 수집은 미완료다 ([#263](https://github.com/woonyong-choi/totedb/issues/263), [#266](https://github.com/woonyong-choi/totedb/issues/266))
-- 느린 소비자·보존 한도 충돌, 지원 subject·replay·DLQ/redrive의 정확한 API 계약 ([#257](https://github.com/woonyong-choi/totedb/issues/257))
-- 표시명 이후 패키지·import·ABI·경로·파일 형식의 별도 호환 전환과 상표 등 권리 확인 ([#258](https://github.com/woonyong-choi/totedb/issues/258))
+- G1 격리·충돌: 내부 후보는 SNAPSHOT·locking 읽기와 FIFO·교착 victim·대기/잠금 한도를 위 계약으로 구분한다. 공개 API·기본값·전체 지원 문장과 실제 key/range/schema 구현·반환 결과 보존은 검증 전이다 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
+- G2 불확정 결과: 비교 후보는 영속 요청 ID·결과 조회와 epoch/floor 보존을 선택한다. 실제 restart·동일/다른 내용·없는/만료 ID·본문 수명 구현과 제품의 조회 기간·보존 종료 API는 검증 전이다. 동적 SQL/callback의 자동 재실행은 지원 범위에 넣지 않는다 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
+- G3 자원·보존: payload·메모리·pin·spill·in-flight·ACK holes·로그·실패/결과 기록의 bytes와 개수 한도, 유한 대기 시간, replay·멱등 보존 기간의 확정. 한도 도달 시 publish 거절 권고와 명시적 consumer expiry·데이터 손실 정책 비교 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
+- G4 프로세스·이관: membership·lease·내구 owner epoch와 배타 복구 계약의 실제 프로세스 간 구현·사망/정지/fork 검증, 이관·역이관은 미완료다. 별도 시험 형식 선택을 기존 DB 전환으로 적용하지 않는다 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
+- G5 비교 실행: E0–E7·조회 Q1–Q5의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·조회 결과 수명·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
+- G6 WAL·version 형식: 내부 형식·NO-STEAL·논리 abort·checkpoint/GC 계약은 위 절을 따른다. 후보 파일의 record/segment·거래/group·결과 복구는 위 진입점으로 연결한다. 제품 가시성·구조 변경·공유 frame과 실제 writer의 구현, R01–R18 전체 실패 증명과 양쪽 후보의 비용 수집은 미완료다 ([#263](https://github.com/woonyong-choi/streamlite/issues/263), [#266](https://github.com/woonyong-choi/streamlite/issues/266))
+- 느린 소비자·보존 한도 충돌, 지원 subject·replay·DLQ/redrive의 정확한 API 계약 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
+- 표시명 이후 패키지·import·ABI·경로·파일 형식의 별도 호환 전환과 상표 등 권리 확인 ([#258](https://github.com/woonyong-choi/streamlite/issues/258))

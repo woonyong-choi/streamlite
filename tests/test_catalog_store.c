@@ -23,7 +23,7 @@
 #include "storage/record_page.h"
 
 #define DIR_NAME "__test__catalog_store_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 
 static int g_run = 0;
 static int g_fail = 0;
@@ -156,7 +156,7 @@ static bool same_catalog(const catalog_t *a, const catalog_t *b)
     return same;
 }
 
-/* LRO2 체인의 페이지 번호를 순서대로 모은다. 본문 8..11이 next다. 반환: 개수 */
+/* SLO2 체인의 페이지 번호를 순서대로 모은다. 본문 8..11이 next다. 반환: 개수 */
 static size_t chain_pages(page_file_t *file, uint32_t head, uint32_t table_id, uint32_t *ids, size_t cap)
 {
     size_t count = 0;

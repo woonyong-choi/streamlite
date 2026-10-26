@@ -12,7 +12,7 @@ README의 빠른 시작에 담지 않은 빌드 변수, 시험 대상, 외부 �
 | Python 바인딩 | 표준 라이브러리 ctypes |
 | 시험 의존성 | `libsqlite3-dev`, `sqlite3` CLI, pytest |
 
-`make all`은 DB와 큐를 묶은 공유 라이브러리 `build/lib/libtotedb.so`(macOS에서는 `.dylib`)를 `-O2`로 만든다. 이 라이브러리는 sanitizer를 켜지 않는다. Python 바인딩의 라이브러리 탐색 순서와 존재하지만 로딩에 실패한 후보의 처리는 [설정](configuration.md#우선순위)에 있다.
+`make all`은 DB와 큐를 묶은 공유 라이브러리 `build/lib/libstreamlite.so`(macOS에서는 `.dylib`)를 `-O2`로 만든다. 이 라이브러리는 sanitizer를 켜지 않는다. Python 바인딩의 라이브러리 탐색 순서와 존재하지만 로딩에 실패한 후보의 처리는 [설정](configuration.md#우선순위)에 있다.
 
 시험 바이너리는 `SANITIZE` 변수로 sanitizer를 고른다. 기본값은 `address,undefined`이고 Darwin 25 이상에서는 `undefined`다. `BUILD_DIR`를 바꾸면 sanitizer 설정이 다른 빌드를 따로 둘 수 있다.
 
@@ -80,7 +80,7 @@ make ACKQ_CONDITIONAL=0 test-ack-queue-conditional
 
 `test-ack-queue`는 `test-ack-queue-conditional`의 바이너리도 실행한다. 이 시험은 내부 제어로 cache/workspace 네 조건과 기존·조건부 경로를 함께 대조한다. queue SQL과 payload 할당의 시험 hook, 실제 파일 I/O 호출, query/result 예약을 관측한다. 정상·빈 후보·부분 배치·중복/stale/FAILED·상한·재개방·결과 수명·취소·payload OOM·query 예산 거절·writer timeout을 검사하며 시험 관측을 비계측 성능으로 해석하지 않는다.
 
-E3 비교의 baseline·candidate와 각 계측 ON은 같은 소스와 cache/workspace 설정으로 별도 빌드한다. 조건부 사전 등록은 정확한 `TOTE_ACKQ_CONDITIONAL=0`과 `=1`, 계측 플래그만 정규화하며 다른 차이는 거절한다. 원 cache/workspace 비교의 `validated_builds`와 수집·채택 기준은 유지한다. 실제 통과한 시험·소스·바이너리 해시를 담은 eligibility를 구현 commit에 연결해 등록한 뒤 별도 수집한다. 이 내부 구현이나 회귀만으로 채택하지 않는다.
+E3 비교의 baseline·candidate와 각 계측 ON은 같은 소스와 cache/workspace 설정으로 별도 빌드한다. 조건부 사전 등록은 정확한 `STREAMLITE_ACKQ_CONDITIONAL=0`과 `=1`, 계측 플래그만 정규화하며 다른 차이는 거절한다. 원 cache/workspace 비교의 `validated_builds`와 수집·채택 기준은 유지한다. 실제 통과한 시험·소스·바이너리 해시를 담은 eligibility를 구현 commit에 연결해 등록한 뒤 별도 수집한다. 이 내부 구현이나 회귀만으로 채택하지 않는다.
 
 ### 비교용 WAL 파일
 
@@ -259,7 +259,7 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build/recovery-closure-check SANITI
 
 ### 공통 비용 수집
 
-[사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.
+[사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3를 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.
 
 ```sh
 make BENCHMARK=0 SQL_TEMPLATE_CACHE=0 TXN_WORKSPACE=0 common-cost-driver
@@ -270,7 +270,7 @@ python3 bench/common_cost.py verify --registration "$PREFIX.registration.json" -
 python3 bench/common_cost.py analyze --registration "$PREFIX.registration.json" --prefix "$PREFIX"
 ```
 
-수집·분석 interpreter에는 NumPy 1.26.4·SciPy 1.13.1이 필요하며 등록 정보가 실제 버전을 고정한다. `--phase lifecycle`은 같은 native 라이브러리에서 eager/lazy Python 수명을 비교한다. `--phase conditional`은 별도 `--candidate-build`, `--candidate-on-build`, `--eligibility`를 요구한다. 후보가 없거나 baseline과 같은 binary면 비교를 거절한다. eligibility는 최소 ID·lease/fence·중복/stale/FAILED·cancel/OOM·실패 readback·reopen 검증 근거를 연결하며 구현 전에는 정식 E3를 실행하지 않는다.
+수집·분석 interpreter에는 NumPy 1.26.4·SciPy 1.13.1이 필요하며 등록 정보가 실제 버전을 고정한다. 실행 단계는 `cache`와 `conditional`만 있다. 기존 eager/lazy 수명 기록은 등록한 source revision에 남아 있으며 현재 수집기는 옛 binding을 실행하지 않는다. `--phase conditional`은 별도 `--candidate-build`, `--candidate-on-build`, `--eligibility`를 요구한다. 후보가 없거나 baseline과 같은 binary면 비교를 거절한다. eligibility는 최소 ID·lease/fence·중복/stale/FAILED·cancel/OOM·실패 readback·reopen 검증 근거를 연결하며 구현 전에는 정식 E3를 실행하지 않는다.
 
 eligibility JSON의 `minimum_id`, `lease_fence`, `duplicate_stale_failed`, `cancel_oom`, `failure_readback`, `reopen`은 통과했을 때만 true로 기록한다. `source_commit`은 후보 검증 commit이고 `build_source_commits`와 `library_hashes`는 각각 `off`, `on`, `candidate`, `candidate_on`의 commit과 SHA-256을 담는다. `artifacts`는 실제 검증 파일 경로와 SHA-256의 대응이다. 등록은 실제 파일·binary hash와 commit 존재를 확인하고, 수집 직전 다시 검사한다. 이 표시는 필요한 실패 검증을 새로 수행하거나 미구현 후보를 통과시킨다는 뜻이 아니다.
 
@@ -302,11 +302,11 @@ make BENCHMARK=0 SANITIZE= counter-driver
 python3 bench/counter_run.py --build-dir build --output .local/runs/counter-off --n 12
 make BENCHMARK=1 SANITIZE= counter-driver
 python3 bench/counter_run.py --build-dir build-benchmark --output .local/runs/counter-on --n 12
-python3 tools/verify_benchmark.py build/lib/libtotedb.so
-python3 tools/verify_benchmark.py build-benchmark/lib/libtotedb.so --enabled
+python3 tools/verify_benchmark.py build/lib/libstreamlite.so
+python3 tools/verify_benchmark.py build-benchmark/lib/libstreamlite.so --enabled
 ```
 
-macOS에서는 검사할 라이브러리의 확장자를 `.dylib`로 바꾼다. output 디렉터리는 새 경로여야 한다. 실패한 DB도 보존한다. 이 작은 실행은 정확성 검사이며 성능 결론의 근거가 아니다. 두 엔진 모두 같은 단일 행 스키마와 단일 클라이언트로 매 증가마다 명시적 begin/update/commit을 실행하고 영향 행 수, 최종 값, 닫았다 다시 연 영속 값을 검사한다. SQLite prepare-each와 prepared-reuse는 별도 구성이다. 입력 생성·DB 생성·JSON 출력은 측정 밖이다. Tote의 결과 wire 인코딩은 exec에 포함되며 결과 해석·해제와 SQLite changes/reset/finalize 비용은 별도로 남긴다.
+macOS에서는 검사할 라이브러리의 확장자를 `.dylib`로 바꾼다. output 디렉터리는 새 경로여야 한다. 실패한 DB도 보존한다. 이 작은 실행은 정확성 검사이며 성능 결론의 근거가 아니다. 두 엔진 모두 같은 단일 행 스키마와 단일 클라이언트로 매 증가마다 명시적 begin/update/commit을 실행하고 영향 행 수, 최종 값, 닫았다 다시 연 영속 값을 검사한다. SQLite prepare-each와 prepared-reuse는 별도 구성이다. 입력 생성·DB 생성·JSON 출력은 측정 밖이다. StreamLite의 결과 wire 인코딩은 exec에 포함되며 결과 해석·해제와 SQLite changes/reset/finalize 비용은 별도로 남긴다.
 
 계측 범위는 C API exec·begin·commit·rollback·queue put/get/ack 전체이며 검증 실패와 EMPTY 반환도 포함한다. 내부에는 어휘 분석·구문 분석, 실행 부모, 카탈로그 복제·save/load, 게시·commit, 정수 키 lookup·heap page 수집·batch finish, 핸들 mutex 획득, 파일 lock 획득과 개별 pread/pwrite/fsync/flock 호출이 있다. ROW_INDEX는 이 coarse 범위만 포함하며 전체 행 처리 비용을 뜻하지 않는다. 결과는 스레드별 고정 버퍼에 쌓이고 요청 밖에서 drain한다. 불완전한 시계·스택·overflow·drop은 카운터로 남는다.
 
@@ -320,10 +320,10 @@ wheel과 sdist 재빌드는 환경의 Make 모드 변수를 차단하고 패키�
 
 ```sh
 make BENCHMARK=0 SANITIZE= all build/outbox_consumer
-TOTEDB_LIB=build/lib/libtotedb.so PYTHONPATH=python python3 examples/outbox/run.py --consumer build/outbox_consumer --dir build/outbox-example --orders 30 --workers 3 --lease-ms 800
+STREAMLITE_LIB=build/lib/libstreamlite.so PYTHONPATH=python python3 examples/outbox/run.py --consumer build/outbox_consumer --dir build/outbox-example --orders 30 --workers 3 --lease-ms 800
 ```
 
-macOS에서는 `TOTEDB_LIB`의 확장자를 `.dylib`로 바꾼다. `--dir`에는 예제 전용 경로만 준다. 스크립트는 그 안의 기존 `shop.totedb`를 삭제하므로 보관할 DB 경로를 주지 않는다. 기본 입력은 주문 30건·worker 3개·lease 800밀리초다. 위 명령은 기본값을 명시하며 DB를 `build/outbox-example`에 남긴다.
+macOS에서는 `STREAMLITE_LIB`의 확장자를 `.dylib`로 바꾼다. `--dir`에는 예제 전용 경로만 준다. 스크립트는 그 안의 기존 `shop.streamlite`를 삭제하므로 보관할 DB 경로를 주지 않는다. 기본 입력은 주문 30건·worker 3개·lease 800밀리초다. 위 명령은 기본값을 명시하며 DB를 `build/outbox-example`에 남긴다.
 
 실행 중 worker 하나를 claim 직후 SIGKILL한다. 나머지 worker가 lease 만료 뒤 해당 주문을 재전달받아 처리한다. 출력 끝의 `[검증]` 행에서 출고 30건·중복 0·누락 0·큐 acked 30과 재전달을 확인하고, 마지막 `검증 통과` 및 종료 코드 0을 확인한다. worker별 처리 건수와 재전달 대상은 실행마다 다를 수 있다.
 
@@ -358,7 +358,7 @@ python3 bench/sqlite_workload.py --output build/bench/sqlite_workload.json
 python3 bench/sqlite_workload.py --output build/bench/sqlite_workload.json --analyze
 ```
 
-공식 YCSB 0.17.0은 같은 Java/JNI SQL 바인딩으로 ToteDB와 SQLite에 A~F를 실행한다(2026-10-18 확인). Java 21, Python 3.9 이상, C 컴파일러와 SQLite 개발 헤더가 필요하다. 고정 JAR 다운로드에 네트워크를 사용한다.
+공식 YCSB 0.17.0은 같은 Java/JNI SQL 바인딩으로 StreamLite와 SQLite에 A~F를 실행한다(2026-10-18 확인). Java 21, Python 3.9 이상, C 컴파일러와 SQLite 개발 헤더가 필요하다. 고정 JAR 다운로드에 네트워크를 사용한다.
 
 ```sh
 make ycsb-build
@@ -385,11 +385,11 @@ python3 bench/queue_contention/diagnose.py compare \
   --baseline-lib "$BASELINE_LIB" --candidate-lib "$CANDIDATE_LIB" \
   --output .local/runs/queue-cost-compare --jobs 4096 --repetitions 5 --workers 1,8
 python3 bench/queue_contention/diagnose.py trace \
-  --library "$CANDIDATE_LIB" --engine totedb \
+  --library "$CANDIDATE_LIB" --engine streamlite \
   --output .local/runs/queue-cost-trace --jobs 4096 --workers 8
 ```
 
-작은 정확성 smoke는 compare의 `--jobs 12 --repetitions 1 --workers 1`로 실행한다. 성능 비교에 사용하지 않는다. PR에 `queue-cost-experiment` label을 붙이면 선택형 CI가 고정 기준선과 candidate를 먼저 빌드하고 비교·ToteDB/SQLite trace를 직렬 수행한다. 원본 JSON·로그·DB와 라이브러리 해시는 `queue-cost-hypotheses` artifact에 남는다. 조건과 채택 기준은 [Linux 후속 계획](experiments/queue-contention/linux-design.md#issue-232-후속-비용-진단과-전후-비교)에 있다.
+작은 정확성 smoke는 compare의 `--jobs 12 --repetitions 1 --workers 1`로 실행한다. 성능 비교에 사용하지 않는다. 조건과 채택 기준은 [Linux 후속 계획](experiments/queue-contention/linux-design.md#issue-232-후속-비용-진단과-전후-비교)에 있다.
 
 TEXT 기본 키 범위 개선의 전후 비교는 [TEXT 색인 구간 순회 결과](experiments/text-range/report.md)에 있다. 고정 소스의 기존 공식 E를 같은 VM에서 전후로 실행하며 [Linux 계획](experiments/text-range/linux-design.md)에 조건과 순서를 둔다.
 
@@ -413,16 +413,18 @@ RUN_ID=20261019T031416Z-b590d61-check ./docs/experiments/text-range/run.sh analy
 
 CI의 SQL 비교·워크플로 검사와 릴리스의 Linux 보조 job은 Ubuntu 24.04로 고정한다. sanitizer 시험은 Ubuntu 22.04를 유지한다. 결과 파일 업로드·다운로드 액션은 Node.js 24 런타임을 사용한다.
 
+옛 기준 source·ABI를 고정해 비교하던 label 실험 job(`local-db-queue-experiment`, `release-cost-experiment`, `benchmark-comparison`, `queue-cost-experiment`)은 제거했다. 기존 실험 기록은 기록된 source revision에 남아 있으며 새 측정이 아니다. 새 다중 writer·COW/WAL 정리·복구 전체 비용 비교는 아직 끝나지 않았다.
+
 태그 push와 패키징 파일을 바꾼 PR에서는 `.github/workflows/release.yml`이 실행된다([패키지 배포](#패키지-배포)).
 
 ## 패키지 배포
 
-Python 패키지 `totedb`는 PyPI에 올린다. 공유 라이브러리를 ctypes로 열기 때문에 Python 버전과 무관한 `py3-none-{플랫폼}` wheel을 플랫폼마다 하나씩 만든다.
+Python 패키지 `streamlite`는 아직 PyPI에 게시하지 않았다. 게시 전에는 저장소에서 `pip install .`로 설치하거나 직접 빌드한 wheel을 설치한다. 공유 라이브러리를 ctypes로 열기 때문에 Python 버전과 무관한 `py3-none-{플랫폼}` wheel을 플랫폼마다 하나씩 만든다.
 
 | 파일 | 역할 |
 |---|---|
-| `pyproject.toml` | 패키지 정보, 버전 출처(`python/totedb/__init__.py`), cibuildwheel 설정 |
-| `setup.py` | `make SANITIZE= all`로 만든 `libtotedb`를 패키지 폴더에 넣고 wheel 태그 결정 |
+| `pyproject.toml` | 패키지 정보, 버전 출처(`python/streamlite/__init__.py`), cibuildwheel 설정 |
+| `setup.py` | `make SANITIZE= all`로 만든 `libstreamlite`를 패키지 폴더에 넣고 wheel 태그 결정 |
 | `MANIFEST.in` | sdist에 C 소스와 `Makefile`을 넣어 설치 때 다시 빌드 |
 | `tests/package_smoke.py` | 별도 설치 환경에서 패키지 안의 라이브러리로 DB·큐 사용 확인 |
 
@@ -434,15 +436,15 @@ Python 바인딩의 라이브러리 탐색은 [설정](configuration.md#우선�
 python3 -m build
 python3 -m venv build/package-env
 build/package-env/bin/pip install dist/*.whl
-TOTEDB_ROOT="$PWD"
+STREAMLITE_ROOT="$PWD"
 cd build
-package-env/bin/python "$TOTEDB_ROOT/tests/package_smoke.py"
-cd "$TOTEDB_ROOT"
+package-env/bin/python "$STREAMLITE_ROOT/tests/package_smoke.py"
+cd "$STREAMLITE_ROOT"
 ```
 
 ### 릴리스 순서
 
-1. `python/totedb/__init__.py`의 `__version__`, `include/totedb.h`의 `TOTE_VERSION`, `CHANGELOG.md`의 `## {버전} - {날짜}` 절을 같은 버전으로 맞춘다.
+1. `python/streamlite/__init__.py`의 `__version__`, `include/streamlite.h`의 `STREAMLITE_VERSION`, `CHANGELOG.md`의 `## {버전} - {날짜}` 절을 같은 버전으로 맞춘다.
 2. 기본 브랜치에 머지한 뒤 `v{버전}` 태그를 push한다.
 3. `.github/workflows/release.yml`이 버전 일치를 검사하고 sdist와 wheel(Linux x86_64·aarch64 manylinux_2_28, macOS arm64 11.0 이상)을 빌드·설치·검사한다.
 4. PyPI Trusted Publishing(`pypi` 환경)으로 게시한 뒤 변경 기록 절을 본문으로 GitHub Release를 만들고 배포 파일을 첨부한다.
@@ -457,7 +459,7 @@ macOS 26(Darwin 25)과 Apple clang 17에서는 ASan 바이너리가 `main()`에 
 
 ## README 그림
 
-[README 그림 원본](assets/transaction-queue.diagramplay)과 [DB 실행 관측값](assets/transaction-queue.trace.json)이 현재 입력이다. 도구 기준은 [DiagramPlay `0f35b9b`](https://github.com/woonyong-choi/diagramplay/tree/0f35b9b1c400355e769f8302a3f3f348a07d69f5)과 Node.js 26.9.0이다. `DIAGRAMPLAY_DIR`은 해당 커밋의 준비된 도구 작업본을 가리킨다. 원본 검사만 하려면 ToteDB 루트에서 아래 명령을 실행한다.
+[README 그림 원본](assets/transaction-queue.diagramplay)과 [DB 실행 관측값](assets/transaction-queue.trace.json)이 현재 입력이다. 도구 기준은 [DiagramPlay `0f35b9b`](https://github.com/woonyong-choi/diagramplay/tree/0f35b9b1c400355e769f8302a3f3f348a07d69f5)과 Node.js 26.9.0이다. `DIAGRAMPLAY_DIR`은 해당 커밋의 준비된 도구 작업본을 가리킨다. 원본 검사만 하려면 StreamLite 루트에서 아래 명령을 실행한다.
 
 ```sh
 node "$DIAGRAMPLAY_DIR/src/cli.js" check docs/assets/transaction-queue.diagramplay --strict
@@ -467,7 +469,7 @@ README는 화면 폭에 따라 움직이는 [기본 SVG](assets/transaction-queu
 
 GitHub의 HTML 링크는 재생 화면이 아니라 소스보기다. 장면을 선택하려면 저장소를 내려받은 뒤 `docs/assets/transaction-queue.html` 또는 `transaction-queue-narrow.html`을 로컬 브라우저에서 연다. `storage-publication`과 `queue-lifecycle`의 기본·좁은 HTML도 같은 방식으로 연다. GitHub에서 움직이는 SVG가 보이는 것과 HTML의 장면 선택 기능은 구분한다.
 
-재생성은 ToteDB 루트에서 `node tools/render-figures.mjs`로 한다. 큐 2개는 `buildFigure(source, {strict: true, baseDir})`의 기본 폭으로 빌드하고 `toSvg(result, {name})`·`toHtml(result, name)`으로 내보낸다. 좁은 배치는 고정 도구의 내부 `src/build.js`에 있는 `reflowFigure`로 같은 기준 시간표를 유지한다. 원본의 장면 값을 trace와 대조하고 정지 출력으로 덮어쓰지 않는다. 7개 원본과 22개 생성물의 정확한 옵션·환경·바이트 대조는 [아키텍처의 재생성](architecture.md#그림-원본과-재생성)을 따른다.
+재생성은 StreamLite 루트에서 `node tools/render-figures.mjs`로 한다. 큐 2개는 `buildFigure(source, {strict: true, baseDir})`의 기본 폭으로 빌드하고 `toSvg(result, {name})`·`toHtml(result, name)`으로 내보낸다. 좁은 배치는 고정 도구의 내부 `src/build.js`에 있는 `reflowFigure`로 같은 기준 시간표를 유지한다. 원본의 장면 값을 trace와 대조하고 정지 출력으로 덮어쓰지 않는다. 7개 원본과 22개 생성물의 정확한 옵션·환경·바이트 대조는 [아키텍처의 재생성](architecture.md#그림-원본과-재생성)을 따른다.
 
 ## pending 조회 수집
 

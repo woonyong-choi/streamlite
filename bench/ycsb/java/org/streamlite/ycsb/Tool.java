@@ -1,4 +1,4 @@
-package org.totedb.ycsb;
+package org.streamlite.ycsb;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -13,7 +13,7 @@ public final class Tool {
       case "setup" -> setup(args[1], args[2]);
       case "audit" -> Audit.run(args[1], args[2], Path.of(args[3]), args.length == 5 ? Path.of(args[4]) : null);
       case "smoke" -> Smoke.run(args[1], args[2]);
-      case "version" -> System.out.printf("{\"totedb\":\"%s\",\"sqlite\":\"%s\",\"sqlite_compile_options\":[\"%s\"]}%n",
+      case "version" -> System.out.printf("{\"streamlite\":\"%s\",\"sqlite\":\"%s\",\"sqlite_compile_options\":[\"%s\"]}%n",
           Native.version(0), Native.version(1), String.join("\",\"", Native.compileOptions()));
       default -> throw new IllegalArgumentException("unknown command " + args[0]);
     }

@@ -1,5 +1,5 @@
 {
-    "name": "ToteDB Development Container",
+    "name": "StreamLite Development Container",
     "dockerFile": "Dockerfile",
     "remoteUser": "jungle",
     "customizations": {

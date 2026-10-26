@@ -10,10 +10,10 @@
 
 /*
  * 새 저장 형식의 파일 I/O 드라이버. OS 페이지 크기와 독립적으로 물리 페이지 8192바이트를 쓴다.
- * ToteDB 파일이 아닌 파일은 열거나 해석하거나 바꾸지 않는다.
+ * StreamLite 파일이 아닌 파일은 열거나 해석하거나 바꾸지 않는다.
  *
  * 페이지 배치(모든 정수는 little-endian):
- *   0..31   envelope: "LRPG", 버전 u16, 종류 u16, page ID u32, table ID u32,
+ *   0..31   envelope: "SLPG", 버전 u16, 종류 u16, page ID u32, table ID u32,
  *           본문 길이 u32, 예약 8바이트(0), 체크섬 u32(CRC32C, 체크섬 필드 제외 전체)
  *   32..8191 본문 8160바이트. 본문 길이 뒤는 0이어야 한다.
  * page 0, 1은 제어 페이지 두 장이다. 세대 번호가 큰 쪽이 현재 값이고 commit은 작은 쪽에 쓴다.
@@ -35,7 +35,7 @@
 #define PAGE_BODY_BYTES (PAGE_FILE_PAGE_BYTES - PAGE_ENVELOPE_BYTES)
 #define PAGE_FILE_CONTROL_PAGES 2u
 #define PAGE_FILE_NO_PAGE 0u
-#define PAGE_FILE_FORMAT_VERSION 3u
+#define PAGE_FILE_FORMAT_VERSION 4u
 #define PAGE_FILE_MAX_PAGES 0xFFFFFFF0u
 
 typedef enum {
@@ -55,7 +55,7 @@ typedef enum {
     PAGE_FILE_INVALID,      /* 인자·범위·이중 해제 */
     PAGE_FILE_IO,           /* 읽기·쓰기·fsync·열기 실패. errno를 남긴다 */
     PAGE_FILE_CORRUPT,      /* 체크섬·magic·page ID·길이·세대 불일치, 잘린 파일 */
-    PAGE_FILE_UNSUPPORTED,  /* 알 수 없는 version·페이지 크기·byte order, ToteDB 파일이 아님 */
+    PAGE_FILE_UNSUPPORTED,  /* 알 수 없는 version·페이지 크기·byte order, StreamLite 파일이 아님 */
     PAGE_FILE_NO_CONTROL,   /* 유효한 제어 페이지가 없음. 게시되지 않은 파일 */
     PAGE_FILE_EXISTS,       /* 목적지 또는 partial 파일이 이미 있음 */
     PAGE_FILE_LOCKED,       /* 다른 핸들이 잠금을 쥐고 있어 대기 상한 안에 얻지 못함 */
@@ -138,7 +138,8 @@ page_file_status_t page_file_publish(page_file_t *file);
  * 게시된 파일을 연다. 쓰기 전에는 아무것도 쓰지 않으며 version·길이·header가 맞지 않으면
  * 파일을 바꾸지 않고 거절한다. writable이면 writer 잠금(<path>-lock), 아니면 파일 공유 잠금을 잡은 채 돌려준다. 다른
  * 핸들이 그 잠금을 쥐고 있으면 대기 상한(page_file_set_default_lock_timeout)까지 기다리고 넘으면 PAGE_FILE_LOCKED다.
- * 두 제어 페이지 어디에도 파일 magic("TOTEDB")이 없는 파일은 PAGE_FILE_UNSUPPORTED다(다른 형식 파일). 제어 페이지
+ * 두 제어 페이지 어디에도 16바이트 파일 magic("STREAMLITE"와 0 여섯)이 없는 파일은 PAGE_FILE_UNSUPPORTED다(다른 형식
+ * 파일). 체크섬이 맞는데 envelope magic이 "SLPG"가 아닌 제어 슬롯이 하나라도 있어도 UNSUPPORTED다. 제어 페이지
  * 두 장보다 짧은 파일은 앞부분이 0뿐이거나 magic이 있으면 잘린 파일(CORRUPT), 아니면 UNSUPPORTED다. 어떤 경우에도
  * 자동으로 변환하지 않는다.
  */

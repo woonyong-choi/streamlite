@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 상태 | 구현 |
-| 관련 결정 | [DB·선택형 ACK 큐 범위 결정 #139](https://github.com/woonyong-choi/totedb/issues/139#issuecomment-6172915462) |
+| 관련 결정 | [DB·선택형 ACK 큐 범위 결정 #139](https://github.com/woonyong-choi/streamlite/issues/139#issuecomment-6172915462) |
 
 ## 요약
 
@@ -74,7 +74,7 @@ if claim is not None:
 
 ### 같은 DB 트랜잭션의 경계
 
-`Queue(db, name)`은 같은 DB 안에 큐 테이블 `tote_queue_<name>`, 멱등성 키 보존 테이블 `tote_queue_<name>_keys`와 색인을 설치하거나 연다. 별도 저장 엔진이 아니며 DB 코어는 큐를 참조하지 않는다. 업무 테이블 `orders`는 앱이 정하는 예제이지 제품 고정 스키마가 아니다.
+`Queue(db, name)`은 같은 DB 안에 큐 테이블 `streamlite_queue_<name>`, 멱등성 키 보존 테이블 `streamlite_queue_<name>_keys`와 색인을 설치하거나 연다. 별도 저장 엔진이 아니며 DB 코어는 큐를 참조하지 않는다. 업무 테이블 `orders`는 앱이 정하는 예제이지 제품 고정 스키마가 아니다.
 
 `ackq_scope_open`은 호출자 세션에 트랜잭션이 있으면 그 트랜잭션을 사용한다. 트랜잭션 없이 변경 연산을 호출하면 자체 DURABLE 트랜잭션을 열고 끝에서 commit한다. 따라서 `txn=txn`으로 실행한 큐 호출의 성공은 아직 영속 성공이 아니며 최종 트랜잭션 commit이 필요하다. 다른 DB의 트랜잭션은 실행 전에 거절한다. 저장·게시와 잠금은 [아키텍처](../architecture.md#최종-게시와-결과-전달), 실제 분기는 [ack_queue_sql.c](../../src/queue/ack_queue_sql.c)에 있다.
 
@@ -102,13 +102,13 @@ if claim is not None:
 
 같은 멱등성 키와 같은 payload의 `put`은 기존 작업 id를 반환하고, payload가 다르면 충돌로 거절한다. ACK는 물리 삭제가 아니며 `purge`가 끝난 행을 지운다. 키를 보존하는 설정이면 purge 뒤에도 정해진 기간 동안 키와 payload 요약을 남긴다. 보존 기간 뒤 재등록은 새 작업이고, 요약 비교를 무기한·무충돌 중복 제거라고 부르지 않는다.
 
-큐 옵션은 이름에 저장하는 전역 정책이 아니라 열린 핸들의 값이다. 여러 워커와 재개방 코드가 같은 시도·payload·보존·시계 정책을 전달할 책임이 있다. 정확한 매개변수와 C·Python의 0 변환 차이는 [totedb.h](../../include/totedb.h)와 [queue.py](../../python/totedb/queue.py), 상태 변경 규칙은 [ack_queue.h](../../include/queue/ack_queue.h)에 있다.
+큐 옵션은 이름에 저장하는 전역 정책이 아니라 열린 핸들의 값이다. 여러 워커와 재개방 코드가 같은 시도·payload·보존·시계 정책을 전달할 책임이 있다. 정확한 매개변수와 C·Python의 0 변환 차이는 [streamlite.h](../../include/streamlite.h)와 [queue.py](../../python/streamlite/queue.py), 상태 변경 규칙은 [ack_queue.h](../../include/queue/ack_queue.h)에 있다.
 
 ### 실패 뒤 트랜잭션과 자원
 
 STALE·NOT_FOUND·CONFLICT는 변경 없는 거절이므로 호출자 트랜잭션을 실패시키지 않는다. 그 밖의 큐 오류에서는 일부 SQL이 이미 실행됐을 수 있어 호출자 트랜잭션 전체를 rollback한다. 불확정 commit은 성공으로 취급하지 않고 DB를 닫아 재개방한 뒤 업무 상태를 확인한다. 같은 DB의 업무 갱신과 ACK를 묶어도 외부 부작용까지 rollback하지는 않는다.
 
-C `get`의 payload는 `tote_queue_item_free`, 목록 payload는 `tote_queue_list_free`로 해제하고 목록 배열 자체는 호출자가 소유한다. Python은 payload를 bytes로 복사하고 native 자원을 해제한다. 트랜잭션을 먼저 끝내고 큐·DB를 닫는다. C의 열린 트랜잭션이나 큐는 DB close를 BUSY로 만들 수 있으며, Python DB close는 등록 큐부터 닫는다. 종료와 오류 규칙은 [totedb.h](../../include/totedb.h), [database.py](../../python/totedb/database.py)에 있다.
+C `get`의 payload는 `streamlite_queue_item_free`, 목록 payload는 `streamlite_queue_list_free`로 해제하고 목록 배열 자체는 호출자가 소유한다. Python은 payload를 bytes로 복사하고 native 자원을 해제한다. 트랜잭션을 먼저 끝내고 큐·DB를 닫는다. C의 열린 트랜잭션이나 큐는 DB close를 BUSY로 만들 수 있으며, Python DB close는 등록 큐부터 닫는다. 종료와 오류 규칙은 [streamlite.h](../../include/streamlite.h), [database.py](../../python/streamlite/database.py)에 있다.
 
 ### 요구사항
 

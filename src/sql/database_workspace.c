@@ -9,7 +9,7 @@ bool database_workspace_set_enabled(database_t *db, bool enabled)
 
 bool database_workspace_enabled(const database_t *db)
 {
-    return db != NULL && (db->workspace_mode > 0 || (db->workspace_mode == 0 && TOTE_TXN_WORKSPACE));
+    return db != NULL && (db->workspace_mode > 0 || (db->workspace_mode == 0 && STREAMLITE_TXN_WORKSPACE));
 }
 
 bool database_workspace_allows(database_t *db, size_t catalog_bytes, size_t list_bytes, size_t extra)

@@ -1,4 +1,4 @@
-package org.totedb.ycsb;
+package org.streamlite.ycsb;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
@@ -88,7 +88,7 @@ final class Smoke {
     require(Native.decode(Arrays.copyOf(command, command.length + 1)).status == NativeReply.ERROR, "trailing wire rejected");
     require(Native.decode(new byte[] {99}).status == NativeReply.ERROR, "unknown wire kind rejected");
     byte[] busy = new byte[] {2, 7, 0, 0, 0, 30, 0, 0, 0, 0, 0, 0, 0};
-    require(Native.decode(busy).status == NativeReply.BUSY, "SQL BUSY inside TOTE_OK decoded");
+    require(Native.decode(busy).status == NativeReply.BUSY, "SQL BUSY inside STREAMLITE_OK decoded");
     for (int code : new int[] {10, 12, 13}) {
       byte[] unsafe = new byte[] {2, 6, 0, 0, 0, (byte)code, 0, 0, 0, 0, 0, 0, 0};
       require(Native.decode(unsafe).status == NativeReply.ERROR, "unsafe errors are not BUSY");

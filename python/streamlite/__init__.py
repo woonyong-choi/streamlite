@@ -1,10 +1,10 @@
-"""totedb: ToteDB(Transactional Outbox Table Engine)의 Python 인터페이스. DB와 그 위에 선택 설치하는 작업 큐.
+"""streamlite: StreamLite의 Python 인터페이스. DB와 그 위에 선택 설치하는 작업 큐.
 
 Database와 Transaction은 큐 없이 DB 단독으로 쓴다. Queue는 설치해야 테이블이 생긴다.
 persistqueue_compat은 persist-queue 1.1.0 SQLiteAckQueue의 일부 호출을 감싸며 의미 차이는 그 모듈에 적었다.
 """
 
-from totedb.queue import (
+from streamlite.queue import (
     DEFAULT_IDEM_RETENTION_MS,
     DEFAULT_MAX_PAYLOAD_BYTES,
     Claim,
@@ -15,8 +15,8 @@ from totedb.queue import (
     Queue,
     QueueStats,
 )
-from totedb.database import Column, Database, Result, SqlValue, Transaction
-from totedb.errors import (
+from streamlite.database import Column, Database, Result, SqlValue, Transaction
+from streamlite.errors import (
     BusyError,
     CancelledError,
     ConflictError,
@@ -25,7 +25,7 @@ from totedb.errors import (
     InternalError,
     InvalidArgumentError,
     LimitError,
-    ToteDBError,
+    StreamLiteError,
     NotAppliedError,
     NotFoundError,
     NotInstalledError,
@@ -38,7 +38,7 @@ from totedb.errors import (
     UnsupportedError,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "__version__",
@@ -59,7 +59,7 @@ __all__ = [
     "ItemInfo",
     "ItemState",
     "LimitError",
-    "ToteDBError",
+    "StreamLiteError",
     "NotAppliedError",
     "NotFoundError",
     "NotInstalledError",

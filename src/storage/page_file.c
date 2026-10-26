@@ -23,7 +23,7 @@ _Static_assert(RECORD_PAGE_BYTES == PAGE_BODY_BYTES,
                "record page body must equal the page_file body");
 
 #define EINTR_RETRY_MAX 100
-#define CONTROL_HEADER_BYTES 72u
+#define CONTROL_HEADER_BYTES 80u
 #define MANIFEST_MAX 256u
 #define MANIFEST_BYTES (MANIFEST_MAX * 8u)
 #define CONTROL_INLINE_IDS ((PAGE_BODY_BYTES - CONTROL_HEADER_BYTES - MANIFEST_BYTES) / 4u)
@@ -35,7 +35,7 @@ _Static_assert(RECORD_PAGE_BYTES == PAGE_BODY_BYTES,
 #define WRITER_LOCK_SUFFIX "-lock"
 
 /*
- * 제어 본문 배치: magic 8, 형식 u32, 페이지 크기 u32, byte order u32, 세대 u64, page_count u32, 예약 u32(0),
+ * 제어 본문 배치: magic 16("STREAMLITE"와 0 여섯), 형식 u32, 페이지 크기 u32, byte order u32, 세대 u64, page_count u32, 예약 u32(0),
  * 카탈로그 head u32, size u32, 카탈로그 세대 u64, 재사용 수 u32, 대기 수 u32, 사슬 head u32, 사슬 길이 u32,
  * manifest 수 u32, 그 뒤에 manifest(페이지 번호 u32, 페이지 체크섬 u32)를 MANIFEST_MAX개까지, 그 뒤에 빈 페이지
  * 번호(재사용 다음 대기 순서)를 CONTROL_INLINE_IDS개까지. 나머지 번호는 사슬 페이지에 이어 쓴다.
@@ -46,7 +46,7 @@ _Static_assert(RECORD_PAGE_BYTES == PAGE_BODY_BYTES,
  * 실제 페이지, 파일 길이를 대조해 알아보고 이전 세대로 연다. manifest가 없으면 데이터 fsync → 제어 쓰기 → fsync다.
  * 어느 쪽이든 새 페이지는 두 제어 슬롯이 가리키지 않는 자리에만 쓰므로 이전 세대는 그대로다.
  */
-static const uint8_t FILE_MAGIC[8] = {'T', 'O', 'T', 'E', 'D', 'B', 0, 0};
+static const uint8_t FILE_MAGIC[16] = {'S', 'T', 'R', 'E', 'A', 'M', 'L', 'I', 'T', 'E', 0, 0, 0, 0, 0, 0};
 
 /* 쓰기 핸들이 아는 페이지 하나의 상태 */
 typedef enum {
@@ -160,7 +160,7 @@ static void encode_page(uint8_t *page, page_kind_t kind, uint32_t page_id, uint3
                         uint32_t body_len, const uint8_t *body)
 {
     memset(page, 0, PAGE_FILE_PAGE_BYTES);
-    memcpy(page, "LRPG", 4);
+    memcpy(page, "SLPG", 4);
     put_u16(page + 4, ENVELOPE_VERSION);
     put_u16(page + 6, (uint16_t)kind);
     le_put_u32(page + 8, page_id);
@@ -188,11 +188,11 @@ static const uint8_t ZERO_PAGE[PAGE_FILE_PAGE_BYTES];
 /* 0 영역 검사. 바이트 단위 반복 대신 벡터화된 memcmp를 쓴다 */
 static bool all_zero(const uint8_t *bytes, size_t size) { return memcmp(bytes, ZERO_PAGE, size) == 0; }
 
-/* envelope만 검사한다. 손상이면 SLOT_DAMAGED, 알 수 없는 envelope 버전이면 SLOT_UNSUPPORTED. */
+/* 체크섬을 magic보다 먼저 봐서 다른 형식으로 온전히 쓰인 슬롯을 손상으로 보고 덮어쓰지 않는다 */
 static slot_state_t decode_envelope(const uint8_t *page, uint32_t expect_id, envelope_t *out)
 {
-    if (memcmp(page, "LRPG", 4) != 0) return SLOT_DAMAGED;
     if (le_get_u32(page + 28) != page_checksum(page)) return SLOT_DAMAGED;
+    if (memcmp(page, "SLPG", 4) != 0) return SLOT_UNSUPPORTED;
     if (le_get_u16(page + 4) != ENVELOPE_VERSION) return SLOT_UNSUPPORTED;
     uint32_t body_len = le_get_u32(page + 16);
     if (le_get_u32(page + 8) != expect_id || body_len > PAGE_BODY_BYTES) return SLOT_DAMAGED;
@@ -219,7 +219,7 @@ static uint32_t chain_pages_for(uint64_t total)
     return (uint32_t)((total - CONTROL_INLINE_IDS + CHAIN_IDS - 1) / CHAIN_IDS);
 }
 
-/* 제어 페이지 본문 앞에 ToteDB 파일 magic이 있는지(체크섬과 무관하게) */
+/* 제어 페이지 본문 앞에 StreamLite 파일 magic이 있는지(체크섬과 무관하게) */
 static bool has_file_magic(const uint8_t *page)
 {
     return memcmp(page + PAGE_ENVELOPE_BYTES, FILE_MAGIC, sizeof(FILE_MAGIC)) == 0;
@@ -234,19 +234,21 @@ static slot_state_t decode_control(const uint8_t *page, uint32_t slot, page_file
     if (state != SLOT_VALID) return state;
     if (envelope.kind != PAGE_KIND_CONTROL || envelope.table_id != 0) return SLOT_DAMAGED;
     const uint8_t *body = page + PAGE_ENVELOPE_BYTES;
-    if (envelope.body_len < 12 || memcmp(body, FILE_MAGIC, sizeof(FILE_MAGIC)) != 0) return SLOT_UNSUPPORTED;
-    if (le_get_u32(body + 8) != PAGE_FILE_FORMAT_VERSION) return SLOT_UNSUPPORTED;
+    if (envelope.body_len < sizeof(FILE_MAGIC) + 4u || memcmp(body, FILE_MAGIC, sizeof(FILE_MAGIC)) != 0) {
+        return SLOT_UNSUPPORTED;
+    }
+    if (le_get_u32(body + 16) != PAGE_FILE_FORMAT_VERSION) return SLOT_UNSUPPORTED;
     if (envelope.body_len < CONTROL_HEADER_BYTES) return SLOT_DAMAGED;
-    if (le_get_u32(body + 12) != PAGE_FILE_PAGE_BYTES) return SLOT_UNSUPPORTED;
-    if (le_get_u32(body + 16) != BYTE_ORDER_MARK) return SLOT_UNSUPPORTED;
+    if (le_get_u32(body + 20) != PAGE_FILE_PAGE_BYTES) return SLOT_UNSUPPORTED;
+    if (le_get_u32(body + 24) != BYTE_ORDER_MARK) return SLOT_UNSUPPORTED;
     page_file_control_t control = {
-        .generation = le_get_u64(body + 20),
-        .page_count = le_get_u32(body + 28),
-        .catalog_head = le_get_u32(body + 36),
-        .catalog_size = le_get_u32(body + 40),
-        .catalog_generation = le_get_u64(body + 44),
+        .generation = le_get_u64(body + 28),
+        .page_count = le_get_u32(body + 36),
+        .catalog_head = le_get_u32(body + 44),
+        .catalog_size = le_get_u32(body + 48),
+        .catalog_generation = le_get_u64(body + 52),
     };
-    if (le_get_u32(body + 32) != 0) return SLOT_DAMAGED;
+    if (le_get_u32(body + 40) != 0) return SLOT_DAMAGED;
     if (control.generation == 0 || control.generation % 2 != slot) return SLOT_DAMAGED;
     if (control.page_count < PAGE_FILE_CONTROL_PAGES || control.page_count > PAGE_FILE_MAX_PAGES) {
         return SLOT_DAMAGED;
@@ -259,8 +261,8 @@ static slot_state_t decode_control(const uint8_t *page, uint32_t slot, page_file
          control.catalog_head >= control.page_count)) {
         return SLOT_DAMAGED;
     }
-    free_header_t free_list = {le_get_u32(body + 52), le_get_u32(body + 56), le_get_u32(body + 60), le_get_u32(body + 64),
-                               le_get_u32(body + 68)};
+    free_header_t free_list = {le_get_u32(body + 60), le_get_u32(body + 64), le_get_u32(body + 68), le_get_u32(body + 72),
+                               le_get_u32(body + 76)};
     uint64_t total = (uint64_t)free_list.reusable + free_list.aging;
     if (total > control.page_count - PAGE_FILE_CONTROL_PAGES || free_list.manifest > MANIFEST_MAX ||
         envelope.body_len != CONTROL_HEADER_BYTES + 8u * free_list.manifest + 4u * inline_ids(total) ||
@@ -282,19 +284,19 @@ static void encode_control_header(uint8_t *body, const page_file_control_t *cont
 {
     memset(body, 0, CONTROL_HEADER_BYTES);
     memcpy(body, FILE_MAGIC, sizeof(FILE_MAGIC));
-    le_put_u32(body + 8, PAGE_FILE_FORMAT_VERSION);
-    le_put_u32(body + 12, PAGE_FILE_PAGE_BYTES);
-    le_put_u32(body + 16, BYTE_ORDER_MARK);
-    le_put_u64(body + 20, control->generation);
-    le_put_u32(body + 28, control->page_count);
-    le_put_u32(body + 36, control->catalog_head);
-    le_put_u32(body + 40, control->catalog_size);
-    le_put_u64(body + 44, control->catalog_generation);
-    le_put_u32(body + 52, free_list->reusable);
-    le_put_u32(body + 56, free_list->aging);
-    le_put_u32(body + 60, free_list->chain_head);
-    le_put_u32(body + 64, free_list->chain_count);
-    le_put_u32(body + 68, free_list->manifest);
+    le_put_u32(body + 16, PAGE_FILE_FORMAT_VERSION);
+    le_put_u32(body + 20, PAGE_FILE_PAGE_BYTES);
+    le_put_u32(body + 24, BYTE_ORDER_MARK);
+    le_put_u64(body + 28, control->generation);
+    le_put_u32(body + 36, control->page_count);
+    le_put_u32(body + 44, control->catalog_head);
+    le_put_u32(body + 48, control->catalog_size);
+    le_put_u64(body + 52, control->catalog_generation);
+    le_put_u32(body + 60, free_list->reusable);
+    le_put_u32(body + 64, free_list->aging);
+    le_put_u32(body + 68, free_list->chain_head);
+    le_put_u32(body + 72, free_list->chain_count);
+    le_put_u32(body + 76, free_list->manifest);
 }
 
 /* ── 저수준 I/O: EINTR·짧은 I/O·EOF·ENOSPC를 처리한다 ── */
@@ -789,7 +791,7 @@ static page_file_status_t read_controls(page_file_t *file, uint8_t pages[2][PAGE
     } else if (st.st_size == 0) {
         status = PAGE_FILE_NO_CONTROL;
     } else if (st.st_size < (off_t)(PAGE_FILE_CONTROL_PAGES * PAGE_FILE_PAGE_BYTES)) {
-        /* 제어 페이지 두 장보다 짧다. 읽은 앞부분이 0뿐이거나 파일 magic이 있으면 잘린 ToteDB 파일, 다른 내용이면 다른 형식이다 */
+        /* 제어 페이지 두 장보다 짧다. 읽은 앞부분이 0뿐이거나 파일 magic이 있으면 잘린 StreamLite 파일, 다른 내용이면 다른 형식이다 */
         memset(pages[0], 0, PAGE_FILE_PAGE_BYTES);
         size_t head = st.st_size < (off_t)PAGE_FILE_PAGE_BYTES ? (size_t)st.st_size : PAGE_FILE_PAGE_BYTES;
         status = read_full(file, pages[0], head, 0);
@@ -800,7 +802,7 @@ static page_file_status_t read_controls(page_file_t *file, uint8_t pages[2][PAGE
     for (uint32_t slot = 0; status == PAGE_FILE_OK && slot < 2; slot++) {
         status = read_full(file, pages[slot], PAGE_FILE_PAGE_BYTES, (uint64_t)slot * PAGE_FILE_PAGE_BYTES);
     }
-    /* 두 제어 페이지 어디에도 파일 magic이 없고 비어 있지도 않으면 ToteDB 파일이 아니다. 바꾸지 않고 거절한다 */
+    /* 두 제어 페이지 어디에도 파일 magic이 없고 비어 있지도 않으면 StreamLite 파일이 아니다. 바꾸지 않고 거절한다 */
     if (status == PAGE_FILE_OK && !has_file_magic(pages[0]) && !has_file_magic(pages[1]) &&
         !(is_blank(pages[0]) && is_blank(pages[1]))) {
         status = PAGE_FILE_UNSUPPORTED;
@@ -834,7 +836,7 @@ static void adopt_published(page_file_t *file, const page_file_control_t *chosen
     file->staged_generation = chosen->catalog_generation;
 }
 
-/* 쓰기로 열기 전 확인: 열기와 같은 규칙으로 게시된 ToteDB 파일인지만 본다. 임시 핸들로 읽고 아무것도 바꾸지 않는다 */
+/* 쓰기로 열기 전 확인: 열기와 같은 규칙으로 게시된 StreamLite 파일인지만 본다. 임시 핸들로 읽고 아무것도 바꾸지 않는다 */
 static page_file_status_t check_published_file(int fd)
 {
     page_file_t probe = {.fd = fd, .io = g_default_io, .writer_fd = -1};
@@ -863,7 +865,7 @@ page_file_status_t page_file_open_admitted(const char *path, bool writable, page
     if (fd < 0) return PAGE_FILE_IO;
     /*
      * 읽기 핸들은 파일 공유 잠금을, 쓰기 핸들은 writer 잠금을 쥔 채 게시 상태를 읽는다. 어느 쪽이든 그동안 게시가 없다.
-     * 쓰기 핸들은 먼저 공유 잠금으로 ToteDB 파일인지 확인하고 놓은 뒤 writer 잠금을 잡는다. 다른 형식 파일 옆에 잠금
+     * 쓰기 핸들은 먼저 공유 잠금으로 StreamLite 파일인지 확인하고 놓은 뒤 writer 잠금을 잡는다. 다른 형식 파일 옆에 잠금
      * 파일을 만들지 않고, 공유 잠금을 쥔 채 writer 잠금을 기다리다 게시하려는 writer와 서로 막히지 않게 하기 위해서다.
      */
     int writer_fd = -1;
@@ -1275,6 +1277,19 @@ static bool ensure_capacity(page_file_t *file, size_t n)
            list_grow(&file->fresh, n);
 }
 
+static page_file_status_t alloc_tail(page_file_t *file, uint32_t *page_id)
+{
+    if (file->page_count >= PAGE_FILE_MAX_PAGES) return PAGE_FILE_LIMIT;
+    if (file->workspace != NULL && file->workspace->admit_pages != NULL &&
+        !file->workspace->admit_pages(file->workspace->ledger.ctx, file->page_count + 1)) return PAGE_FILE_NOMEM;
+    if (!ensure_capacity(file, (size_t)file->page_count + 1)) return PAGE_FILE_NOMEM;
+    uint32_t id = file->page_count++;
+    file->state[id] = PS_FRESH;
+    list_push(&file->fresh, id);
+    *page_id = id;
+    return PAGE_FILE_OK;
+}
+
 page_file_status_t page_file_alloc(page_file_t *file, uint32_t *page_id)
 {
     if (file == NULL || page_id == NULL) return PAGE_FILE_INVALID;
@@ -1291,15 +1306,7 @@ page_file_status_t page_file_alloc(page_file_t *file, uint32_t *page_id)
         *page_id = id;
         return PAGE_FILE_OK;
     }
-    if (file->page_count >= PAGE_FILE_MAX_PAGES) return PAGE_FILE_LIMIT;
-    if (file->workspace != NULL && file->workspace->admit_pages != NULL &&
-        !file->workspace->admit_pages(file->workspace->ledger.ctx, file->page_count + 1)) return PAGE_FILE_NOMEM;
-    if (!ensure_capacity(file, (size_t)file->page_count + 1)) return PAGE_FILE_NOMEM;
-    uint32_t id = file->page_count++;
-    file->state[id] = PS_FRESH;
-    list_push(&file->fresh, id);
-    *page_id = id;
-    return PAGE_FILE_OK;
+    return alloc_tail(file, page_id);
 }
 
 page_file_status_t page_file_release(page_file_t *file, uint32_t page_id)
@@ -1518,6 +1525,7 @@ page_file_status_t page_file_commit(page_file_t *file)
 
     /*
      * 빈 목록이 제어 페이지에 다 들어가지 않으면 사슬 페이지를 받는다. 재사용 목록에서 받으면 적을 번호도 하나 준다.
+     * 번호 하나를 줄여 필요한 사슬 수가 이미 받은 수 이하로 떨어지면 끝에서 새로 받아 사슬 수를 정확히 맞춘다.
      * 받은 사슬 페이지는 새 페이지라 실패하면 그대로 돌려준다.
      */
     id_list_t next_chain = {NULL, 0, 0};
@@ -1525,8 +1533,10 @@ page_file_status_t page_file_commit(page_file_t *file)
         uint64_t total = (uint64_t)file->reusable.len + file->aging.len + file->pending.len + file->chain.len;
         if (next_chain.len >= chain_pages_for(total)) break;
         uint32_t id;
-        page_file_status_t taken = list_grow(&next_chain, next_chain.len + 1) ? page_file_alloc(file, &id)
-                                                                               : PAGE_FILE_NOMEM;
+        bool shrinks = file->reusable.len > 0 && chain_pages_for(total - 1) <= next_chain.len;
+        page_file_status_t taken = !list_grow(&next_chain, next_chain.len + 1) ? PAGE_FILE_NOMEM
+                                   : shrinks                                   ? alloc_tail(file, &id)
+                                                                               : page_file_alloc(file, &id);
         if (taken != PAGE_FILE_OK) {
             undo_chain(file, &next_chain);
             free(next_chain.items);

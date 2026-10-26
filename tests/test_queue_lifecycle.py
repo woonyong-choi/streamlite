@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-import totedb.database as database_module
-from totedb import BusyError, Database, InvalidArgumentError, NotInstalledError, Queue
-from totedb.database import Closable
+import streamlite.database as database_module
+from streamlite import BusyError, Database, InvalidArgumentError, NotInstalledError, Queue
+from streamlite.database import Closable
 
 
 def test_database_retains_unreleased_queue_and_clock_until_close(tmp_path: Path) -> None:
-    db = Database(tmp_path / "owned.totedb")
+    db = Database(tmp_path / "owned.streamlite")
 
     def clock() -> int:
         return 1000
@@ -32,12 +32,12 @@ def test_database_retains_unreleased_queue_and_clock_until_close(tmp_path: Path)
 
     assert queue_ref() is None
     assert clock_ref() is None
-    with Database(tmp_path / "owned.totedb", create=False) as reopened:
+    with Database(tmp_path / "owned.streamlite", create=False) as reopened:
         assert Queue(reopened, "jobs", install=False).stats().ready == 1
 
 
 def test_queue_close_releases_database_ownership_before_database_close(tmp_path: Path) -> None:
-    with Database(tmp_path / "released.totedb") as db:
+    with Database(tmp_path / "released.streamlite") as db:
         queue = Queue(db, "jobs")
         queue_ref = weakref.ref(queue)
 
@@ -55,7 +55,7 @@ def test_queue_close_releases_database_ownership_before_database_close(tmp_path:
 def test_database_busy_close_preserves_transaction_and_closed_queues(
     tmp_path: Path, finish: str, *, use_queue: bool
 ) -> None:
-    path = tmp_path / "busy.totedb"
+    path = tmp_path / "busy.streamlite"
     db = Database(path)
     db.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, body TEXT)")
     queue = Queue(db, "jobs") if use_queue else None
@@ -84,7 +84,7 @@ def test_database_busy_close_preserves_transaction_and_closed_queues(
 def test_queue_registration_failure_releases_open_native_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    path = tmp_path / "registration.totedb"
+    path = tmp_path / "registration.streamlite"
     db = Database(path)
 
     def refuse_registration(queue: Closable) -> None:
@@ -104,7 +104,7 @@ def test_queue_registration_failure_releases_open_native_handle(
 
 
 def test_queue_open_error_leaves_database_usable_and_closable(tmp_path: Path) -> None:
-    path = tmp_path / "missing.totedb"
+    path = tmp_path / "missing.streamlite"
     db = Database(path)
 
     with pytest.raises(NotInstalledError):
@@ -123,7 +123,7 @@ def test_queue_open_error_leaves_database_usable_and_closable(tmp_path: Path) ->
 def test_queue_registry_allocation_failure_leaves_no_orphan_handle(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
-    path = tmp_path / "registry-oom.totedb"
+    path = tmp_path / "registry-oom.streamlite"
     db = Database(path)
 
     class RefusingRegistry(set[Closable]):
@@ -150,7 +150,7 @@ def test_queue_registry_allocation_failure_leaves_no_orphan_handle(
 def test_database_queue_close_error_preserves_live_handles_for_retry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    db = Database(tmp_path / "close-error.totedb")
+    db = Database(tmp_path / "close-error.streamlite")
     queue = Queue(db, "jobs")
     Queue(db, "other")
     close_queue = queue.close
@@ -162,7 +162,7 @@ def test_database_queue_close_error_preserves_live_handles_for_retry(
     with pytest.raises(OSError):
         db.close()
     assert queue.put(b"still open").id == 1
-    assert db.execute("SELECT id FROM tote_queue_jobs").rows == ((1,),)
+    assert db.execute("SELECT id FROM streamlite_queue_jobs").rows == ((1,),)
 
     monkeypatch.setattr(queue, "close", close_queue)
     db.close()
@@ -172,7 +172,7 @@ def test_database_queue_close_error_preserves_live_handles_for_retry(
 
 
 def test_database_close_retains_queue_registered_during_close(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    db = Database(tmp_path / "late.totedb")
+    db = Database(tmp_path / "late.streamlite")
     queue = Queue(db, "jobs")
     close_queue = queue.close
     opened: list[Queue] = []
@@ -192,7 +192,7 @@ def test_database_close_retains_queue_registered_during_close(tmp_path: Path, mo
 
 
 def test_database_closes_concurrent_first_queue_registrations(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    path = tmp_path / "parallel.totedb"
+    path = tmp_path / "parallel.streamlite"
     with Database(path) as setup:
         Queue(setup, "jobs")
     db = Database(path, create=False)

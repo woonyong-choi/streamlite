@@ -57,7 +57,7 @@ static void encode_page(uint8_t *page, size_t page_bytes, page_header_t header,
                         const uint8_t *chunk)
 {
     memset(page, 0, page_bytes);
-    memcpy(page, "LRO2", 4);
+    memcpy(page, "SLO2", 4);
     write_u32(page + 4, header.index);
     write_u32(page + 8, header.next);
     write_u32(page + 12, header.chunk);
@@ -69,7 +69,7 @@ static void encode_page(uint8_t *page, size_t page_bytes, page_header_t header,
 
 static bool decode_page(const uint8_t *page, size_t page_bytes, page_header_t *header)
 {
-    if (memcmp(page, "LRO2", 4) != 0) return false;
+    if (memcmp(page, "SLO2", 4) != 0) return false;
     header->index = read_u32(page + 4);
     header->next = read_u32(page + 8);
     header->chunk = read_u32(page + 12);

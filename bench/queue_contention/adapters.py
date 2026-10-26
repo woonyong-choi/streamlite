@@ -8,9 +8,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar, Union
 
-from totedb import BusyError, ClaimToken, Database, Queue, StaleError
+from streamlite import BusyError, ClaimToken, Database, Queue, StaleError
 
-ENGINES = ("totedb", "sqlite-delete", "sqlite-wal")
+ENGINES = ("streamlite", "sqlite-delete", "sqlite-wal")
 NOW_MS = 1_000_000
 LEASE_MS = 600_000
 T = TypeVar("T")
@@ -54,7 +54,7 @@ class Retry:
             delay = min(delay * 2, 0.02)
 
 
-class ToteAdapter:
+class StreamLiteAdapter:
     def __init__(self, path: Path, *, install: bool = False) -> None:
         self.clock = NOW_MS
         self.db = Database(path, busy_timeout_s=0)
@@ -317,12 +317,12 @@ class SQLiteAdapter:
             raise
 
 
-Adapter = Union[ToteAdapter, SQLiteAdapter]
+Adapter = Union[StreamLiteAdapter, SQLiteAdapter]
 
 
 def open_adapter(path: Path, engine: str, *, install: bool = False) -> Adapter:
-    if engine == "totedb":
-        return ToteAdapter(path, install=install)
+    if engine == "streamlite":
+        return StreamLiteAdapter(path, install=install)
     if engine not in ENGINES:
         raise ContentionError("unknown engine: " + engine)
     return SQLiteAdapter(path, engine, install=install)

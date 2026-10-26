@@ -7,9 +7,9 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import IntEnum
 
-from totedb._native import CLOCK_FN, LIST_NOTE_BYTES, Item, ListItem, QueueOptions, load_library
-from totedb.database import Database, Transaction, check, retry_busy
-from totedb.errors import STATUS_BUSY, STATUS_EMPTY, BusyError, InvalidArgumentError
+from streamlite._native import CLOCK_FN, LIST_NOTE_BYTES, Item, ListItem, QueueOptions, load_library
+from streamlite.database import Database, Transaction, check, retry_busy
+from streamlite.errors import STATUS_BUSY, STATUS_EMPTY, BusyError, InvalidArgumentError
 
 __all__ = [
     "DEFAULT_IDEM_RETENTION_MS",
@@ -136,7 +136,7 @@ class Queue:
         handle = ctypes.c_void_p()
         # 다른 프로세스가 쓰는 중이면 BUSY다. 다른 큐 호출처럼 busy_timeout_s까지 다시 시도한다
         status = retry_busy(
-            lambda: _lib.tote_queue_open(
+            lambda: _lib.streamlite_queue_open(
                 db.handle, name.encode("utf-8"), 1 if install else 0, ctypes.byref(options), ctypes.byref(handle)
             ),
             db.busy_timeout_s,
@@ -165,7 +165,7 @@ class Queue:
         key = idem_key.encode("utf-8") if idem_key is not None else None
         check(
             self._call(
-                lambda: _lib.tote_queue_put(
+                lambda: _lib.streamlite_queue_put(
                     self.handle,
                     _txn_handle(txn),
                     payload,
@@ -187,7 +187,7 @@ class Queue:
         """
         item = Item()
         status = self._call(
-            lambda: _lib.tote_queue_get(self.handle, _txn_handle(txn), item_id or 0, lease_ms, ctypes.byref(item)), txn
+            lambda: _lib.streamlite_queue_get(self.handle, _txn_handle(txn), item_id or 0, lease_ms, ctypes.byref(item)), txn
         )
         if status == STATUS_EMPTY:
             return None
@@ -196,11 +196,11 @@ class Queue:
             payload = ctypes.string_at(item.payload, item.payload_size) if item.payload else b""
             return Claim(item.id, item.fence, item.attempts, item.lease_until_ms, payload)
         finally:
-            _lib.tote_queue_item_free(ctypes.byref(item))
+            _lib.streamlite_queue_item_free(ctypes.byref(item))
 
     def ack(self, claim: ClaimToken, *, txn: Transaction | None = None) -> None:
         """처리를 끝낸다. 옛 claim이면 StaleError이며 아무것도 바꾸지 않는다."""
-        check(self._call(lambda: _lib.tote_queue_ack(self.handle, _txn_handle(txn), claim.id, claim.fence), txn))
+        check(self._call(lambda: _lib.streamlite_queue_ack(self.handle, _txn_handle(txn), claim.id, claim.fence), txn))
 
     def extend(self, claim: ClaimToken, lease_ms: int, *, txn: Transaction | None = None) -> int:
         """같은 claim의 lease를 지금 + lease_ms로 늘리고 새 만료 시각(밀리초)을 돌려준다. fence는 그대로다.
@@ -211,7 +211,7 @@ class Queue:
         until = ctypes.c_uint64()
         check(
             self._call(
-                lambda: _lib.tote_queue_extend(
+                lambda: _lib.streamlite_queue_extend(
                     self.handle, _txn_handle(txn), claim.id, claim.fence, lease_ms, ctypes.byref(until)
                 ),
                 txn,
@@ -222,7 +222,7 @@ class Queue:
     def fail(self, claim: ClaimToken, reason: str = "", *, txn: Transaction | None = None) -> None:
         """다시 시도하지 않는 terminal failure로 끝낸다."""
         text = reason.encode("utf-8") if reason else None
-        check(self._call(lambda: _lib.tote_queue_fail(self.handle, _txn_handle(txn), claim.id, claim.fence, text), txn))
+        check(self._call(lambda: _lib.streamlite_queue_fail(self.handle, _txn_handle(txn), claim.id, claim.fence, text), txn))
 
     def nack(
         self, claim: ClaimToken, retry_delay_ms: int = 0, reason: str = "", *, txn: Transaction | None = None
@@ -232,7 +232,7 @@ class Queue:
         terminal = ctypes.c_int()
         check(
             self._call(
-                lambda: _lib.tote_queue_nack(
+                lambda: _lib.streamlite_queue_nack(
                     self.handle, _txn_handle(txn), claim.id, claim.fence, retry_delay_ms, text, ctypes.byref(terminal)
                 ),
                 txn,
@@ -244,25 +244,25 @@ class Queue:
         """payload를 바꾼다. fence 0은 아직 claim하지 않은 작업, 아니면 그 claim이 유효한 작업만 된다."""
         check(
             self._call(
-                lambda: _lib.tote_queue_update(self.handle, _txn_handle(txn), item_id, fence, payload, len(payload)),
+                lambda: _lib.streamlite_queue_update(self.handle, _txn_handle(txn), item_id, fence, payload, len(payload)),
                 txn,
             )
         )
 
     def recover(self, limit: int = _MAX_LIST_PAGE) -> int:
         """lease가 만료된 작업을 대기로(시도가 다 되었으면 terminal로) 돌리고 처리한 수를 돌려준다."""
-        return self._count_call(_lib.tote_queue_recover, limit)
+        return self._count_call(_lib.streamlite_queue_recover, limit)
 
     def release_leases(self, limit: int = _MAX_LIST_PAGE) -> int:
         """worker가 모두 죽었다고 아는 호출자가 모든 처리 중 작업을 만료와 무관하게 대기로 돌린다."""
-        return self._count_call(_lib.tote_queue_release_leases, limit)
+        return self._count_call(_lib.streamlite_queue_release_leases, limit)
 
     def purge(self, limit: int = _MAX_LIST_PAGE, *, include_failed: bool = False) -> int:
         """끝난 작업(ACKED, 선택하면 FAILED)을 id가 작은 것부터 최대 limit개 지우고 지운 수를 돌려준다."""
         count = ctypes.c_size_t()
         check(
             self._call(
-                lambda: _lib.tote_queue_purge(
+                lambda: _lib.streamlite_queue_purge(
                     self.handle, None, 1 if include_failed else 0, limit, ctypes.byref(count)
                 ),
                 None,
@@ -273,7 +273,7 @@ class Queue:
     def stats(self, *, txn: Transaction | None = None) -> QueueStats:
         """상태별 작업 수. payload를 복사하지 않는다."""
         counts = (ctypes.c_uint64 * 4)()
-        check(self._call(lambda: _lib.tote_queue_stats(self.handle, _txn_handle(txn), counts), txn))
+        check(self._call(lambda: _lib.streamlite_queue_stats(self.handle, _txn_handle(txn), counts), txn))
         return QueueStats(counts[0], counts[1], counts[2], counts[3])
 
     def list_items(
@@ -288,7 +288,7 @@ class Queue:
         count = ctypes.c_size_t()
         check(
             self._call(
-                lambda: _lib.tote_queue_list(
+                lambda: _lib.streamlite_queue_list(
                     self.handle, _txn_handle(txn), after_id, page, 1 if with_payload else 0, items, ctypes.byref(count)
                 ),
                 txn,
@@ -297,7 +297,7 @@ class Queue:
         try:
             return [_to_info(items[i], with_payload=with_payload) for i in range(count.value)]
         finally:
-            _lib.tote_queue_list_free(items, count.value)
+            _lib.streamlite_queue_list_free(items, count.value)
 
     def iter_items(self, page_size: int = 100, *, with_payload: bool = False) -> Iterator[ItemInfo]:
         """모든 작업을 page_size씩 끊어 읽는다. 한 번에 한 쪽만 메모리에 둔다."""
@@ -312,7 +312,7 @@ class Queue:
     def close(self) -> None:
         """큐 핸들을 닫는다. DB를 닫기 전에 먼저 닫는다."""
         if self._handle is not None:
-            _lib.tote_queue_close(ctypes.byref(self._handle))
+            _lib.streamlite_queue_close(ctypes.byref(self._handle))
             self._handle = None
             self.db.unregister_queue(self)
 

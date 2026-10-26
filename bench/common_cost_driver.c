@@ -36,7 +36,7 @@ typedef struct {
     size_t baseline_rss, peak_rss, retained_bytes;
     uint64_t *latencies;
     database_workspace_stats_t *work_stats;
-#ifdef TOTE_BENCHMARK
+#ifdef STREAMLITE_BENCHMARK
     tb_bench_cost phases[TB_PHASE_COUNT];
     uint64_t incomplete, dropped, overflow, records;
 #endif
@@ -87,7 +87,7 @@ static const mem_ledger_ops_t LEDGER = {reserve, release, NULL, NULL};
 
 static void drain(observation_t *out)
 {
-#ifdef TOTE_BENCHMARK
+#ifdef STREAMLITE_BENCHMARK
     tb_bench_record records[TB_BENCH_RECORDS];
     size_t count = tb_bench_drain(records, TB_BENCH_RECORDS);
     if (out == NULL) return;
@@ -293,7 +293,7 @@ static void print_result(const settings_t *settings, const budget_t *budget,
     printf("{\"schema\":1,\"completed\":%zu,\"works\":%zu,\"digest\":\"%016" PRIx64 "\","
            "\"cache\":%d,\"workspace\":%d,\"instrumented\":%d,\"drop_first\":%d,",
            out->completed, out->works, hash, settings->cache, settings->workspace,
-#ifdef TOTE_BENCHMARK
+#ifdef STREAMLITE_BENCHMARK
            1,
 #else
            0,
@@ -328,7 +328,7 @@ static void print_result(const settings_t *settings, const budget_t *budget,
                work->buffered_writes, work->physical_writes, work->catalog_clones);
     }
     printf("],\"diagnostics\":");
-#ifdef TOTE_BENCHMARK
+#ifdef STREAMLITE_BENCHMARK
     printf("{\"records\":%" PRIu64 ",\"incomplete\":%" PRIu64 ",\"dropped\":%" PRIu64
            ",\"overflow\":%" PRIu64 ",\"phases\":[", out->records, out->incomplete, out->dropped, out->overflow);
     for (size_t i = 0; i < TB_PHASE_COUNT; i++) {

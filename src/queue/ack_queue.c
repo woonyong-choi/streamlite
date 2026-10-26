@@ -1,11 +1,11 @@
 /*
  * ack_queue.c — 선택형 ACK 큐(#140). 세션(session.h)의 SQL과 트랜잭션 API만 쓴다.
  *
- * 테이블 tote_queue_<name>: id(identity), state(0 READY 1 LEASED 2 ACKED 3 FAILED), ready_at, lease_until(밀리초),
+ * 테이블 streamlite_queue_<name>: id(identity), state(0 READY 1 LEASED 2 ACKED 3 FAILED), ready_at, lease_until(밀리초),
  * fence(claim마다 +1), attempts(claim 횟수), idem(idempotency key, 없으면 ''), payload(BLOB), note(마지막 이유).
  * 상태별 조회는 state 보조 색인(같은 상태 안에서 id 순서)과 ORDER BY id LIMIT으로 맞는 행 k개만 읽는다.
  *
- * key 보존 테이블 tote_queue_<name>_keys: seq(identity), idem(유일 색인), job(지운 작업 id), digest(payload 요약),
+ * key 보존 테이블 streamlite_queue_<name>_keys: seq(identity), idem(유일 색인), job(지운 작업 id), digest(payload 요약),
  * expires_at. purge가 key 있는 작업을 지울 때 넣고, 넣는 순서(seq)가 곧 만료 순서라 앞에서부터 만료된 것만 지운다.
  */
 #define _POSIX_C_SOURCE 200809L
@@ -291,8 +291,8 @@ static ackq_status_t make_queue(session_t *session, const ackq_options_t *option
     if (queue == NULL) return ACKQ_NOMEM;
     queue->db = session_database(session);
     snprintf(queue->name, sizeof(queue->name), "%s", options->name);
-    snprintf(queue->table, sizeof(queue->table), "tote_queue_%s", options->name);
-    snprintf(queue->keys, sizeof(queue->keys), "%s_keys", queue->table);
+    snprintf(queue->table, sizeof(queue->table), ACKQ_TABLE_PREFIX "%s", options->name);
+    snprintf(queue->keys, sizeof(queue->keys), "%s" ACKQ_KEYS_SUFFIX, queue->table);
     queue->max_payload = options->max_payload_bytes != 0 ? options->max_payload_bytes : ACKQ_DEFAULT_MAX_PAYLOAD_BYTES;
     queue->retention_ms = retention == 0 ? ACKQ_DEFAULT_IDEM_RETENTION_MS
                           : retention == ACKQ_RETENTION_NONE ? 0 : retention;
@@ -300,7 +300,7 @@ static ackq_status_t make_queue(session_t *session, const ackq_options_t *option
     queue->begin_timeout_ms = options->begin_timeout_ms;
     queue->now_ms = options->now_ms;
     queue->clock_ctx = options->clock_ctx;
-    queue->conditional_enabled = TOTE_ACKQ_CONDITIONAL != 0;
+    queue->conditional_enabled = STREAMLITE_ACKQ_CONDITIONAL != 0;
     *out = queue;
     return ACKQ_OK;
 }
