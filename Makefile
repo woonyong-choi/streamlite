@@ -296,6 +296,18 @@ CANDIDATE_SEMANTIC_REPORT_PREFIX ?= $(BUILD_DIR)/fault/test_candidate_semantic
 test-candidate-semantic: $(BUILD_DIR)/test_candidate_semantic_seed $(BUILD_DIR)/test_candidate_semantic_boundary
 	$(TEST_RUNNER) --report $(CANDIDATE_SEMANTIC_REPORT_PREFIX)-seed-all.json -- ./$(BUILD_DIR)/test_candidate_semantic_seed all
 	$(TEST_RUNNER) --report $(CANDIDATE_SEMANTIC_REPORT_PREFIX)-boundary-all.json -- ./$(BUILD_DIR)/test_candidate_semantic_boundary all
+# 규칙 prerequisite는 읽는 즉시 펼쳐지므로 CANDIDATE_SEMANTIC_MODULE 정의 뒤에 둔다.
+CANDIDATE_VIEW_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_recovery_view.o $(BUILD_DIR)/tests/test_candidate_recovery_view_fixture.o
+$(BUILD_DIR)/test_candidate_recovery_view: $(CANDIDATE_VIEW_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS) $(CANDIDATE_SEMANTIC_MODULE)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_VIEW_TIMEOUT ?= 600
+CANDIDATE_VIEW_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_view
+CANDIDATE_VIEW_CASES ?= resolved recovery preview graph nonselected cut access faults durable oom owner inputs metadata observe semantic
+.PHONY: test-candidate-recovery-view
+test-candidate-recovery-view: $(BUILD_DIR)/test_candidate_recovery_view
+	@for c in $(CANDIDATE_VIEW_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_VIEW_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_VIEW_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_view $$c || exit 1; done
 $(BUILD_DIR)/test_candidate_redo: $(BUILD_DIR)/tests/test_candidate_redo.o $(CANDIDATE_REDO_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
 CANDIDATE_REDO_REPORT ?= $(BUILD_DIR)/fault/test_candidate_redo.json
 .PHONY: test-candidate-redo

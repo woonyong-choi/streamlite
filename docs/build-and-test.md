@@ -230,6 +230,20 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build/semantic-check SANITIZE=undef
 
 시험은 전체 이력·fixture 예상값과 이어 처리한 상태를 대조하고, 실제 prefix 읽기 거절·suffix 읽기, 사본 수명·모든 할당 실패와 잘못된 기록을 검사한다. 빈 suffix의 I/O 오류·지속 손상 거절·fork·재진입과 IMAGE 없는 WAL의 UUID 불일치도 확인한다. 최초 파일 열기는 읽기 차단 전에 수행하며 cold open을 증명하지 않는다. 현재의 마지막 segment 내 처리 제한과 미완료인 내구 seed·page/redo·실제 공간 재사용은 [후보 계약](design/streamlite.md#영속-요청-id와-결과-조회)을 따른다.
 
+[소유 복구 view 시험](../tests/test_candidate_recovery_view.c)은 선택형 `test-candidate-recovery-view` target으로 실행한다. 기본 DB 라이브러리와 기본 시험 목록은 유지한다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build/recovery-view-check SANITIZE=undefined \
+  CFLAGS="-Wall -Wextra -Werror -g -Iinclude -Itests -fsanitize=undefined -fno-sanitize-recover=undefined" \
+  LDFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined" \
+  test-candidate-recovery-view \
+  CANDIDATE_VIEW_REPORT=build/recovery-view-check/fault/recovery-view
+```
+
+`CANDIDATE_VIEW_CASES`로 사례를 선택하고 `CANDIDATE_VIEW_TIMEOUT`으로 각 runner의 제한 시간을 정한다. 새 build 경로와 사용하지 않은 report 접두사를 사용한다. report에는 사례 이름이 접미사로 붙는다. `CANDIDATE_VIEW_TEST_OBJS`와 `CANDIDATE_SEMANTIC_MODULE`을 재정의할 수 있으며, 기존 객체를 재사용하면 각 dependency/fingerprint를 `--old-file`과 전후 hash로 보호한다.
+
+기본 사례는 실제 후보 복구·결과 조회, strict/preview·force 경계, 선택 결과 밖 LIVE version, codec을 통과하는 참조 순환, 주입한 fsync EIO·손상된 pinned 읽기, OOM·입력 snapshot·loader 종료 뒤 metadata 조회, raw capture의 checkpoint 거절을 검사한다. 의미 관측 읽기의 대조는 checkpoint 읽기를 구분하며 redo·핀·전체 복구의 총비용은 별도로 남는다. 이 target은 메모리 view 후보를 검증하며 내구 seed·이력 정리·실제 공간 재사용·독립 writer·제품 성능 검증은 후속이다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

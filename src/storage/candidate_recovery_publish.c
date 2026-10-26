@@ -3,7 +3,6 @@
 #include <string.h>
 #include <sys/stat.h>
 
-#include "candidate_outcome_internal.h"
 #include "candidate_redo_internal.h"
 
 static candidate_catalog_load_t catalog_load(candidate_recovery_t *r, const candidate_control_state_t *anchor,
@@ -16,23 +15,26 @@ static candidate_catalog_load_t catalog_load(candidate_recovery_t *r, const cand
 
 static candidate_wal_status_t preview_anchor(candidate_recovery_t *r, const candidate_control_state_t *anchor)
 {
-    candidate_outcome_witness_close(&r->outcomes);
-    r->info = (candidate_recovery_info_t){.anchor = *anchor};
     if (anchor->catalog_root.id != 0) return CANDIDATE_WAL_UNSUPPORTED;
+    candidate_recovery_info_t info = {.anchor = *anchor};
     candidate_redo_options_t redo = {.checkpoint = anchor,.target = candidate_recovery_target(r),.memory = &r->memory};
     memcpy(redo.uuid,r->uuid,16);
     candidate_redo_preview_t *preview = NULL;
     candidate_wal_status_t status = candidate_redo_preview_open(r->wal,&redo,&preview);
-    candidate_catalog_load_t load = catalog_load(r,anchor,candidate_redo_preview_load,preview);
-    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_validate_preview(r->wal,anchor,&load,&r->info);
-    if (status == CANDIDATE_WAL_OK) {
-        candidate_outcome_witness_options_t options = {.catalog = load,.checkpoint = anchor};
-        status = candidate_outcome_preview(r->wal,&options,r->owner_epoch);
-    }
-    if (status == CANDIDATE_WAL_OK) r->info.redo = candidate_redo_preview_info(preview);
+    candidate_recovery_view_request_t request = {.anchor = *anchor,.load = catalog_load(r,anchor,candidate_redo_preview_load,preview),
+        .mode = CANDIDATE_RECOVERY_VIEW_PREVIEW,.owner_epoch = r->owner_epoch};
+    candidate_recovery_view_t *view = NULL;
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_view_open(r->wal,&request,&view);
+    if (status == CANDIDATE_WAL_OK) info.redo = candidate_redo_preview_info(preview);
     candidate_redo_preview_close(&preview);
+    if (status == CANDIDATE_WAL_OK) candidate_recovery_view_fill(view,&info);
+    candidate_recovery_view_close(&view);
     if (status == CANDIDATE_WAL_OK) status = candidate_recovery_check(r);
-    return status;
+    if (status != CANDIDATE_WAL_OK) return status;
+    candidate_recovery_view_close(&r->view);
+    r->info = info;
+    r->info.resident_bytes = candidate_recovery_resident_bytes(r);
+    return CANDIDATE_WAL_OK;
 }
 
 static candidate_wal_status_t verify_recovery(void *context, const candidate_control_state_t *anchor)

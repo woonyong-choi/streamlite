@@ -542,6 +542,14 @@ capture와 continue는 실제 WAL handle의 UUID와 접근 상태를 먼저 확�
 
 [의미 상태 시험](../../tests/test_candidate_semantic_seed.c)은 fixture 예상값과 전체 이력 분석을 B/B1 이후 처리와 대조한다. prefix 읽기를 거절하는 실제 I/O hook의 양성 대조, 실제 suffix 읽기, 분할 결과·COMMIT/ABORT·system 전이·잘못된 참조·OOM과 사본 수명을 검사한다. [접근 경계 시험](../../tests/test_candidate_semantic_boundary.c)은 빈 suffix의 오류 handle과 IMAGE 없는 WAL의 잘못된 UUID 거절을 검사한다. 이 시험 범위는 cold open, 두 control slot의 복구 기반, reader 수명이나 회수 후 재시작의 증명이 아니다.
 
+[소유 복구 view 후보](../../src/storage/candidate_recovery_internal.h)는 checkpoint를 고려한 같은 의미 관측으로 page 이력과 admission/result 상태를 수집한다. view 하나가 witness·page 이력·allocation·catalog를 소유하고 기존 graph·결과 검증 본문을 공유한다. RESOLVED는 종결 거래와 결과 coverage·WAL force를 요구한다. PREVIEW는 미확정 version과 재구성 전 ADMITTED를 기존 조건으로 검사하며 결과 조회에는 UNAVAILABLE을 반환한다. 복구의 결과 조회는 소유한 RESOLVED view를 사용하고, 게시 preview와 buffer proof는 작업 안에서만 임시 view를 사용한다.
+
+요청과 allocator는 callback 전에 복사한다. 실제 WAL 접근·UUID를 먼저 확인하고 검증 callback 뒤 관측 cut과 현재 handle 상태를 대조한다. 직렬·배타 호출과 같은 prefix를 제공하는 책임은 caller에게 남는다. page loader는 검증 중에만 빌리고 반환한 view에는 남기지 않는다. allocator와 그 context는 view보다 오래 살아야 한다. 새 view의 부분 할당은 실패 시 해제하고 소유 메타데이터는 검증 성공 뒤에 교체한다. 기존 redo의 부분 파일 효과 계약은 유지한다.
+
+[소유 복구 view 시험](../../tests/test_candidate_recovery_view.c)은 실제 후보 결과 조회·본문, strict/preview 차이, catalog에 없는 LIVE version과 frozen CSN, 참조 순환·세대·pageLSN, callback 입력·cut 변경과 할당 실패를 대조한다. 주입한 fsync EIO와 손상된 pinned 기록의 실제 읽기 경로를 검사하고, 같은 cut의 force 전후 STALE·OK를 확인한다. checkpoint가 있는 WAL의 raw seed capture 거절도 별도로 대조한다.
+
+이 view도 전체 보존 WAL과 기존 역사 한도를 요구한다. checkpoint·redo·핀·기존 단독 API의 읽기는 계속 필요하다. 복구 handle에 남는 메타데이터와 기존·새 view가 함께 살아 있는 요청량은 총비용 비교에 포함한다. ID·nonce 이력 정리, 내구 seed, 실제 WAL 공간 회수·재사용, MVCC와 독립 writer는 후속 경계다.
+
 같은 DB에서 durable commit 뒤 응답만 사라진 경우를 판별하기 위해 영속 요청 ID·결과 조회를 선택한다. 업무 key만 대조하는 안은 임의 SQL·여러 행의 결과 본문과 원자 commit을 일반적으로 복원하지 못하므로 이 후보의 기본 해결책으로 삼지 않는다. 영속 기록의 쓰기·보존 비용은 양쪽 비교에 포함한다. 이득이 사라지더라도 결과 보장을 한쪽에서만 빼지 않는다.
 
 내부 요청 ID는 `(DB UUID, 요청 epoch u64, 호출자 nonce 128bit)`다. process 재시작·PID·새 owner epoch가 이 ID의 의미를 바꾸지 않는다. operation digest는 미리 선언한 순서 있는 SQL bytes·타입/길이를 포함한 binding bytes·격리·내구 요청과 응답 형식을 SHA-256으로 계산한다. 선언과 다른 문장·binding·순서·응답 범위는 commit 전에 거절한다. hash를 인증 수단으로 사용하지 않는다. 동적 callback, 실행 결과에 따라 새 SQL을 정하는 대화형 거래, 외부 부작용의 자동 재실행은 지원하지 않는다. 이 제한 밖의 기존 SQL은 기존 의미로 실행하며, UNKNOWN은 업무 key와 별도 재조정으로 해결한다.

@@ -90,31 +90,38 @@ static candidate_wal_status_t load_target(void *context, candidate_page_ref_t re
     return status;
 }
 
+static candidate_wal_status_t prepare_terminal(candidate_recovery_t *r, const candidate_control_state_t *anchor)
+{
+    candidate_recovery_view_close(&r->view);
+    r->info = (candidate_recovery_info_t){.anchor = *anchor};
+    candidate_wal_witness_close(&r->terminal_history);
+    candidate_terminal_options_t request = {.anchor = anchor,.memory = &r->memory,.allow_group_tail = r->allow_group_tail};
+    memcpy(request.uuid,r->uuid,16);
+    return candidate_terminal_prepare(r->wal,&request,&r->terminal_history);
+}
+
 static candidate_wal_status_t verify_anchor(void *context, const candidate_control_state_t *anchor)
 {
     candidate_recovery_t *r = context;
-    candidate_outcome_witness_close(&r->outcomes);
-    r->info = (candidate_recovery_info_t){.anchor = *anchor};
-    if (r->is_terminal_repair) {
-        candidate_wal_witness_close(&r->terminal_history);
-        candidate_terminal_options_t request = {.anchor = anchor,.memory = &r->memory,.allow_group_tail = r->allow_group_tail};
-        memcpy(request.uuid,r->uuid,16);
-        return candidate_terminal_prepare(r->wal,&request,&r->terminal_history);
-    }
+    if (r->is_terminal_repair) return prepare_terminal(r,anchor);
     if (anchor->catalog_root.id != 0) return CANDIDATE_WAL_UNSUPPORTED;
+    candidate_recovery_info_t info = {.anchor = *anchor};
     candidate_redo_options_t redo = {.checkpoint = anchor,.memory = &r->memory,
         .target = {r,read_target,write_target,sync_target}};
     memcpy(redo.uuid,r->uuid,16);
-    candidate_wal_status_t status = candidate_redo_execute(r->wal,&redo,&r->info.redo);
-    candidate_catalog_load_t load = {.root = anchor->outcome_root,.load = load_target,.context = r,.memory = &r->memory};
-    memcpy(load.uuid,r->uuid,16);
-    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_validate(r->wal,anchor,&load,&r->info);
-    if (status == CANDIDATE_WAL_OK) {
-        candidate_outcome_witness_options_t options = {.catalog = load,.checkpoint = anchor};
-        status = candidate_outcome_witness_load(r->wal,&options,&r->outcomes);
-    }
+    candidate_wal_status_t status = candidate_redo_execute(r->wal,&redo,&info.redo);
+    candidate_recovery_view_request_t request = {.anchor = *anchor,.load = {.root = anchor->outcome_root,.load = load_target,
+        .context = r,.memory = &r->memory},.mode = CANDIDATE_RECOVERY_VIEW_RESOLVED};
+    memcpy(request.load.uuid,r->uuid,16);
+    candidate_recovery_view_t *view = NULL;
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_view_open(r->wal,&request,&view);
     if (status == CANDIDATE_WAL_OK) status = check_file(r);
-    return status;
+    if (status != CANDIDATE_WAL_OK) { candidate_recovery_view_close(&view); return status; }
+    candidate_recovery_view_fill(view,&info);
+    candidate_recovery_view_close(&r->view);
+    r->view = view; r->info = info;
+    r->info.resident_bytes = candidate_recovery_resident_bytes(r);
+    return CANDIDATE_WAL_OK;
 }
 
 static bool copy_path(const char *source, char target[PATH_MAX])
@@ -189,7 +196,7 @@ size_t candidate_recovery_resident_bytes(const candidate_recovery_t *r)
 {
     size_t bytes = sizeof(*r) + candidate_wal_info(r->wal).resident_bytes;
     bytes += candidate_control_info(r->control).resident_bytes;
-    bytes += candidate_outcome_witness_info(r->outcomes).resident_bytes;
+    bytes += candidate_recovery_view_info(r->view).resident_bytes;
     return bytes + candidate_wal_witness_info(r->terminal_history).resident_bytes;
 }
 
@@ -278,7 +285,7 @@ candidate_wal_status_t candidate_recovery_query(candidate_recovery_t *r,
     candidate_wal_status_t status = check_file(r); if (status != CANDIDATE_WAL_OK) return status;
     r->is_busy = true;
     candidate_recovery_answer_t result = {0}; const candidate_outcome_t *found = NULL;
-    result.lookup = candidate_outcome_witness_lookup(r->outcomes,&saved,&found);
+    result.lookup = candidate_recovery_view_lookup(r->view,&saved,&found);
     if (found != NULL) {
         result.outcome = *found;
         if (found->result.page.id != 0) {
@@ -309,7 +316,7 @@ candidate_wal_status_t candidate_recovery_close(candidate_recovery_t **out)
     if (candidate_wal_close(&r->wal) != CANDIDATE_WAL_OK) status = CANDIDATE_WAL_IO;
     if (r->fd >= 0 && close(r->fd) != 0) status = CANDIDATE_WAL_IO;
     if (r->directory_fd >= 0 && close(r->directory_fd) != 0) status = CANDIDATE_WAL_IO;
-    candidate_outcome_witness_close(&r->outcomes);
+    candidate_recovery_view_close(&r->view);
     candidate_wal_witness_close(&r->terminal_history);
     candidate_wal_memory_t memory = r->memory; memory.release(memory.context,r,sizeof(*r));
     return status;

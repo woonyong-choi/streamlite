@@ -6,7 +6,6 @@
 
 #include "storage/candidate_catalog.h"
 #include "storage/checksum.h"
-#include "candidate_outcome_internal.h"
 #include "candidate_recovery_internal.h"
 #include "candidate_redo_internal.h"
 #include "candidate_wal_internal.h"
@@ -315,16 +314,14 @@ candidate_wal_status_t candidate_buffer_prove(candidate_buffer_t *pool, const ca
     memcpy(request.uuid,pool->options.uuid,16);
     candidate_redo_preview_t *preview = NULL;
     candidate_wal_status_t status = candidate_redo_preview_open(pool->options.wal,&request,&preview);
-    candidate_catalog_load_t load = {.root = anchor->outcome_root,.load = candidate_redo_preview_load,.context = preview,
-        .memory = &pool->memory};
-    memcpy(load.uuid,pool->options.uuid,16);
-    candidate_recovery_info_t info = {.anchor = *anchor};
-    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_validate_preview(pool->options.wal,anchor,&load,&info);
-    if (status == CANDIDATE_WAL_OK) {
-        candidate_outcome_witness_options_t outcomes = {.catalog = load,.checkpoint = anchor};
-        status = candidate_outcome_preview(pool->options.wal,&outcomes,pool->options.owner_epoch);
-    }
+    candidate_recovery_view_request_t proof = {.anchor = *anchor,.load = {.root = anchor->outcome_root,
+        .load = candidate_redo_preview_load,.context = preview,.memory = &pool->memory},
+        .mode = CANDIDATE_RECOVERY_VIEW_PREVIEW,.owner_epoch = pool->options.owner_epoch};
+    memcpy(proof.load.uuid,pool->options.uuid,16);
+    candidate_recovery_view_t *view = NULL;
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_view_open(pool->options.wal,&proof,&view);
     candidate_redo_preview_close(&preview);
+    candidate_recovery_view_close(&view);
     return candidate_buffer_result(pool,status);
 }
 

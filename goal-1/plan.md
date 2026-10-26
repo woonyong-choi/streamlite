@@ -154,3 +154,11 @@ Task24a 설계 심사는 A(고정 ring)17/B(증가 logical filename와 bounded l
 첫 후보는 완성 group 경계의 전체 bounded witness와 admission/result 관측기를 메모리에 소유한다. 계속 처리할 때 private owner·limit·chunk bytes, group 의존성·system 상태와 VersionRef를 깊게 복사하고 기존 reducer에 suffix만 적용한다. 불완전 group cut은 STALE이며 기존4096한도와 레거시 의미는 유지한다. 현재 read_at만으로 padding을 안전하게 건너뛸 수 없어 B가 마지막 segment에 있는 경우로 제한한다. 일반 suffix cursor는24a4/6의 transport 경계에 남기며 현재 기능을 실제 회수나 cold open으로 부르지 않는다. prefix 동일성은 직렬·배타 caller의 전제다.
 
 새 c1 초안에서 빈 suffix의 오류 handle 우회와 IMAGE 없는 WAL의 UUID 오태깅을 발견했다. 원본 객체로 healthy 양성1과 실제 의도 실패6을 먼저 실행한 뒤, Claude가 기존 check_access와 실제 handle UUID를 byte 읽기 없이 확인하도록 수리했다. 같은 boundary source의122단언, 최종 semantic source의9788단언과 관련 기존10회귀가 통과했다. 실제 prefix IO 거절 양성과 suffix 읽기/금지0, 모든3/4할당 실패, 원본 종료 뒤 사본, 잘못된 group/결과/거래 전이를 대조했다. 독립 A/B와 parent는 실제 raw·source·hash에 근거해 현재 범위의 수리를 확인했다. 새 Make target의22객체/두 실행은 같은 시험의 별도 재현이며 숫자를 더하지 않는다. c1 실패와 printf cast 전 원문·객체는 보존한다. 이는 메모리 상태 전달의 로컬 검증이며 durable seed·page/redo·reader·실제 reuse24a·MVCC/독립 writer·COW/WAL 총비용·제품은 계속 미완료다.
+
+## Task24a2 canonical closure prerequisite and history choice
+
+source how와 구조가 다른 A/B 및 독립 심사를 대조했다.24a2의 기준은 정확한 started-ID 구간 집합과 허용 epoch 전체의 nonce 이력을 메모리에 두고 표현 압력이 크면 기존 상태를 보존하며 LIMIT를 반환하는 A다. parent18/15와 독립17/16은 설계 판단이며 성능 실측이 아니다. B의 외부 정확 index도 disk quota를 요구하며 별도 세대·merge I/O·headroom·게시/복구·정리 수명을 더한다. 이 부담을 지금 도입할 실행 근거가 없으므로 보류하되 측정 열등성을 주장하지 않는다. B의 단일 소유 view를 이식하여 outcomes 이전으로 closure 소유가 갈라지는 것을 피한다.
+
+첫 구현24a2a는 pruning 없는 anchored canonical view다. 기존 checkpoint-aware 한 의미 상태에서 page frontier와 admission/result를 관측하고 graph·outcome 정본을 공유한다. RESOLVED와 PREVIEW의 기존 성공/오류와 standalone API의 검증 범위를 보존한다. loader는 작업 중만 빌리고 metadata만 소유하며 실제 WAL 접근·UUID와 callback 뒤 cut을 확인한다. cache info 비교를 모든 prefix 변조 검증으로 확대하지 않는다. 기존 직렬·배타·동일 prefix 전제, redo/publication/extent 보존, 전체 요청/상주량과 실패 시 NULL·기존 상태 보존을 지킨다.
+
+실제 recovery query/body·publish preview·buffer proof를 연결해 검증하고24a2a만 별도 commit한다. parent24a2의 정확 identity·계수/closure pruning·active group·같은 owner 예약 구간·4096초과 누적 cycle과 이후 durable seed/page redo/reader/실제 공간 reuse는 그대로 미완료다.24a1/24a2a/24a2 뒤 추가 checkpoint를 두고 기존 after24a3와 이후 checkpoint를 보존한다. 코드·시험·helper는 한 foreground nonpersistent localClaude만 작성하며 원자료·실패·main/YCSB·다른 작업본·Vault를 보존한다.
