@@ -217,6 +217,19 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-buffer-check SANITIZE=undefin
 
 frame·전체 요청 예산, pin/lease·NO-STEAL·완성 group 원자 수용, callback 중 여러 page의 재변경, 첫 image와 body delta, fuzzy checkpoint의 dirty·거래 표와 게시 순서는 [버퍼 계약](design/streamlite.md#영속-요청-id와-결과-조회)을 따른다. native 검사와 원시 WAL/data/control·syscall trace의 독립 검사는 서로 다른 증거다. 중단 전 파일과 복구 후 파일, syscall 시도와 성공, CHUNK와 END의 실제 record·LSN·fd를 구분해 보존해야 한다. 이 correctness 검증을 실제 독립 writer, bounded WAL 재사용, 제품 통합이나 COW/WAL 성능 채택으로 해석하지 않는다.
 
+[메모리 seed 시험](../tests/test_candidate_semantic_seed.c)과 [접근 경계 시험](../tests/test_candidate_semantic_boundary.c)은 선택형 `test-candidate-semantic` target으로 함께 실행한다. 기본 DB 라이브러리와 기본 시험 목록에는 추가하지 않는다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build/semantic-check SANITIZE=undefined \
+  CFLAGS="-Wall -Wextra -Werror -g -Iinclude -fsanitize=undefined -fno-sanitize-recover=undefined" \
+  LDFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined" \
+  TEST_TIMEOUT=600 test-candidate-semantic
+```
+
+새 build 경로를 사용하며 재실행에는 아직 없는 `CANDIDATE_SEMANTIC_REPORT_PREFIX`를 지정한다. 두 보고서의 접미사는 `-seed-all.json`과 `-boundary-all.json`이다. 기존 객체를 재사용할 때에는 `CANDIDATE_SEMANTIC_MODULE`과 기존 outcome·witness·WAL 모듈 옵션을 지정하고, 모든 재사용 dependency/fingerprint를 `--old-file`과 전후 hash로 보호한다.
+
+시험은 전체 이력·fixture 예상값과 이어 처리한 상태를 대조하고, 실제 prefix 읽기 거절·suffix 읽기, 사본 수명·모든 할당 실패와 잘못된 기록을 검사한다. 빈 suffix의 I/O 오류·지속 손상 거절·fork·재진입과 IMAGE 없는 WAL의 UUID 불일치도 확인한다. 최초 파일 열기는 읽기 차단 전에 수행하며 cold open을 증명하지 않는다. 현재의 마지막 segment 내 처리 제한과 미완료인 내구 seed·page/redo·실제 공간 재사용은 [후보 계약](design/streamlite.md#영속-요청-id와-결과-조회)을 따른다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

@@ -36,6 +36,16 @@ candidate_wal_status_t candidate_system_create(const uint8_t uuid[16],
     return CANDIDATE_WAL_OK;
 }
 
+candidate_wal_status_t candidate_system_clone(const candidate_wal_system_t *source,
+    const candidate_wal_memory_t *memory, candidate_wal_system_t **out)
+{
+    candidate_wal_memory_t saved = *memory;
+    *out = saved.allocate(saved.context, sizeof(**out));
+    if (*out == NULL) return CANDIDATE_WAL_NOMEM;
+    memcpy(*out, source, sizeof(**out)); (*out)->memory = saved;
+    return CANDIDATE_WAL_OK;
+}
+
 void candidate_system_close(candidate_wal_system_t **system)
 {
     if (system == NULL || *system == NULL) return;

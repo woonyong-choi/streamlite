@@ -24,13 +24,13 @@ Commit policy: commit code changes at the task boundary when the project is a gi
 
 ## User-directed continuous execution override — 2026-10-26
 
-사용자는 Task24 커밋 뒤 “미완료인데 왜 멈춘거야 진행해”라고 지시했다. 이를 성공한 작업/체크포인트 경계마다 최종 응답으로 끝내지 말고, 같은 세션에서 원래 미완료 목표를 계속 수행하라는 최신 실행 지시로 적용한다. 위 Runtime Contract의 successful-boundary 즉시 stop과 client auto-advance 대기 조항보다 이 지시가 우선한다. 과업 순서·경계별 검증/기록/별도 commit·체크포인트의 tracking-only 수정·읽기 재개·dirty guard는 유지한다. checkpoint commit 뒤 현재 상태를 검증하고 다음 첫 미완료 단위로 진행하며 여러 단위를 한 commit에 섞지 않는다. 구현/검증 미완료·실패·외부 차단은 숨기지 않는다. 배포·원격 발행·파괴적 변경·Vault 직접 수정·새 worktree/백그라운드 대화 권한은 확장하지 않는다.
+사용자는 Task24 커밋 뒤 “미완료인데 왜 멈춘거야 진행해”라고 지시했고, 이어 “멈추지마”라고 명시했다. 이를 성공한 작업/체크포인트 경계마다 최종 응답으로 끝내지 말고, 같은 세션에서 원래 미완료 목표를 계속 수행하라는 최신 실행 지시로 적용한다. 위 Runtime Contract의 successful-boundary 즉시 stop과 client auto-advance 대기 조항보다 이 지시가 우선한다. 과업 순서·경계별 검증/기록/별도 commit·체크포인트의 tracking-only 수정·읽기 재개·dirty guard는 유지한다. checkpoint commit 뒤 현재 상태를 검증하고 다음 첫 미완료 단위로 진행하며 여러 단위를 한 commit에 섞지 않는다. 구현/검증 미완료·실패·외부 차단은 숨기지 않는다. 배포·원격 발행·파괴적 변경·Vault 직접 수정·새 worktree/백그라운드 대화 권한은 확장하지 않는다.
 
-get_goal의 기존 등록은 역사적 blocked 상태이며 resume API는 없다. 중복 goal을 만들거나 전체 완료로 바꾸지 않고 기존 goal-current/goal-1의 active 파일 흐름을 실행 기준으로 계속한다. 코드 작성은 로컬 Claude 한 writer, parent는 검토·실행·증거·추적·commit을 맡는다. 현재 checkpoint24는 코드 변경 없이 감사 중이며 다음 구현은 감사 결과를 반영한 첫 미완료 과업이다.
+get_goal의 기존 등록은 역사적 blocked 상태이며 resume API는 없다. 중복 goal을 만들거나 전체 완료로 바꾸지 않고 기존 goal-current/goal-1의 active 파일 흐름을 실행 기준으로 계속한다. 코드 작성은 로컬 Claude 한 writer, parent는 검토·실행·증거·추적·commit을 맡는다. checkpoint24는29479895로 완료됐으며 현재 첫 미완료 과업24a를 같은 세션에서 진행한다.
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. The Additional checkpoint after Task23 led to completed publication-counter and pinned-read repairs23s/23t. Task24 now completes isolated bounded buffering/live checkpoint validation. Checkpoint after Task24 is complete; the first incomplete task is required seeded log reuse24a, followed by Tasks25–39. Completed candidate recovery/buffering does not activate product SQL/ACK or establish MVCC/GC, actual independent writers, log reuse, streams or maintenance/recovery-inclusive COW/WAL measurements. The whole goal stays active; no next checkpoint or implementation is included in the Task24 commit. Existing runtime/default COW, data/ABI and all later requirements remain preserved.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. The Additional checkpoint after Task23 led to completed publication-counter and pinned-read repairs23s/23t. Task24 completes isolated bounded buffering/live checkpoint validation and its checkpoint is complete. Task24a1 completes isolated in-memory semantic transfer; the first incomplete unit is24a2, within required seeded log reuse24a. All remaining24a subunits and Tasks25–39 remain required. Completed candidate recovery/buffering/semantic transfer does not activate product SQL/ACK or establish MVCC/GC, actual independent writers, log reuse, streams or maintenance/recovery-inclusive COW/WAL measurements. The whole goal stays active. Existing runtime/default COW, data/ABI and all later requirements remain preserved.
 
 Task 23d compacts only completed Task16–23c entries and their completed checkpoints after source review. Their exact full ledger remains in Git object `623e9d5c4da00a0adb842d3e8d4213d839ad6976:goal-1/tasks.md` (SHA-256 31dd489d6de49399434544cbfa2353500aa28e3cb458536bc2fbfe5a1d14d280). Task6 source coverage/requirement matrix and all incomplete entries remain verbatim; no source history, failure artifact or requirement is removed. This adds no context copy.
 
@@ -485,14 +485,95 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Commit record: subject `docs(docs): 버퍼와 체크포인트 구현 감사 기록 갱신`; exact body marker `Goal-mode boundary: goal-1 checkpoint after task 24: complete`. 이 checkpoint의 단일 goal-1/tasks.md 변경만 포함한 사용자 Git identity commit이다. commit 뒤 marker·scope·clean·기존 refs 보존은 checkpoint24-postcommit.json으로 대조한다.
 - AAR: 작업 경계의 검증/commit과 대화 중단은 별개다. 사용자의 미완료 연속 실행 지시를 Runtime Contract의 성공 경계 자동 stop보다 우선하도록 위 override에 기록했다. 과거 단일 writer 대기 메모로 최신 실제 writer/총비용 요구를 대체하지 않으며, 완료 분석과 고정 정상 시험을 반복하는 대신 다음 실제 미완료 구현으로 이어간다.
 
+## Task 24a1 — Export semantic seeds and continue suffix replay
+
+- Status: complete (isolated in-memory semantic transfer and local verification only; parent24a and the whole goal remain incomplete)
+- Scope: 비파괴 semantic witness·admission/result observer의 group-boundary export/hydrate와 기존 reducer의 suffix 전이를 구현한다. private owner/limit/chunk bytes·active group dependency·system 상태를 소유하고 원본 종료 뒤에도 유지한다. 기존 파일/codec/default는 변경하지 않는다. Issues: #263, #266.
+- Work performed: how·두 architect·독립 심사 뒤 단일 foreground 로컬 Claude가 의미 상태·admission 관측기의 소유 전달, 기존 reducer의 suffix 처리와 시험을 작성했다. code1–4는 각각 구현·전용 재현 시험·두 경계 수리·선택형 Make target만 맡고 모두 process0/last stream success/is_error=false로 종료했다. parent는 명령·읽기 검토·문서·추적·commit을 맡으며 C/시험/helper를 직접 구현하지 않았다. private 설명 주석4개를 제거하고 공개 소유/수명/지원 제한 계약을 보존했다. 기존 API·형식·기본 DB 경로는 보존한다.
+- Before/after repair: 독립 검토와 parent가 c1 초안의 S24A1-1/P2(빈 suffix에서 오류 handle 우회)와 S24A1-2/P2(IMAGE 없는 WAL의 UUID 오태깅)를 확인했다. code2의 같은 boundary source를 c1에 연결하자 healthy1만 통과하고 poison/rejected/fork/reentry·UUID2의6경로가 실제 잘못된 OK/SEED로 실패했다. 준비 실패가 아니며 task24a1-parent-before-reproduction.json SHA-256 `3eb5eda8be99e409e1b758def44ca391ca331fd004639cb82c240e6694f698db`에 원 출력·fixture를 고정했다. code3는 byte 읽기 없이 실제 WAL 접근 상태와 UUID를 검사하는 내부 진입점으로 수리했다. c3의 같은 boundary 시험은122단언/code0이며 기존 분류·out=NULL·reads0·양성 경로를 확인했다. 원c1 객체·실패·초기 시험의 printf cast2곳 전 원문도 task24a1-parent-c1-source-binding.json으로 보존한다.
+- Current validation: c3의 새9단위는 Werror·fatal UBSan으로 컴파일했고 실제 UBSAN_OPTIONS=halt_on_error=1이다. 최종 semantic source의9788단언이 full-history/fixture·B/B1·COMMIT/부분 결과 ABORT·system·17음성·할당3/4지점 OOM·독립 수명을 대조했다. guard 양성은 prefix IO 거절1회, 실제 suffix는 양수 읽기와 forbidden0이다. 새 객체에 연결한 기존 witness/system/checkpoint/최대 규모/outcome/rebuild/결과 본문10실행도 모두 통과했다. Make의 새 build 내부 namespace22객체와 두 runner 실행도 통과했으며 c3와 같은 시험이므로 합산하지 않는다. 독립 최종 A/B는 production10·시험5와 실제 전후/raw/컴파일 입력을 대조해 새 P1–P5를 발견하지 못했고 parent가 두 집계 hash를 다시 확인했다(task24a1-parent-final-source-review.json). 별도 delta A/B도 실제 Make·문서·결정기록·원자료를 대조해 새 지적이 없었다. 문서 검사와 diff 검사는 통과했다.
+- Verification evidence: task24a1-final-manifest.json SHA-256 `1ea98cf37b6b99458bcd0fbf19e82ebdf1441bf249dc86f451a8b47392f84c7a`가 code/Make/docs18개와 새 산출물815개의 hash를 고정한다. task24a1-parent-final-gates.json은 c3의 실제37명령·Make·문서·검토를 연결한다. 사전 기준은 task24a1-parent-verification-prereg.json과 boundary-prereg.json이다. parent-end-preservation은 기존83430산출물·보호tracked9124·수리 전 실패28개의 변경/누락0과 ledger prefix·모든 refs/5작업본 보존을 확인한다. seal 시 새 allocated-sum342036480B와 free20538564608B는1GiB 소프트/8GiB-free hard stop 안이다. sparse 논리 크기·APFS blocks 합·global free는 별개이며 global free 변화를 이 작업에 전부 귀속하지 않는다. 원c1·실패·기존 main/YCSB를 지우거나 덮지 않았다.
+- Remaining risk: 메모리 상태 전달만 완료했다. 마지막 segment 내 suffix와 caller의 serial/exclusive/same-prefix가 전제다. 내구 seed·cold open·page/allocation/redo·pruning·reader·실제 회수/반복 재사용24a, MVCC/독립 writer·정리/복구 포함 COW/WAL 총비용·제품은 미완료다. 내부 요청 할당량은 RSS나 whole-app 상한이 아니다. 기본 DB/COW·형식·ABI를 바꾸지 않으며 물리 power loss나 측정된 backend 승리를 주장하지 않는다.
+- Next step: 이 단위의 별도 local commit과 postcommit 상태를 확인한 뒤, 최신 사용자 연속 지시에 따라 같은 세션에서 첫 미완료24a2를 진행한다. 실제 코드·시험·helper 작성은 단일 로컬 Claude가 맡고 parent가 검증·기록·commit을 수행한다. 승인 없는 배포·원격 발행·Vault 변경은 하지 않는다.
+- Commit record: subject `feat(repo): 메모리 복구 상태와 이어 읽기 검증 추가`; exact body marker `Goal-mode boundary: goal-1 task 24a1: Export semantic seeds and continue suffix replay`. 이 추적과 검증된20파일을 포함한 같은24a1 경계의 사용자 Git identity commit이다. 부모29479895·marker·scope·clean·기존 main/다른 참조 보존은 task24a1-postcommit.json으로 대조한다.
+- AAR: 광범위한 정상 차등시험이 빈 입력의 접근 오류나 UUID 권위를 대신 검증하지 않는다. 새 entry의 경계를 별도로 시험해야 한다. 명령 결과 JSON과 pin metadata를 같은 이름 패턴으로 집계한 parent 오류는 schema를 구분해 수리했고 원 출력과 audit 실패도 보존했다. 이는 native 실패가 아니며 기존 검사를 반복해 통과로 바꾸지 않았다. 완료 단위와 전체 DB 품질 검증을 구분하고 실제 reuse/다중 writer/총비용 요구를 남긴다.
+
+## Task 24a2 — Retain semantic closure and duplicate identity history
+
+- Status: incomplete
+- Scope: retained outcome·모든 LIVE version/previous chain·active closure의 상태를 보존하고 누적 역사 계수와 resident 상태를 분리한다. retired ID/nonce 재등장과 예약됐지만 미시작인 ID gap을 구별하는 authority를 함께 구현한다. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — 4096초과 누적 cycle, 필요한 terminal/active dependency 보존, 같은 ID/nonce 재등장 거절과 정상 예약 gap 허용, 전체 요청/상주 상한. maxID만 남기고 안전하다고 하지 않는다.
+- Remaining risk: completing this unit does not complete parent Task24a or actual writers/fullcost/product.
+- Next step: verify and commit this unit, then continue the next incomplete unit in this session under the latest user override.
+- Commit status: no task commit attempted.
+
+## Task 24a3 — Seed page authority and physical redo state
+
+- Status: incomplete
+- Scope: LIVE/FREE page의 generation/pageLSN·allocation 마지막 전이·검증된 clean baseline·필요 dirty/FPI를 streaming seed와 seeded redo/buffer 초기 상태에 연결한다. semantic B와 physical R을 분리한다. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — suffix에 안 나오는 기존 page, expired request의 LIVE version, FREE→재할당, torn page/delta/FPI, 실제 data/result bytes·ref/LSN/상태 차등, prefix-read 차단, OOM·전체 예산.
+- Remaining risk: completing this unit does not complete parent Task24a or actual writers/fullcost/product.
+- Next step: verify and commit this unit, then continue the next incomplete unit in this session under the latest user override.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 24a3
+
+- Status: incomplete
+- Work performed: not started; tracking-only review after three new units.
+- Verification evidence: required — original scope, source/runtime evidence, safety/data/resources/compatibility and remaining actualreuse/fullgoal gates.
+- Remaining risk: insert required repair before dependent work; do not mark original24a/fullgoal complete from checkpoint.
+- Next step: separate tracking commit then continue the next unit under latest user override.
+- Commit status: no checkpoint commit attempted.
+
+## Task 24a4 — Publish versioned recovery seeds and select both slots
+
+- Status: incomplete
+- Scope: fresh opt-in 후보 형식에서 stable lock·비선택 구조 판독·seed/suffix 검증·두 slot 선택 bootstrap과 내구 seed 게시를 구현한다. 기존 v1/format3/default는 보존한다. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — 두 slot 독립 복구/fallback·stale seed/epoch·mixed format 거절·게시 전후 중단/IO/directory sync·headroom·불확정 poison, seed checksum만으로 authority 승격 금지.
+- Remaining risk: completing this unit does not complete parent Task24a or actual writers/fullcost/product.
+- Next step: verify and commit this unit, then continue the next incomplete unit in this session under the latest user override.
+- Commit status: no task commit attempted.
+
+## Task 24a5 — Protect reader and consumer view lifetimes
+
+- Status: incomplete
+- Scope: 실제 읽기 객체의 snapshot/view 등록·종료와 version/result 의존성, buffer/witness quiescence를 회수 authority에 연결한다. 외부 생성 불가 permit과 같은 owner를 사용한다. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — 장기 reader 실제 읽기·압력·해제 후 진행, 영구 pin 무단 reset 거절·stale view/owner, frame lease와 snapshot reader 구별. 제품 MVCC 활성화 완료는 아니다.
+- Remaining risk: completing this unit does not complete parent Task24a or actual writers/fullcost/product.
+- Next step: verify and commit this unit, then continue the next incomplete unit in this session under the latest user override.
+- Commit status: no task commit attempted.
+
+## Task 24a6 — Reclaim and reuse bounded WAL capacity
+
+- Status: incomplete
+- Scope: 증명된 양 slot·reader·consumer 의존성 밖 whole segment만 내구 retirement 뒤 회수한다. 절대 LSN과 bounded live file mapping을 분리하고 실제 용량 반환·재사용을 연결한다. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — 작은 physical cap을 절대 LSN이 여러 차례 넘는 append/restart cycle, 결과/본문 보존·LSN ABA 거절·파일/fd/메모리/공간 상한, OOM/disk-full/delete/directory sync 중단·멱등 복구. 회수거절/계산만으로 완료 금지.
+- Remaining risk: completing this unit does not complete parent Task24a or actual writers/fullcost/product.
+- Next step: verify and commit this unit, then continue the next incomplete unit in this session under the latest user override.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 24a6
+
+- Status: incomplete
+- Work performed: not started; tracking-only review after three new units.
+- Verification evidence: required — original scope, source/runtime evidence, safety/data/resources/compatibility and remaining actualreuse/fullgoal gates.
+- Remaining risk: insert required repair before dependent work; do not mark original24a/fullgoal complete from checkpoint.
+- Next step: separate tracking commit then continue the next unit under latest user override.
+- Commit status: no checkpoint commit attempted.
+
 ## Task 24a — Implement recovery seeds and actual bounded WAL reuse
 
 - Status: incomplete
 - Scope: Preserve the original Task24 log reuse obligation. Implement durable base/epoch transport and sufficient transaction/admission/result/page-generation/allocation recovery seeds, protect both control slots and reader/version dependencies, then reclaim and actually reuse bounded WAL space. Issues: #263, #266.
-- Work performed: not started. Source-backed prerequisite split during24, not a completed retention-floor calculation.
+- Work performed: clean29479895와 Task24/checkpoint 증거를 확인하고 how·두 설계·독립 심사로 B의 증가 logical filename/bounded live mapping을 선택했다. baseline82548과 보충882의 합83430산출물·9135tracked·refs/5작업본·ledger prefix를 보존 기준으로 쓴다. Task24a1–6으로 분해했고 첫 메모리 의미 상태 단위의 코드·수리·실행은 위24a1에 기록한다. segment0 lock inode, 절대 segment-index 용량 상한, pin 수명과 충분한 page/allocation/redo seed·두 slot/reader 의존성은 실제 회수 전에 해소해야 한다. 원래 실제 공간 재사용 의무는 미완료다.
 - Verification evidence: required — Same committed data/results after pruned-history restart, torn page and retained full-image recovery, both-slot fallback, active/long-reader pressure, OOM/disk-full/delete/directory-sync interruptions, repeated cycles that recover actual capacity without LSN ABA or lost required history.
 - Remaining risk: Current transport starts at segment0; existing checkpoint tuples and whole-prefix witnesses cannot safely open pruned history. No required segment may be deleted before complete seed/selection proof.
-- Next step: execute after Task24 and its separate checkpoint, before25. Do not call Task24's original log-reuse requirement complete until this task passes.
+- Next step:24a2의 closure/역사 ID·nonce 보존부터 같은 세션에서 순서대로 진행한다. 각 단위는 별도 검증·commit하며 원래24a는 실제 회수/반복 재사용·복구까지 통과하기 전 미완료다. 일반 segment suffix cursor는24a4/6의 transport 전제에 포함한다. 코드 writer의 Bash를 제외하고 parent가 실행한다. 전역 설정·현재DB/default·Vault는 변경하지 않는다.
 - Commit status: no task commit attempted.
 
 ## Task 25 — Implement MVCC visibility and abort recovery

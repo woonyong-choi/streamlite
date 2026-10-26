@@ -16,5 +16,7 @@ candidate_wal_status_t candidate_wal_pin(candidate_wal_t *wal);
 /* 처음이면 실제 관측 view를 pin하고, 이미 pin이면 현재 파일을 그 view와 다시 대조한다. 불일치는 영구 거부다. */
 candidate_wal_status_t candidate_wal_ensure_pin(candidate_wal_t *wal);
 void candidate_wal_reject(candidate_wal_t *wal);
+/* 파일 내용을 읽지 않고 기존 접근 거부를 그대로 돌려주며 handle UUID가 uuid와 다르면 UNSUPPORTED다. */
+candidate_wal_status_t candidate_wal_check_uuid(candidate_wal_t *wal, const uint8_t uuid[16]);
 
 #endif

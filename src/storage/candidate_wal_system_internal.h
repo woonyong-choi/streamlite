@@ -7,6 +7,8 @@
 typedef struct candidate_wal_system candidate_wal_system_t;
 candidate_wal_status_t candidate_system_create(const uint8_t uuid[16],
     const candidate_wal_memory_t *memory, candidate_wal_system_t **out);
+candidate_wal_status_t candidate_system_clone(const candidate_wal_system_t *source,
+    const candidate_wal_memory_t *memory, candidate_wal_system_t **out);
 void candidate_system_close(candidate_wal_system_t **system);
 size_t candidate_system_resident_bytes(const candidate_wal_system_t *system);
 void candidate_system_begin(candidate_wal_system_t *system);

@@ -6,6 +6,7 @@
 #include "storage/checksum.h"
 #include "candidate_wal_system_internal.h"
 #include "candidate_wal_witness_internal.h"
+#include "candidate_wal_witness_state_internal.h"
 
 typedef struct {
     candidate_witness_transaction_t value;
@@ -420,6 +421,12 @@ static bool visit_record(void *context, const candidate_wal_record_t *r)
     return true;
 }
 
+static void settle(candidate_wal_witness_t *w)
+{
+    w->info.unfinished = w->active;
+    w->info.incomplete_group_lsn = w->pending.first_lsn;
+}
+
 static void *allocate_default(void *context, size_t size) { (void)context; return malloc(size); }
 static void release_default(void *context, void *p, size_t size) { (void)context; (void)size; free(p); }
 
@@ -471,8 +478,7 @@ static candidate_wal_status_t analyze(candidate_wal_t *wal,
         candidate_witness_checkpoint_scan(wal, w, checkpoint, visit_record, observe_forward, &observed, &w->info.transport);
     if (status == CANDIDATE_WAL_STOPPED && !observed.has_observer_stop) status = w->status;
     if (status != CANDIDATE_WAL_OK) { candidate_wal_witness_close(&w); return status; }
-    w->info.unfinished = w->active;
-    w->info.incomplete_group_lsn = w->pending.first_lsn;
+    settle(w);
     *out = w;
     return CANDIDATE_WAL_OK;
 }
@@ -542,6 +548,52 @@ bool candidate_witness_checkpoint_at(const candidate_wal_witness_t *w, uint32_t 
     const candidate_witness_transaction_t *v = &t->value;
     *out = (candidate_checkpoint_transaction_t){v->transaction_id,v->first_lsn,v->last_lsn,
         v->terminal_end_lsn,v->csn,t->owner_epoch,(candidate_checkpoint_state_t)(v->state + 1)};
+    return true;
+}
+
+candidate_wal_status_t candidate_witness_clone(const candidate_wal_witness_t *source,
+    const candidate_wal_memory_t *memory, candidate_wal_witness_t **out)
+{
+    *out = NULL;
+    candidate_wal_memory_t allocator = *memory;
+    candidate_wal_witness_t *w = allocator.allocate(allocator.context, sizeof(*w));
+    if (w == NULL) return CANDIDATE_WAL_NOMEM;
+    memcpy(w, source, sizeof(*w));
+    w->memory = allocator;
+    w->system = NULL;
+    if (source->system != NULL) {
+        candidate_wal_status_t status = candidate_system_clone(source->system, &allocator, &w->system);
+        if (status != CANDIDATE_WAL_OK) { allocator.release(allocator.context, w, sizeof(*w)); return status; }
+    }
+    *out = w;
+    return CANDIDATE_WAL_OK;
+}
+
+candidate_wal_status_t candidate_witness_apply(candidate_wal_witness_t *w, const candidate_wal_record_t *record)
+{
+    return visit_record(w, record) ? CANDIDATE_WAL_OK : w->status;
+}
+
+void candidate_witness_settle(candidate_wal_witness_t *w, const candidate_wal_info_t *transport)
+{
+    w->info.transport = *transport;
+    settle(w);
+}
+
+bool candidate_witness_transaction_at(const candidate_wal_witness_t *w, uint32_t index,
+    candidate_semantic_transaction_t *out)
+{
+    if (w == NULL || out == NULL || index >= w->info.transactions) return false;
+    const transaction_t *t = &w->transactions[index];
+    *out = (candidate_semantic_transaction_t){t->value, t->owner_epoch, t->result_limit, t->chunk_bytes};
+    return true;
+}
+
+bool candidate_witness_group_at(const candidate_wal_witness_t *w, uint32_t index, candidate_semantic_group_t *out)
+{
+    if (w == NULL || out == NULL || index >= w->info.complete_groups) return false;
+    const group_t *g = &w->groups[index];
+    *out = (candidate_semantic_group_t){g->id, g->transaction_id, g->end_lsn};
     return true;
 }
 

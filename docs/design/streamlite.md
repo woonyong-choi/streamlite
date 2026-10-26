@@ -536,6 +536,12 @@ checkpoint는 BEGIN 시점의 전체 dirty·거래 표와 FPI 경계를 고정�
 
 이 버퍼는 현재 DB 기본 경로에 연결하지 않는다. checkpoint는 log 회수를 수행하지 않는다. 현재 transport는 segment 0부터의 연속 이력을 요구하고, 56B checkpoint 거래 tuple만으로는 admission·chain·result 이력을 대체할 수 없다. 실제 bounded WAL 재사용에는 base/epoch와 충분한 복구 seed, 두 control slot·reader/version 의존성 보호, 공간 회수·재사용 뒤 중단 복구가 별도로 필요하다. retention floor 계산이나 오래된 로그 삭제 거절을 재사용 완료로 세지 않는다.
 
+[메모리 seed 후보](../../include/storage/candidate_semantic_seed.h)는 완성 group 경계 B까지 검증한 거래·group·system 상태와 admission/result 관측 상태를 독립적으로 소유한다. 거래의 owner·선언한 결과 상한·누적 chunk bytes와 B 이전 group 의존성도 보존한다. 원 분석기를 닫아도 seed는 유효하며, 계속 처리할 때는 사본에 B 이후 기록만 기존 reducer로 적용한다. 실패하면 입력 seed를 보존하고 출력은 반환하지 않는다. 이 상태는 내구 파일 형식이 아니며 기존 역사 한도를 유지한다.
+
+capture와 continue는 실제 WAL handle의 UUID와 접근 상태를 먼저 확인한다. 추가 기록이 없어도 I/O 실패 뒤의 차단, 지속 손상 거절, fork와 scan 재진입을 우회하지 않는다. continue는 B 이전 byte를 읽지 않지만, 최초 WAL 열기는 여전히 전체 보존 이력을 읽는다. seed와 WAL prefix가 같은 이력이라는 확인은 직렬·배타 호출자인 caller의 책임이다. B가 마지막 segment에 있는 suffix만 지원하며, segment 경계를 잇는 cursor와 내구 seed·page/redo 기반·이력 정리·실제 공간 재사용은 별도 경계다.
+
+[의미 상태 시험](../../tests/test_candidate_semantic_seed.c)은 fixture 예상값과 전체 이력 분석을 B/B1 이후 처리와 대조한다. prefix 읽기를 거절하는 실제 I/O hook의 양성 대조, 실제 suffix 읽기, 분할 결과·COMMIT/ABORT·system 전이·잘못된 참조·OOM과 사본 수명을 검사한다. [접근 경계 시험](../../tests/test_candidate_semantic_boundary.c)은 빈 suffix의 오류 handle과 IMAGE 없는 WAL의 잘못된 UUID 거절을 검사한다. 이 시험 범위는 cold open, 두 control slot의 복구 기반, reader 수명이나 회수 후 재시작의 증명이 아니다.
+
 같은 DB에서 durable commit 뒤 응답만 사라진 경우를 판별하기 위해 영속 요청 ID·결과 조회를 선택한다. 업무 key만 대조하는 안은 임의 SQL·여러 행의 결과 본문과 원자 commit을 일반적으로 복원하지 못하므로 이 후보의 기본 해결책으로 삼지 않는다. 영속 기록의 쓰기·보존 비용은 양쪽 비교에 포함한다. 이득이 사라지더라도 결과 보장을 한쪽에서만 빼지 않는다.
 
 내부 요청 ID는 `(DB UUID, 요청 epoch u64, 호출자 nonce 128bit)`다. process 재시작·PID·새 owner epoch가 이 ID의 의미를 바꾸지 않는다. operation digest는 미리 선언한 순서 있는 SQL bytes·타입/길이를 포함한 binding bytes·격리·내구 요청과 응답 형식을 SHA-256으로 계산한다. 선언과 다른 문장·binding·순서·응답 범위는 commit 전에 거절한다. hash를 인증 수단으로 사용하지 않는다. 동적 callback, 실행 결과에 따라 새 SQL을 정하는 대화형 거래, 외부 부작용의 자동 재실행은 지원하지 않는다. 이 제한 밖의 기존 SQL은 기존 의미로 실행하며, UNKNOWN은 업무 key와 별도 재조정으로 해결한다.

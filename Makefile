@@ -280,6 +280,22 @@ $(CANDIDATE_OUTCOME_CATALOG_MODULE): src/storage/candidate_catalog.c $(BUILD_FIN
 $(CANDIDATE_OUTCOME_MODULE): src/storage/candidate_outcome_witness.c $(BUILD_FINGERPRINT)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+CANDIDATE_SEMANTIC_MODULE ?= $(BUILD_DIR)/storage/candidate_semantic_seed.o
+CANDIDATE_SEMANTIC_OBJS = $(CANDIDATE_SEMANTIC_MODULE) $(CANDIDATE_OUTCOME_OBJS)
+CANDIDATE_SEMANTIC_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_semantic_fixture.o $(BUILD_DIR)/tests/test_candidate_semantic_compare.o
+$(CANDIDATE_SEMANTIC_MODULE): src/storage/candidate_semantic_seed.c $(BUILD_FINGERPRINT)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
+$(BUILD_DIR)/test_candidate_semantic_seed: $(BUILD_DIR)/tests/test_candidate_semantic_seed.o $(CANDIDATE_SEMANTIC_TEST_OBJS) \
+	$(CANDIDATE_SEMANTIC_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+$(BUILD_DIR)/test_candidate_semantic_boundary: $(BUILD_DIR)/tests/test_candidate_semantic_boundary.o $(CANDIDATE_SEMANTIC_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_SEMANTIC_REPORT_PREFIX ?= $(BUILD_DIR)/fault/test_candidate_semantic
+.PHONY: test-candidate-semantic
+test-candidate-semantic: $(BUILD_DIR)/test_candidate_semantic_seed $(BUILD_DIR)/test_candidate_semantic_boundary
+	$(TEST_RUNNER) --report $(CANDIDATE_SEMANTIC_REPORT_PREFIX)-seed-all.json -- ./$(BUILD_DIR)/test_candidate_semantic_seed all
+	$(TEST_RUNNER) --report $(CANDIDATE_SEMANTIC_REPORT_PREFIX)-boundary-all.json -- ./$(BUILD_DIR)/test_candidate_semantic_boundary all
 $(BUILD_DIR)/test_candidate_redo: $(BUILD_DIR)/tests/test_candidate_redo.o $(CANDIDATE_REDO_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o
 CANDIDATE_REDO_REPORT ?= $(BUILD_DIR)/fault/test_candidate_redo.json
 .PHONY: test-candidate-redo
@@ -611,6 +627,7 @@ clean:
 -include $(CANDIDATE_WITNESS_MODULE:.o=.d)
 -include $(CANDIDATE_OUTCOME_CATALOG_MODULE:.o=.d)
 -include $(CANDIDATE_OUTCOME_MODULE:.o=.d)
+-include $(CANDIDATE_SEMANTIC_MODULE:.o=.d)
 -include $(CANDIDATE_WAL_TAIL_MODULE:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_wal_system.d
 -include $(BUILD_DIR)/storage/candidate_checkpoint.d

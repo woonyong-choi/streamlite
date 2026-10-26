@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "candidate_outcome_internal.h"
+#include "candidate_outcome_witness_internal.h"
 #include "candidate_wal_witness_internal.h"
 #include "candidate_wal_tail_internal.h"
 
@@ -19,6 +20,10 @@ typedef struct {
     uint32_t count;
     candidate_wal_status_t status;
 } admissions_t;
+struct candidate_admissions {
+    candidate_wal_memory_t memory;
+    admissions_t state;
+};
 struct candidate_outcome_witness {
     candidate_wal_memory_t memory;
     candidate_catalog_t *catalog;
@@ -79,6 +84,49 @@ static bool observe_admission(void *context, const candidate_wal_record_t *r)
     }
     entry->has_result = true; entry->result = ref;
     return true;
+}
+
+candidate_wal_status_t candidate_admissions_create(const candidate_wal_memory_t *memory,
+    const candidate_admissions_t *source, candidate_admissions_t **out)
+{
+    *out = NULL;
+    candidate_wal_memory_t allocator = *memory;
+    candidate_admissions_t *a = allocator.allocate(allocator.context, sizeof(*a));
+    if (a == NULL) return CANDIDATE_WAL_NOMEM;
+    if (source == NULL) memset(a, 0, sizeof(*a));
+    else memcpy(a, source, sizeof(*a));
+    a->memory = allocator;
+    *out = a;
+    return CANDIDATE_WAL_OK;
+}
+
+bool candidate_admissions_observe(void *context, const candidate_wal_record_t *record)
+{
+    candidate_admissions_t *a = context;
+    return observe_admission(&a->state, record);
+}
+
+candidate_wal_status_t candidate_admissions_status(const candidate_admissions_t *a) { return a->state.status; }
+
+uint32_t candidate_admissions_count(const candidate_admissions_t *a) { return a == NULL ? 0 : a->state.count; }
+
+bool candidate_admissions_at(const candidate_admissions_t *a, uint32_t index, candidate_semantic_admission_t *out)
+{
+    if (a == NULL || out == NULL || index >= a->state.count) return false;
+    const admission_t *e = &a->state.admissions[index];
+    *out = (candidate_semantic_admission_t){e->transaction_id, e->owner_epoch, e->result_limit, e->result, e->has_result};
+    return true;
+}
+
+size_t candidate_admissions_resident_bytes(const candidate_admissions_t *a) { return a == NULL ? 0 : sizeof(*a); }
+
+void candidate_admissions_close(candidate_admissions_t **out)
+{
+    if (out == NULL || *out == NULL) return;
+    candidate_admissions_t *a = *out;
+    candidate_wal_memory_t memory = a->memory;
+    *out = NULL;
+    memory.release(memory.context, a, sizeof(*a));
 }
 
 static bool same_request(const candidate_outcome_t *e, const candidate_witness_transaction_t *t)

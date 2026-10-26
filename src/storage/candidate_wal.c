@@ -158,10 +158,7 @@ static candidate_wal_status_t inventory(candidate_wal_t *w, unsigned *count)
         uint64_t id = 0;
         for (size_t i = stem_bytes + 5; i < stem_bytes + 21; i++) {
             char c = name[i];
-            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) {
-                status = CANDIDATE_WAL_CORRUPT;
-                break;
-            }
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) { status = CANDIDATE_WAL_CORRUPT; break; }
             id = id * 16 + (unsigned)(c <= '9' ? c - '0' : c - 'a' + 10);
         }
         if (status != CANDIDATE_WAL_OK) break;
@@ -418,10 +415,7 @@ static candidate_wal_status_t allocate_wal(const char *prefix, const candidate_w
     strcpy(w->stem, stem);
     w->io = io;
     w->buffer = memory.allocate(memory.context, CANDIDATE_WAL_RECORD_BYTES);
-    if (w->buffer == NULL) {
-        memory.release(memory.context, w, sizeof(*w));
-        return CANDIDATE_WAL_NOMEM;
-    }
+    if (w->buffer == NULL) { memory.release(memory.context, w, sizeof(*w)); return CANDIDATE_WAL_NOMEM; }
     w->info.resident_bytes = sizeof(*w) + CANDIDATE_WAL_RECORD_BYTES;
     *out = w;
     char directory[PATH_MAX] = {0};
@@ -587,6 +581,12 @@ candidate_wal_status_t candidate_wal_ensure_pin(candidate_wal_t *w)
 }
 
 void candidate_wal_reject(candidate_wal_t *w) { if (w != NULL) reject(w); }
+
+candidate_wal_status_t candidate_wal_check_uuid(candidate_wal_t *w, const uint8_t uuid[16])
+{
+    candidate_wal_status_t status = check_access(w);
+    return status == CANDIDATE_WAL_OK && memcmp(w->uuid, uuid, 16) != 0 ? CANDIDATE_WAL_UNSUPPORTED : status;
+}
 
 candidate_wal_status_t candidate_wal_append(candidate_wal_t *w, const candidate_wal_record_t *record,
                                           uint64_t *end_lsn)
