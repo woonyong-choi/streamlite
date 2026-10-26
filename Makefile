@@ -253,6 +253,24 @@ test-candidate-recovery-publish-reads: $(BUILD_DIR)/test_candidate_recovery_publ
 	@for c in $(CANDIDATE_PUBLISH_READ_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PUBLISH_TIMEOUT) --seed $(FAULT_SEED) \
 		--report $(CANDIDATE_PUBLISH_REPORT)-read-$$c.json -- ./$(BUILD_DIR)/test_candidate_recovery_publish_reads $$c $(CANDIDATE_PUBLISH_READ_PLACE) \
 		|| exit 1; done
+CANDIDATE_BUFFER_OBJS ?= $(BUILD_DIR)/storage/candidate_buffer.o $(BUILD_DIR)/storage/candidate_buffer_scan.o \
+	$(BUILD_DIR)/storage/candidate_buffer_flush.o $(BUILD_DIR)/storage/candidate_buffer_checkpoint.o \
+	$(BUILD_DIR)/storage/candidate_buffer_produce.o
+CANDIDATE_BUFFER_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_buffer.o $(BUILD_DIR)/tests/test_candidate_buffer_flush.o \
+	$(BUILD_DIR)/tests/test_candidate_buffer_checkpoint.o $(BUILD_DIR)/tests/test_candidate_buffer_repair.o \
+	$(BUILD_DIR)/tests/test_candidate_buffer_source.o \
+	$(BUILD_DIR)/tests/test_candidate_buffer_fixture.o $(BUILD_DIR)/tests/test_candidate_buffer_fixture_pages.o
+$(BUILD_DIR)/test_candidate_buffer: $(CANDIDATE_BUFFER_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) $(CANDIDATE_BUFFER_OBJS) \
+	$(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_BUFFER_TIMEOUT ?= 900
+CANDIDATE_BUFFER_REPORT ?= $(BUILD_DIR)/fault/test_candidate_buffer
+CANDIDATE_BUFFER_CASES ?= budget pinned lease shared-leaf membership terminal redirty fpi checkpoint-order checkpoint-active \
+	close-reentry stale-base append-mutate checkpoint-dangling-version swap-proof swap-control callback-complete-group
+.PHONY: test-candidate-buffer
+test-candidate-buffer: $(BUILD_DIR)/test_candidate_buffer
+	@for c in $(CANDIDATE_BUFFER_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_BUFFER_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_BUFFER_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_buffer $$c || exit 1; done
 .PHONY: test-candidate-outcome-witness
 test-candidate-outcome-witness: $(BUILD_DIR)/test_candidate_outcome_witness
 	$(TEST_RUNNER) --report $(CANDIDATE_OUTCOME_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_witness

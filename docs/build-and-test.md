@@ -203,6 +203,20 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-regression test-candidate-rec
 
 native90초·runner120초와 새 report 경로를 사용한다. 보호할 object가 있으면 `CANDIDATE_RECOVERY_MODULE`과 `CANDIDATE_RECOVERY_TERMINAL_MODULE`에 새 object를 지정하고 모든 재사용 dependency/fingerprint를 `--old-file`로 고정한다. WAL 보존 사본은 segment inventory의 접두사 밖에 둔다. 이 target의 terminal receipt는 data/root/outcome의 정합·새 checkpoint 게시·DB 활성화나 제품 APPLIED 판정이 아니다.
 
+[버퍼 시험](../tests/test_candidate_buffer.c)은 별도 `test-candidate-buffer` target으로 실행한다. 기본 DB 라이브러리에는 연결하지 않는다. 기본 case 목록은 대표 경로이며 전체 고장·OOM·중단 검증과 같지 않다. `CANDIDATE_BUFFER_CASES`로 사례를 지정하고, 반복할 때에는 사용하지 않은 report 접두사를 준다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build-buffer-check SANITIZE=undefined \
+  CFLAGS="-Wall -Wextra -Werror -g -Iinclude -fsanitize=undefined -fno-sanitize-recover=undefined" \
+  test-candidate-buffer \
+  CANDIDATE_BUFFER_REPORT=build-buffer-check/fault/buffer-check \
+  CANDIDATE_BUFFER_CASES="budget pinned lease shared-leaf membership terminal redirty fpi checkpoint-order checkpoint-active"
+```
+
+기존 산출물을 보존하는 실행은 새 binary·object 경로를 쓰고 모든 재사용 dependency와 fingerprint를 각각 `--old-file`로 고정한다. 실행 전후 해시를 대조한다. `CANDIDATE_BUFFER_OBJS`와 `CANDIDATE_BUFFER_TEST_OBJS`, 기존 recovery 모듈 옵션으로 별도 객체를 연결할 수 있다. 새 모듈은 `-Werror`·fatal UBSan으로 컴파일하고, 재사용 객체의 기존 계측 조건은 별도로 기록한다.
+
+frame·전체 요청 예산, pin/lease·NO-STEAL·완성 group 원자 수용, callback 중 여러 page의 재변경, 첫 image와 body delta, fuzzy checkpoint의 dirty·거래 표와 게시 순서는 [버퍼 계약](design/streamlite.md#영속-요청-id와-결과-조회)을 따른다. native 검사와 원시 WAL/data/control·syscall trace의 독립 검사는 서로 다른 증거다. 중단 전 파일과 복구 후 파일, syscall 시도와 성공, CHUNK와 END의 실제 record·LSN·fd를 구분해 보존해야 한다. 이 correctness 검증을 실제 독립 writer, bounded WAL 재사용, 제품 통합이나 COW/WAL 성능 채택으로 해석하지 않는다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3·선택형 수명을 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

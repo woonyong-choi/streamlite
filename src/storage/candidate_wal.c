@@ -13,6 +13,7 @@
 #include <unistd.h>
 
 #include "storage/checksum.h"
+#include "candidate_wal_bytes_internal.h"
 #include "candidate_wal_internal.h"
 #include "candidate_wal_tail_internal.h"
 
@@ -29,38 +30,15 @@ struct candidate_wal {
     candidate_wal_info_t info;
     candidate_wal_view_t pinned, observed;
     unsigned pin_state;
-    uint64_t owner_epoch;
-    uint64_t max_bytes;
-    uint64_t position;
-    uint64_t tail_offset;
+    uint64_t owner_epoch, max_bytes, position, tail_offset;
     unsigned tail_segment;
-    int lock_fd;
-    int active_fd;
-    int directory_fd;
+    int lock_fd, active_fd, directory_fd;
     pid_t process_id;
-    bool is_poisoned;
-    bool is_rejected;
-    bool is_scanning;
-    bool needs_force_all;
+    bool is_poisoned, is_rejected, is_scanning, needs_force_all;
 };
 
 static void *allocate_default(void *context, size_t size) { (void)context; return malloc(size); }
 static void release_default(void *context, void *p, size_t size) { (void)context; (void)size; free(p); }
-
-static uint64_t read_le(const uint8_t *p, unsigned size)
-{
-    uint64_t value = 0; for (unsigned i = 0; i < size; i++) value |= (uint64_t)p[i] << (8 * i); return value;
-}
-
-static void write_le(uint8_t *p, uint64_t value, unsigned size)
-{
-    for (unsigned i = 0; i < size; i++) p[i] = (uint8_t)(value >> (8 * i));
-}
-
-static bool is_zero(const uint8_t *p, size_t size)
-{
-    for (size_t i = 0; i < size; i++) if (p[i] != 0) return false; return true;
-}
 
 static bool segment_name(const candidate_wal_t *w, unsigned id, char out[NAME_MAX + 1])
 {
@@ -598,6 +576,14 @@ candidate_wal_status_t candidate_wal_pin(candidate_wal_t *w)
     status = candidate_wal_scan(w, NULL, NULL, &info);
     if (status != CANDIDATE_WAL_OK) w->pin_state = 0;
     return status;
+}
+
+candidate_wal_status_t candidate_wal_ensure_pin(candidate_wal_t *w)
+{
+    candidate_wal_status_t status = check_access(w);
+    if (status != CANDIDATE_WAL_OK || w->pin_state == 0) return status == CANDIDATE_WAL_OK ? candidate_wal_pin(w) : status;
+    candidate_wal_info_t info;
+    return w->pin_state == 2 ? candidate_wal_scan(w, NULL, NULL, &info) : CANDIDATE_WAL_INVALID;
 }
 
 void candidate_wal_reject(candidate_wal_t *w) { if (w != NULL) reject(w); }
