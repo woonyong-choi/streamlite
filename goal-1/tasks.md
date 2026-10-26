@@ -22,9 +22,15 @@ Goal status: active
 Language policy: en-US
 Commit policy: commit code changes at the task boundary when the project is a git repository
 
+## User-directed continuous execution override — 2026-10-26
+
+사용자는 Task24 커밋 뒤 “미완료인데 왜 멈춘거야 진행해”라고 지시했다. 이를 성공한 작업/체크포인트 경계마다 최종 응답으로 끝내지 말고, 같은 세션에서 원래 미완료 목표를 계속 수행하라는 최신 실행 지시로 적용한다. 위 Runtime Contract의 successful-boundary 즉시 stop과 client auto-advance 대기 조항보다 이 지시가 우선한다. 과업 순서·경계별 검증/기록/별도 commit·체크포인트의 tracking-only 수정·읽기 재개·dirty guard는 유지한다. checkpoint commit 뒤 현재 상태를 검증하고 다음 첫 미완료 단위로 진행하며 여러 단위를 한 commit에 섞지 않는다. 구현/검증 미완료·실패·외부 차단은 숨기지 않는다. 배포·원격 발행·파괴적 변경·Vault 직접 수정·새 worktree/백그라운드 대화 권한은 확장하지 않는다.
+
+get_goal의 기존 등록은 역사적 blocked 상태이며 resume API는 없다. 중복 goal을 만들거나 전체 완료로 바꾸지 않고 기존 goal-current/goal-1의 active 파일 흐름을 실행 기준으로 계속한다. 코드 작성은 로컬 Claude 한 writer, parent는 검토·실행·증거·추적·commit을 맡는다. 현재 checkpoint24는 코드 변경 없이 감사 중이며 다음 구현은 감사 결과를 반영한 첫 미완료 과업이다.
+
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. The Additional checkpoint after Task23 led to completed publication-counter and pinned-read repairs23s/23t. Task24 now completes isolated bounded buffering/live checkpoint validation. The first incomplete boundary is Checkpoint after Task24, followed by required seeded log reuse24a and Tasks25–39. Completed candidate recovery/buffering does not activate product SQL/ACK or establish MVCC/GC, actual independent writers, log reuse, streams or maintenance/recovery-inclusive COW/WAL measurements. The whole goal stays active; no next checkpoint or implementation is included in the Task24 commit. Existing runtime/default COW, data/ABI and all later requirements remain preserved.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. The Additional checkpoint after Task23 led to completed publication-counter and pinned-read repairs23s/23t. Task24 now completes isolated bounded buffering/live checkpoint validation. Checkpoint after Task24 is complete; the first incomplete task is required seeded log reuse24a, followed by Tasks25–39. Completed candidate recovery/buffering does not activate product SQL/ACK or establish MVCC/GC, actual independent writers, log reuse, streams or maintenance/recovery-inclusive COW/WAL measurements. The whole goal stays active; no next checkpoint or implementation is included in the Task24 commit. Existing runtime/default COW, data/ABI and all later requirements remain preserved.
 
 Task 23d compacts only completed Task16–23c entries and their completed checkpoints after source review. Their exact full ledger remains in Git object `623e9d5c4da00a0adb842d3e8d4213d839ad6976:goal-1/tasks.md` (SHA-256 31dd489d6de49399434544cbfa2353500aa28e3cb458536bc2fbfe5a1d14d280). Task6 source coverage/requirement matrix and all incomplete entries remain verbatim; no source history, failure artifact or requirement is removed. This adds no context copy.
 
@@ -471,12 +477,13 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Checkpoint after Task 24
 
-- Status: incomplete
-- Work performed: not started.
-- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 22–24; tracking-only checkpoint.
-- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
-- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
-- Commit status: no checkpoint commit attempted.
+- Status: complete (source/contract/evidence integrity audit only; no new implementation or performance samples)
+- Work performed: HEAD66ad6470의 Task22–24 계약·공유 frame/lease·완성 group 원자 수용·terminal NO-STEAL·WAL force 선행·batch inflight/redirty·전체 BEGIN cut/CHUNK/END·정본 proof/control 반대 slot·WAL-owned pin/거부를 실제 source와 대조했다. 독립 읽기 검토 A/B와 parent 모두 현재 문서화된 유효 caller 계약 안에서 새 P1–P5를 확인하지 못했다. 공개 docs·목표·실제 지원/거절 경계와 원자료/보안/소유권·rollback/자원을 함께 검토했다. 구현 파일·plan/input·Vault는 수정하지 않았다.
+- Verification evidence: `.local/runs/embedded-stream-renewal/checkpoint24-integrity.json`은 task24-final-manifest SHA-256 ea6c1c9e938519bc87140394c35cf9340c7e72c9c4ff9168956f5a10d63442cd와 봉인된13558산출물·source22/helper4의 변경/누락0을 현재 다시 확인한다. checkpoint24-review.json SHA-256 `d888f2847bea7726f393c35672c4eb19364e52c3d305dc1807b895311952d642`는 두 독립 검토와 parent 판정을 연결한다. 기존 실제54/default·1/reduced·17/Make(중복)·63/legacy·323/raw·55/negative와 fatal UBSan·고장/중단 근거를 같은 source/input hash로 재사용했다. 새 native/성능 실행으로 세지 않는다. task24-postcommit의24파일·사용자 identity·marker·clean·main/다른 작업본 보존을 실제 Git와 대조했다.
+- Remaining risk: caller 직렬화·배타 파일 소유·안정된 실제 canonical verifier가 전제다. fixedroot/type3 경계는25/27 전 해소해야 하며 실제 bounded WAL 재사용24a·MVCC/GC·독립 writer·공정성·정리/복구 포함 COW/WAL 총비용·제품은 그대로 미완료다. 첫 tmp 삭제/수동 출력의 과거 영향은 미확인으로 유지한다. 기존 DB/COW 기본값·ABI·원 실패를 보존하며 승인 없는 배포/원격 발행/복구 삭제를 하지 않는다. 내부 요청 예산과 whole-app RSS, correctness guard와 성능 SLO를 구분한다.
+- Next step: 최신 사용자 연속 실행 지시에 따라 이 tracking-only checkpoint를 별도 commit하고 상태를 검증한 뒤, 같은 세션에서 첫 미완료24a의 계약/설계·로컬 Claude 구현·검증을 순서대로 진행한다. code writer의 Bash는 제외하고 parent가 검사 명령을 실행한다. 실제 reuse seed/두 slot·reader·result 의존성의 증명 전 기존 로그를 삭제하지 않는다.
+- Commit record: subject `docs(docs): 버퍼와 체크포인트 구현 감사 기록 갱신`; exact body marker `Goal-mode boundary: goal-1 checkpoint after task 24: complete`. 이 checkpoint의 단일 goal-1/tasks.md 변경만 포함한 사용자 Git identity commit이다. commit 뒤 marker·scope·clean·기존 refs 보존은 checkpoint24-postcommit.json으로 대조한다.
+- AAR: 작업 경계의 검증/commit과 대화 중단은 별개다. 사용자의 미완료 연속 실행 지시를 Runtime Contract의 성공 경계 자동 stop보다 우선하도록 위 override에 기록했다. 과거 단일 writer 대기 메모로 최신 실제 writer/총비용 요구를 대체하지 않으며, 완료 분석과 고정 정상 시험을 반복하는 대신 다음 실제 미완료 구현으로 이어간다.
 
 ## Task 24a — Implement recovery seeds and actual bounded WAL reuse
 
