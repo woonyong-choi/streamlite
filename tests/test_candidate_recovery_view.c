@@ -5,7 +5,6 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include "storage/candidate_semantic_seed.h"
 #include "../src/storage/candidate_wal_internal.h"
 
 #define RESOLVED CANDIDATE_RECOVERY_VIEW_RESOLVED
@@ -511,36 +510,6 @@ static void force_turns_stale_resolved_ok(void)
     vf_free(&f);
 }
 
-static bool count_checkpoint(void *context, const candidate_wal_record_t *r)
-{
-    uint64_t *seen = context;
-    if (r->type >= 12 && r->type <= 14) { if (seen[1]++ == 0) seen[0] = r->lsn; }
-    return true;
-}
-
-static void raw_semantic_capture_refuses_checkpoint(void)
-{
-    vf_t f; vf_boot(&f,"semantic",&CLEAN,true);
-    uint64_t seen[2] = {0}; candidate_wal_info_t info; OK(candidate_wal_scan(f.wal,count_checkpoint,seen,&info));
-    vf_reset_memory(&f); candidate_wal_status_t before = try_view(&f,RESOLVED);
-    candidate_witness_options_t o = {.memory = &f.allocator,.enable_system_groups = true}; memcpy(o.uuid,fx_uuid,16);
-    vf_reset_memory(&f); vf_io.read_bytes = 0; candidate_semantic_seed_t *seed = (void *)1;
-    candidate_wal_status_t captured = candidate_semantic_seed_capture(f.wal,&o,&seed);
-    unsigned calls = f.memory.calls; uint64_t bytes = vf_io.read_bytes; size_t live = f.memory.live; bool is_null = seed == NULL;
-    if (seed != (void *)1) candidate_semantic_seed_close(&seed);
-    candidate_wal_witness_t *raw = NULL; candidate_wal_status_t analyzed = candidate_wal_witness_analyze(f.wal,&o,&raw);
-    bool is_raw_null = raw == NULL; candidate_wal_witness_close(&raw);
-    vf_reset_memory(&f); candidate_wal_status_t after = try_view(&f,RESOLVED);
-    printf("SEMANTIC checkpoint_records=%llu first_checkpoint_lsn=%llu anchor_checkpoint=%llu view_before=%s capture=%s out_null=%d "
-        "calls=%u wal_bytes=%llu live=%zu raw_analyze=%s raw_null=%d view_after=%s\n",(unsigned long long)seen[1],
-        (unsigned long long)seen[0],(unsigned long long)f.anchor.checkpoint_id,vf_status(before),vf_status(captured),is_null,calls,
-        (unsigned long long)bytes,live,vf_status(analyzed),is_raw_null,vf_status(after));
-    CHECK(seen[1] > 0 && f.anchor.checkpoint_id > 0 && before == CANDIDATE_WAL_OK && after == CANDIDATE_WAL_OK);
-    CHECK(captured == CANDIDATE_WAL_UNSUPPORTED && is_null && calls > 0 && bytes >= seen[0] && live == 0);
-    CHECK(analyzed == CANDIDATE_WAL_UNSUPPORTED && is_raw_null && f.memory.live == 0);
-    vf_free(&f);
-}
-
 static void allocation_failures_leave_held_view(void)
 {
     vf_t f; vf_boot(&f,"oom",&CLEAN,true);
@@ -722,7 +691,7 @@ static const test_case_t CASES[] = {{"resolved",resolved_view_matches_legacy_out
     {"faults",real_faults_refuse_view},{"durable",force_turns_stale_resolved_ok},
     {"oom",allocation_failures_leave_held_view},{"owner",failed_verify_keeps_recovery_owner},
     {"inputs",callback_input_mutation_keeps_snapshot},{"metadata",closed_loader_metadata_needs_no_loads},
-    {"observe",view_observes_one_semantic_scan},{"semantic",raw_semantic_capture_refuses_checkpoint}};
+    {"observe",view_observes_one_semantic_scan}};
 
 int main(int argc, char **argv)
 {

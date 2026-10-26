@@ -284,30 +284,13 @@ $(CANDIDATE_OUTCOME_CATALOG_MODULE): src/storage/candidate_catalog.c $(BUILD_FIN
 $(CANDIDATE_OUTCOME_MODULE): src/storage/candidate_outcome_witness.c $(BUILD_FINGERPRINT)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
-CANDIDATE_SEMANTIC_MODULE ?= $(BUILD_DIR)/storage/candidate_semantic_seed.o
-CANDIDATE_SEMANTIC_OBJS = $(CANDIDATE_SEMANTIC_MODULE) $(CANDIDATE_OUTCOME_OBJS)
-CANDIDATE_SEMANTIC_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_semantic_fixture.o $(BUILD_DIR)/tests/test_candidate_semantic_compare.o
-$(CANDIDATE_SEMANTIC_MODULE): src/storage/candidate_semantic_seed.c $(BUILD_FINGERPRINT)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) $(DEPFLAGS) -c -o $@ $<
-$(BUILD_DIR)/test_candidate_semantic_seed: $(BUILD_DIR)/tests/test_candidate_semantic_seed.o $(CANDIDATE_SEMANTIC_TEST_OBJS) \
-	$(CANDIDATE_SEMANTIC_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
-$(BUILD_DIR)/test_candidate_semantic_boundary: $(BUILD_DIR)/tests/test_candidate_semantic_boundary.o $(CANDIDATE_SEMANTIC_OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
-CANDIDATE_SEMANTIC_REPORT_PREFIX ?= $(BUILD_DIR)/fault/test_candidate_semantic
-.PHONY: test-candidate-semantic
-test-candidate-semantic: $(BUILD_DIR)/test_candidate_semantic_seed $(BUILD_DIR)/test_candidate_semantic_boundary
-	$(TEST_RUNNER) --report $(CANDIDATE_SEMANTIC_REPORT_PREFIX)-seed-all.json -- ./$(BUILD_DIR)/test_candidate_semantic_seed all
-	$(TEST_RUNNER) --report $(CANDIDATE_SEMANTIC_REPORT_PREFIX)-boundary-all.json -- ./$(BUILD_DIR)/test_candidate_semantic_boundary all
-# 규칙 prerequisite는 읽는 즉시 펼쳐지므로 CANDIDATE_SEMANTIC_MODULE 정의 뒤에 둔다.
 CANDIDATE_VIEW_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_recovery_view.o $(BUILD_DIR)/tests/test_candidate_recovery_view_fixture.o
 $(BUILD_DIR)/test_candidate_recovery_view: $(CANDIDATE_VIEW_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) \
-	$(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS) $(CANDIDATE_SEMANTIC_MODULE)
+	$(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_VIEW_TIMEOUT ?= 600
 CANDIDATE_VIEW_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_view
-CANDIDATE_VIEW_CASES ?= resolved recovery preview graph nonselected cut access faults durable oom owner inputs metadata observe semantic
+CANDIDATE_VIEW_CASES ?= resolved recovery preview graph nonselected cut access faults durable oom owner inputs metadata observe
 .PHONY: test-candidate-recovery-view
 test-candidate-recovery-view: $(BUILD_DIR)/test_candidate_recovery_view
 	@for c in $(CANDIDATE_VIEW_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_VIEW_TIMEOUT) --seed $(FAULT_SEED) \
@@ -719,7 +702,6 @@ clean:
 -include $(CANDIDATE_WITNESS_MODULE:.o=.d)
 -include $(CANDIDATE_OUTCOME_CATALOG_MODULE:.o=.d)
 -include $(CANDIDATE_OUTCOME_MODULE:.o=.d)
--include $(CANDIDATE_SEMANTIC_MODULE:.o=.d)
 -include $(CANDIDATE_WAL_TAIL_MODULE:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_wal_system.d
 -include $(BUILD_DIR)/storage/candidate_checkpoint.d

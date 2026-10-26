@@ -1,8 +1,14 @@
 #ifndef STORAGE_CANDIDATE_WAL_WITNESS_STATE_INTERNAL_H
 #define STORAGE_CANDIDATE_WAL_WITNESS_STATE_INTERNAL_H
 
-#include "storage/candidate_semantic_seed.h"
+#include "storage/candidate_wal_witness.h"
 #include "candidate_wal_identity_internal.h"
+
+typedef struct {
+    candidate_witness_transaction_t value;
+    uint64_t owner_epoch, result_limit, chunk_bytes;
+} candidate_semantic_transaction_t;
+typedef struct { uint64_t id, transaction_id, end_lsn; } candidate_semantic_group_t;
 
 candidate_wal_status_t candidate_witness_clone(const candidate_wal_witness_t *source,
     const candidate_wal_memory_t *memory, candidate_wal_witness_t **out);

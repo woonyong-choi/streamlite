@@ -3,6 +3,7 @@
 
 #include "test_candidate_recovery_view_fixture.h"
 #include "../src/storage/candidate_recovery_view_internal.h"
+#include "../src/storage/candidate_wal_witness_state_internal.h"
 
 #define CF_CHURN_PAGES 55u
 #define CF_EPOCHS 32u

@@ -2,8 +2,13 @@
 #define STORAGE_CANDIDATE_OUTCOME_WITNESS_INTERNAL_H
 
 #include "storage/candidate_outcome_witness.h"
-#include "storage/candidate_semantic_seed.h"
+#include "storage/candidate_wal_witness.h"
 
+typedef struct {
+    uint64_t transaction_id, owner_epoch, result_limit;
+    candidate_version_ref_t result;
+    bool has_result;
+} candidate_semantic_admission_t;
 typedef struct candidate_admissions candidate_admissions_t;
 
 candidate_wal_status_t candidate_admissions_create(const candidate_wal_memory_t *memory,

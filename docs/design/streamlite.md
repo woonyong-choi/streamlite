@@ -536,23 +536,17 @@ checkpoint는 BEGIN 시점의 전체 dirty·거래 표와 FPI 경계를 고정�
 
 이 버퍼는 현재 DB 기본 경로에 연결하지 않는다. checkpoint는 log 회수를 수행하지 않는다. 현재 transport는 segment 0부터의 연속 이력을 요구하고, 56B checkpoint 거래 tuple만으로는 admission·chain·result 이력을 대체할 수 없다. 실제 bounded WAL 재사용에는 base/epoch와 충분한 복구 seed, 두 control slot·reader/version 의존성 보호, 공간 회수·재사용 뒤 중단 복구가 별도로 필요하다. retention floor 계산이나 오래된 로그 삭제 거절을 재사용 완료로 세지 않는다.
 
-[메모리 seed 후보](../../include/storage/candidate_semantic_seed.h)는 완성 group 경계 B까지 검증한 거래·group·system 상태와 admission/result 관측 상태를 독립적으로 소유한다. 거래의 owner·선언한 결과 상한·누적 chunk bytes와 B 이전 group 의존성도 보존한다. 원 분석기를 닫아도 seed는 유효하며, 계속 처리할 때는 사본에 B 이후 기록만 기존 reducer로 적용한다. 실패하면 입력 seed를 보존하고 출력은 반환하지 않는다. 이 상태는 내구 파일 형식이 아니며 기존 역사 한도를 유지한다.
-
-capture와 continue는 실제 WAL handle의 UUID와 접근 상태를 먼저 확인한다. 추가 기록이 없어도 I/O 실패 뒤의 차단, 지속 손상 거절, fork와 scan 재진입을 우회하지 않는다. continue는 B 이전 byte를 읽지 않지만, 최초 WAL 열기는 여전히 전체 보존 이력을 읽는다. seed와 WAL prefix가 같은 이력이라는 확인은 직렬·배타 호출자인 caller의 책임이다. B가 마지막 segment에 있는 suffix만 지원하며, segment 경계를 잇는 cursor와 내구 seed·page/redo 기반·이력 정리·실제 공간 재사용은 별도 경계다.
-
-[의미 상태 시험](../../tests/test_candidate_semantic_seed.c)은 fixture 예상값과 전체 이력 분석을 B/B1 이후 처리와 대조한다. prefix 읽기를 거절하는 실제 I/O hook의 양성 대조, 실제 suffix 읽기, 분할 결과·COMMIT/ABORT·system 전이·잘못된 참조·OOM과 사본 수명을 검사한다. [접근 경계 시험](../../tests/test_candidate_semantic_boundary.c)은 빈 suffix의 오류 handle과 IMAGE 없는 WAL의 잘못된 UUID 거절을 검사한다. 이 시험 범위는 cold open, 두 control slot의 복구 기반, reader 수명이나 회수 후 재시작의 증명이 아니다.
-
 [소유 복구 view 후보](../../src/storage/candidate_recovery_internal.h)는 checkpoint를 고려한 같은 의미 관측으로 page 이력과 admission/result 상태를 수집한다. view 하나가 witness·page 이력·allocation·catalog를 소유하고 기존 graph·결과 검증 본문을 공유한다. RESOLVED는 종결 거래와 결과 coverage·WAL force를 요구한다. PREVIEW는 미확정 version과 재구성 전 ADMITTED를 기존 조건으로 검사하며 결과 조회에는 UNAVAILABLE을 반환한다. 복구의 결과 조회는 소유한 RESOLVED view를 사용하고, 게시 preview와 buffer proof는 작업 안에서만 임시 view를 사용한다.
 
 요청과 allocator는 callback 전에 복사한다. 실제 WAL 접근·UUID를 먼저 확인하고 검증 callback 뒤 관측 cut과 현재 handle 상태를 대조한다. 직렬·배타 호출과 같은 prefix를 제공하는 책임은 caller에게 남는다. page loader는 검증 중에만 빌리고 반환한 view에는 남기지 않는다. allocator와 그 context는 view보다 오래 살아야 한다. 새 view의 부분 할당은 실패 시 해제하고 소유 메타데이터는 검증 성공 뒤에 교체한다. 기존 redo의 부분 파일 효과 계약은 유지한다.
 
-[소유 복구 view 시험](../../tests/test_candidate_recovery_view.c)은 실제 후보 결과 조회·본문, strict/preview 차이, catalog에 없는 LIVE version과 frozen CSN, 참조 순환·세대·pageLSN, callback 입력·cut 변경과 할당 실패를 대조한다. 주입한 fsync EIO와 손상된 pinned 기록의 실제 읽기 경로를 검사하고, 같은 cut의 force 전후 STALE·OK를 확인한다. checkpoint가 있는 WAL의 raw seed capture 거절도 별도로 대조한다.
+[소유 복구 view 시험](../../tests/test_candidate_recovery_view.c)은 실제 후보 결과 조회·본문, strict/preview 차이, catalog에 없는 LIVE version과 frozen CSN, 참조 순환·세대·pageLSN, callback 입력·cut 변경과 할당 실패를 대조한다. 주입한 fsync EIO와 손상된 pinned 기록의 실제 읽기 경로를 검사하고, 같은 cut의 force 전후 STALE·OK를 확인한다.
 
 view의 최초 생성은 전체 보존 WAL과 기존 역사 한도를 요구한다. [이어 처리하는 후보](../../src/storage/candidate_recovery_continue.c)는 source와 같은 anchor·mode로 view를 복사하고 source cut 뒤의 suffix만 적용한다. anchor가 다르면 UNSUPPORTED, mode가 다르면 INVALID다. 정리는 suffix를 적용한 뒤 수행하므로 현재 resident와 새 suffix의 합도 거래4096개·완성 group4096개·event4096개와 활성 거래64개 한도를 지켜야 한다. 이 한도를 넘으면 LIMIT를 반환한다. 정리할 때에는 catalog의 결과, 허용 epoch의 미게시 admission, 모든 LIVE version과 previous chain, 미종결 거래와 그 group 의존성을 보존한다. allocation의 마지막 전이와 같은 owner의 예약 구간도 남긴다. 역사 누계와 현재 보유한 항목 수를 나누므로 반복 정리 뒤 resident 표가 작아져도 이미 처리한 거래·group·event 수는 줄지 않는다.
 
 [시작 ID와 nonce 이력](../../src/storage/candidate_wal_identity_internal.h)은 별도로 소유한다. 시작 ID는 정확한 구간 집합으로 보존해 은퇴한 ID와 예약만 한 빈 ID를 구별한다. nonce는 허용 epoch 전체를 보존하고 실제 retention floor 전이에 따라 정리한다. 내부 표현 한도는 ID 구간과 nonce 각각262144개이며, 표현 공간이 부족하면 기존 상태를 보존하고 LIMIT를 반환한다. 외부 색인의 세대·병합 I/O·게시·복구·정리 수명을 추가하는 안은 보류한다. 이 선택은 해당 비용 구조에 따른 설계 판단이며 측정된 성능 우위가 아니다.
 
-[WAL 소유 suffix cursor](../../src/storage/candidate_wal_read.c)는 cut 이후의 실제 frame, 남은 0 padding과 다음 segment header를 순서대로 검증한다. prefix byte를 다시 읽지 않으며 빌린 소유 FD와 기존 WAL buffer만 사용한다. 읽기와 visitor callback 동안 재진입 guard를 유지하고, OK나 STOPPED 종료 뒤에도 handle의 거부 상태와 파일 소유권을 확인한다. 첫 suffix owner가 이전 최고 owner보다 낮으면 visitor를 호출하기 전에 CORRUPT로 거절한다. captured 경계 metadata의 불일치와 실제 wire 손상의 지속 거부는 구분한다. checkpoint record를 포함한 일반 suffix는 여전히 UNSUPPORTED다. 별도 raw 메모리 seed API의 마지막 segment 제한도 유지한다.
+[WAL 소유 suffix cursor](../../src/storage/candidate_wal_read.c)는 cut 이후의 실제 frame, 남은 0 padding과 다음 segment header를 순서대로 검증한다. prefix byte를 다시 읽지 않으며 빌린 소유 FD와 기존 WAL buffer만 사용한다. 읽기와 visitor callback 동안 재진입 guard를 유지하고, OK나 STOPPED 종료 뒤에도 handle의 거부 상태와 파일 소유권을 확인한다. 첫 suffix owner가 이전 최고 owner보다 낮으면 visitor를 호출하기 전에 CORRUPT로 거절한다. captured 경계 metadata의 불일치와 실제 wire 손상의 지속 거부는 구분한다. checkpoint record를 포함한 일반 suffix는 여전히 UNSUPPORTED다.
 
 [정리 시험](../../tests/test_candidate_recovery_closure.c)과 [경계 시험](../../tests/test_candidate_recovery_closure_boundary.c)은 누적4096개를 넘는 이력, 정상 예약 gap, 중복 ID·nonce, 미게시 ABORT와 LIVE·미종결 의존성, UUID 결합과 할당 실패를 대조한다. [transport 시험](../../tests/test_candidate_recovery_closure_transport.c)은 자연 segment 경계를 넘는 IMAGE group과 event 이력, prefix 읽기 거절, 짧은 padding·header·frame 손상과 I/O·재진입을 검사한다. [callback 시험](../../tests/test_candidate_recovery_closure_callbacks.c)과 [raw 읽기 경계 시험](../../tests/test_candidate_wal_read_boundary.c)은 종료 때의 오류 우선순위, 첫 owner 거절과 기존 raw 오류 분류를 검사한다.
 
