@@ -275,6 +275,30 @@ CANDIDATE_BUFFER_CASES ?= budget pinned lease shared-leaf membership terminal re
 test-candidate-buffer: $(BUILD_DIR)/test_candidate_buffer
 	@for c in $(CANDIDATE_BUFFER_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_BUFFER_TIMEOUT) --seed $(FAULT_SEED) \
 		--report $(CANDIDATE_BUFFER_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_buffer $$c || exit 1; done
+CANDIDATE_MVCC_OBJS ?= $(BUILD_DIR)/storage/candidate_mvcc.o $(BUILD_DIR)/storage/candidate_mvcc_versions.o \
+	$(BUILD_DIR)/storage/candidate_mvcc_log.o $(BUILD_DIR)/storage/candidate_mvcc_open.o
+CANDIDATE_MVCC_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_mvcc.o $(BUILD_DIR)/tests/test_candidate_mvcc_fixture.o
+$(BUILD_DIR)/test_candidate_mvcc: $(CANDIDATE_MVCC_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) $(CANDIDATE_MVCC_OBJS) \
+	$(CANDIDATE_BUFFER_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_MVCC_TIMEOUT ?= 600
+CANDIDATE_MVCC_REPORT ?= $(BUILD_DIR)/fault/test_candidate_mvcc
+CANDIDATE_MVCC_CASES ?= overlap restart kill visibility bothcommit conflict limits oom unknown
+.PHONY: test-candidate-mvcc
+test-candidate-mvcc: $(BUILD_DIR)/test_candidate_mvcc
+	@for c in $(CANDIDATE_MVCC_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_MVCC_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_MVCC_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_mvcc $$c || exit 1; done
+CANDIDATE_MVCC_BOUNDARY_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_mvcc_boundary.o $(BUILD_DIR)/tests/test_candidate_mvcc_fixture.o
+$(BUILD_DIR)/test_candidate_mvcc_boundary: $(CANDIDATE_MVCC_BOUNDARY_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) $(CANDIDATE_MVCC_OBJS) \
+	$(CANDIDATE_BUFFER_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_MVCC_BOUNDARY_REPORT ?= $(BUILD_DIR)/fault/test_candidate_mvcc_boundary
+CANDIDATE_MVCC_BOUNDARY_CASES ?= id-control id-exhaust group-credit reserve-control reserve-reject reserve-append commit-reject \
+	commit-append abort-reject abort-append unknown-body begin-reject
+.PHONY: test-candidate-mvcc-boundary
+test-candidate-mvcc-boundary: $(BUILD_DIR)/test_candidate_mvcc_boundary
+	@for c in $(CANDIDATE_MVCC_BOUNDARY_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_MVCC_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_MVCC_BOUNDARY_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_mvcc_boundary $$c || exit 1; done
 .PHONY: test-candidate-outcome-witness
 test-candidate-outcome-witness: $(BUILD_DIR)/test_candidate_outcome_witness
 	$(TEST_RUNNER) --report $(CANDIDATE_OUTCOME_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_witness
@@ -730,6 +754,7 @@ clean:
 -include $(BUILD_DIR)/storage/candidate_recovery_terminal.d
 -include $(CANDIDATE_RECOVERY_PUBLISH_OBJS:.o=.d)
 -include $(CANDIDATE_CLOSURE_OBJS:.o=.d) $(BUILD_DIR)/storage/candidate_wal_identity.d
+-include $(CANDIDATE_BUFFER_OBJS:.o=.d) $(CANDIDATE_MVCC_OBJS:.o=.d)
 -include $(wildcard $(BUILD_DIR)/tests/*.d $(BUILD_DIR)/storage/*_fault.d $(BUILD_DIR)/sql/lexer*.d)
 -include $(BUILD_DIR)/sql/result.d $(BUILD_DIR)/sql/result_fault.d
 -include $(DATABASE_OBJS:.o=.d) $(DATABASE_EXEC_FAULT_OBJS:.o=.d) $(BUILD_DIR)/sql/sql_statement_fault.d $(BUILD_DIR)/storage/heap_store_test.d

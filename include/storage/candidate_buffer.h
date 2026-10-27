@@ -45,6 +45,10 @@ typedef struct {
 } candidate_buffer_admission_t;
 
 typedef struct {
+    uint64_t group_id, end_lsn, previous_highwater, next_highwater;
+} candidate_buffer_reservation_t;
+
+typedef struct {
     uint64_t forced_lsn;
     uint32_t written, redirtied, unresolved, pinned, busy;
 } candidate_buffer_flush_t;
@@ -83,6 +87,10 @@ candidate_wal_status_t candidate_buffer_admit(candidate_buffer_t *pool, uint64_t
 /* 의도한 record는 I/O 전에 cut에 묶이고 빌린 WAL의 owner epoch는 pool과 같아야 한다. */
 candidate_wal_status_t candidate_buffer_write_group(candidate_buffer_t *pool, const candidate_buffer_group_t *group,
     candidate_buffer_admission_t *out);
+/* 현재 outcome·allocation root IMAGE와 ID_RESERVE를 한 system group으로 append·admit하고 끝까지 force한 뒤에만 receipt를 채운다. */
+/* root 내용과 WAL system 상태 불일치는 append 전 UNSUPPORTED이고 append·force 뒤 실패는 pool 차단이다. */
+candidate_wal_status_t candidate_buffer_reserve_transactions(candidate_buffer_t *pool, uint64_t count,
+    candidate_buffer_reservation_t *out);
 /* lease는 frame 세대와 pool에 묶이며 page bytes는 copy로만 읽는다. */
 candidate_wal_status_t candidate_buffer_pin(candidate_buffer_t *pool, candidate_page_ref_t ref, candidate_buffer_lease_t *out);
 candidate_wal_status_t candidate_buffer_copy(candidate_buffer_t *pool, const candidate_buffer_lease_t *lease,

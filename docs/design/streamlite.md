@@ -524,7 +524,7 @@ redo scratch·할당/이력 검증·outcome 검증의 수명을 나눈다. [실�
 
 결과 공간은 모든 LIVE type4 metadata와 보존 VersionRef의 previous·overflow 의존 page를 센다. 같은 page의 다른 slot은 각각 검증하고 물리 page 요금만 중복 제거한다. 관계없는 행 page·type5 allocation 유지보수·희소 data 파일의 논리 크기는 별도로 보고한다. `candidate_recovery_publication`의 유지보수·파일 크기는 게시 전 재고 시점이며 staging 할당 수는 carrier 준비를 제외한다. `candidate_recovery_publication_extent`는 게시 뒤 실제 파일 크기·LIVE type5·이번 ALLOC·carrier 준비를 보고한다. 새 예약과 재사용 예약의 합은 staging과 carrier 준비의 합과 같다. 이 내부 64MiB 결과 제한이 전체 DB/replay quota를 정하지는 않는다.
 
-[게시 시험](../../tests/test_candidate_recovery_publish.c)과 [고장 시험](../../tests/test_candidate_recovery_publish_faults.c)은 stale/누락 결과, 4096개 결과의 여러 group, 물리 공간 경계, 예약 재사용, I/O·OOM·실제 process 중단 뒤 복구와 strict 재진입을 대조한다. [source 시험](../../tests/test_candidate_recovery_publish_source.c)은 같은 위치의 대체 bytes, 부분 DELTA chain, 이동한 END, fallback·선택/정리 사이의 view 변화와 append callback 변조를 검사한다. 이 범위는 격리된 후보 파일의 복구다. 아래 버퍼는 별도 후보 구현이며 MVCC 가시성과 회수·실제 독립 writer·SQL/ACK/stream 통합과 양쪽 유지보수 포함 총비용 비교는 후속 과업이다.
+[게시 시험](../../tests/test_candidate_recovery_publish.c)과 [고장 시험](../../tests/test_candidate_recovery_publish_faults.c)은 stale/누락 결과, 4096개 결과의 여러 group, 물리 공간 경계, 예약 재사용, I/O·OOM·실제 process 중단 뒤 복구와 strict 재진입을 대조한다. [source 시험](../../tests/test_candidate_recovery_publish_source.c)은 같은 위치의 대체 bytes, 부분 DELTA chain, 이동한 END, fallback·선택/정리 사이의 view 변화와 append callback 변조를 검사한다. 이 범위는 격리된 후보 파일의 복구다. 아래 버퍼와 native 거래 계층은 이 handle을 연결하지만, 구조 변경·회수·SQL/ACK/stream·프로세스 간 writer 통합과 양쪽 유지보수 포함 총비용 비교는 별도 조건이다.
 
 [후보 버퍼](../../include/storage/candidate_buffer.h)는 caller가 직렬화하고 배타 소유한 WAL·control·data handle을 빌린다. 빌린 WAL은 처음 관측한 실제 view에 고정하고 같은 handle의 append로만 확장한다. 이미 고정된 WAL은 새 view로 덮지 않고 현재 파일을 다시 대조한다. 이 고정은 pool close나 open 실패 뒤에도 WAL handle에 남는다. canonical preview와 control verifier가 읽는 source도 같은 고정을 따른다. open은 실제 의존성을 검증한 control을 전제로 전체 보존 WAL과 data의 현재 bytes·pageLSN·cut을 다시 대조한다. open 자체를 전체 graph 검증기로 쓰지 않는다. live checkpoint 게시와 새 PageRef admission은 pool 예산 안에서 비변경 canonical redo preview 검증을 추가 수행한다. 새 번호·세대의 외부 group은 실제 allocation 이력과 root를 대조해야 받으며, producer는 미등록·세대 변경 PageRef를 append 전에 UNSUPPORTED로 거절한다.
 
@@ -533,6 +533,10 @@ frame은 PageRef·재사용 세대·pin·dirty 세대·최초 recLSN과 기여 �
 checkpoint는 BEGIN 시점의 전체 dirty·거래 표와 FPI 경계를 고정한다. BEGIN append/force → 제한된 writeback/data sync → CHUNK/END append → END force → 같은 cut과 canonical 상태 검증 → 반대 control slot 게시 순서다. group과 checkpoint의 의도한 record는 I/O callback 전에 cut에 묶는다. root PageRef 이동·SQL catalog/type3은 지원하지 않으며 root 내용과 WAL system 상태가 맞지 않으면 게시하지 않는다.
 
 기본 설정은 4096frame/64lease이며 frame 64MiB·staging 8MiB·전체 요청 128MiB다. 전체 요청에는 pool 소유 descriptor·frame·WAL/redo/witness scratch·writeback/checkpoint 사본을 포함하고 빌린 WAL/control 상주량을 차감한다. 외부 verifier·caller·stack·allocator overhead·RSS와 실제 공유 프로세스 전체의 상한은 별개다. info의 peak은 마지막 최상위 작업 동안의 요청량이다. 반복 prefix scan/hash와 header 변경 때 필요한 full-page IMAGE는 이 구현의 실제 비용이며 총비용 비교에서 제외하지 않는다.
+
+[Native 거래 계층](../../include/storage/candidate_mvcc.h)은 미리 할당한 LIVE version/result page와 선언한 point 쓰기 계획을 사용한다. 요청 계획·거래표·reader 등록을 한 owner가 소유하고 공유 WAL·buffer의 물리 작업을 호출 단위 gate로 직렬화한다. gate는 거래 종료까지 잡지 않는다. 최신 page에 다른 거래의 불변 slot을 보존하며 고정 snapshot·자기 쓰기·논리 abort를 판정한다. 한 거래가 ACTIVE인 동안 같은 page의 다른 행을 쓰는 거래는 별도로 durable commit할 수 있다.
+
+ID는 양 root IMAGE와 ID_RESERVE의 force·동일 cut 확인 뒤 발급한다. 결과 version·RESULT_CHUNK·COMMIT을 연결하고 force와 마지막 source 검증이 끝난 뒤에만 성공 본문을 반환한다. 효과 전 번호·공간 부족은 LIMIT이며, 쓰기 뒤 불확정 상태는 pool과 owner를 차단하고 성공 본문을 내보내지 않는다. 재열기는 배타 복구의 실제 metadata·checkpoint·control 게시와 본문 대조를 실행한다. [중첩 거래 시험](../../tests/test_candidate_mvcc.c)과 [실패 경계 시험](../../tests/test_candidate_mvcc_boundary.c)은 공유 page·snapshot·abort·응답 손실과 실제 중단/재열기를 대조한다. 이 진입점은 고정 page·작은 계획의 native 후보이며 새 page·split·GC·runtime checkpoint, 일반 SQL/ACK와 프로세스 간 writer를 제공하지 않는다.
 
 이 버퍼는 현재 DB 기본 경로에 연결하지 않는다. checkpoint는 log 회수를 수행하지 않는다. 현재 transport는 segment 0부터의 연속 이력을 요구하고, 56B checkpoint 거래 tuple만으로는 admission·chain·result 이력을 대체할 수 없다. 실제 bounded WAL 재사용에는 base/epoch와 충분한 복구 seed, 두 control slot·reader/version 의존성 보호, 공간 회수·재사용 뒤 중단 복구가 별도로 필요하다. retention floor 계산이나 오래된 로그 삭제 거절을 재사용 완료로 세지 않는다.
 
@@ -1081,10 +1085,10 @@ H4는 [cleanup 포함 backend 비교](#분리-비교의-범위)에서 같은 bar
 ## 미해결
 
 - G1 격리·충돌: 내부 후보는 SNAPSHOT·locking 읽기와 FIFO·교착 victim·대기/잠금 한도를 위 계약으로 구분한다. 공개 API·기본값·전체 지원 문장과 실제 key/range/schema 구현·반환 결과 보존은 검증 전이다 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
-- G2 불확정 결과: 비교 후보는 영속 요청 ID·결과 조회와 epoch/floor 보존을 선택한다. 실제 restart·동일/다른 내용·없는/만료 ID·본문 수명 구현과 제품의 조회 기간·보존 종료 API는 검증 전이다. 동적 SQL/callback의 자동 재실행은 지원 범위에 넣지 않는다 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
+- G2 불확정 결과: 내부 native 계층은 선언 point 쓰기의 영속 요청 ID·실제 결과 본문·terminal과 재열기 조회를 연결한다. 일반 SQL·제품 API의 조회 기간, epoch/floor·보존 종료와 만료 ID 처리 및 전체 본문 수명은 별도 조건이다. 동적 SQL/callback의 자동 재실행은 지원 범위에 넣지 않는다 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
 - G3 자원·보존: payload·메모리·pin·spill·in-flight·ACK holes·로그·실패/결과 기록의 bytes와 개수 한도, 유한 대기 시간, replay·멱등 보존 기간의 확정. 한도 도달 시 publish 거절 권고와 명시적 consumer expiry·데이터 손실 정책 비교 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
 - G4 프로세스·이관: membership·lease·내구 owner epoch와 배타 복구 계약의 실제 프로세스 간 구현·사망/정지/fork 검증, 이관·역이관은 미완료다. 별도 시험 형식 선택을 기존 DB 전환으로 적용하지 않는다 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
 - G5 비교 실행: E0–E7·조회 Q1–Q5의 구현·수집기, 실제 workload·도착률·timeout·환경·버전·입력 hash·재현 명령 고정, 최소 완료량·tail·공정성·조회 결과 수명·메모리·저장·복구 예산과 실질 개선폭의 수치 확정. 제안한 입력 규모·30분·정식 10쌍은 수집 가정이며 제품 SLO·검정력·실행 완료 근거가 아닌 조건 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
-- G6 WAL·version 형식: 내부 형식·NO-STEAL·논리 abort·checkpoint/GC 계약은 위 절을 따른다. 후보 파일의 record/segment·거래/group·결과 복구는 위 진입점으로 연결한다. 제품 가시성·구조 변경·공유 frame과 실제 writer의 구현, R01–R18 전체 실패 증명과 양쪽 후보의 비용 수집은 미완료다 ([#263](https://github.com/woonyong-choi/streamlite/issues/263), [#266](https://github.com/woonyong-choi/streamlite/issues/266))
+- G6 WAL·version 형식: 내부 형식·NO-STEAL·논리 abort·checkpoint/GC 계약은 위 절을 따른다. 후보 파일의 record/segment·거래/group·결과 복구는 위 진입점으로 연결한다. native 고정-page 거래 범위를 넘어서는 구조·할당·GC, 제품 SQL/ACK 가시성·프로세스 간 공유와 writer 통합, R01–R18 전체 실패 증명과 양쪽 후보의 비용 수집은 미완료다 ([#263](https://github.com/woonyong-choi/streamlite/issues/263), [#266](https://github.com/woonyong-choi/streamlite/issues/266))
 - 느린 소비자·보존 한도 충돌, 지원 subject·replay·DLQ/redrive의 정확한 API 계약 ([#257](https://github.com/woonyong-choi/streamlite/issues/257))
 - 표시명 이후 패키지·import·ABI·경로·파일 형식의 별도 호환 전환과 상표 등 권리 확인 ([#258](https://github.com/woonyong-choi/streamlite/issues/258))

@@ -276,3 +276,19 @@ candidate_wal_status_t candidate_page_get_version(const uint8_t uuid[16], const 
     if (read_le(slot + 4, 4) != ref.slot_generation) return CANDIDATE_WAL_CORRUPT;
     return decode_version(bytes + read_le(slot, 2), (size_t)read_le(slot + 2, 2), ref.slot_generation, out);
 }
+
+candidate_wal_status_t candidate_page_version_at(const uint8_t uuid[16], const uint8_t *bytes,
+    size_t size, uint32_t ordinal, candidate_version_ref_t *ref, candidate_page_version_t *out)
+{
+    if (ref == NULL || out == NULL) return CANDIDATE_WAL_INVALID;
+    candidate_page_info_t info;
+    candidate_wal_status_t status = candidate_page_decode(uuid, bytes, size, &info);
+    if (status != CANDIDATE_WAL_OK) return status;
+    if (info.type != 1 || ordinal >= info.slots) return CANDIDATE_WAL_INVALID;
+    const uint8_t *slot = bytes + 72 + (size_t)ordinal * 8;
+    candidate_version_ref_t found = {info.location.ref, ordinal, (uint32_t)read_le(slot + 4, 4)};
+    candidate_page_version_t version;
+    status = decode_version(bytes + read_le(slot, 2), (size_t)read_le(slot + 2, 2), found.slot_generation, &version);
+    if (status != CANDIDATE_WAL_OK) return status;
+    *ref = found; *out = version; return CANDIDATE_WAL_OK;
+}

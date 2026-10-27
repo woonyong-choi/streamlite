@@ -50,6 +50,9 @@ candidate_wal_status_t candidate_page_decode(const uint8_t uuid[16], const uint8
 /* 성공한 inline_bytes는 입력 page를 빌리며 MVCC 가시성·commit 여부는 판정하지 않는다. */
 candidate_wal_status_t candidate_page_get_version(const uint8_t uuid[16], const uint8_t *bytes,
     size_t size, candidate_version_ref_t ref, candidate_page_version_t *out);
+/* 전체 page를 검사한 뒤 ordinal번째 slot의 실제 PageRef·slot 세대와 version을 채운다. 범위 밖은 INVALID이고 실패 시 out은 그대로다. */
+candidate_wal_status_t candidate_page_version_at(const uint8_t uuid[16], const uint8_t *bytes,
+    size_t size, uint32_t ordinal, candidate_version_ref_t *ref, candidate_page_version_t *out);
 
 typedef candidate_wal_status_t (*candidate_page_loader_t)(void *, candidate_page_ref_t,
     uint8_t out[CANDIDATE_PAGE_BYTES]);
