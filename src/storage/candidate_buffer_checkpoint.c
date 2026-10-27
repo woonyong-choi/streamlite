@@ -4,7 +4,9 @@
 #include <string.h>
 
 #include "storage/candidate_catalog.h"
+#include "storage/candidate_store.h"
 #include "candidate_control_internal.h"
+#include "candidate_redo_internal.h"
 #include "candidate_wal_internal.h"
 #include "candidate_wal_witness_internal.h"
 
@@ -16,6 +18,7 @@
 
 typedef struct {
     candidate_control_state_t next;
+    candidate_page_ref_t catalog_root;
     candidate_checkpoint_dirty_t *dirty;
     candidate_checkpoint_transaction_t *transactions;
     uint32_t dirty_count, transaction_count, active, chunks;
@@ -159,7 +162,7 @@ static candidate_wal_status_t prepare(candidate_buffer_t *pool, const buffer_sca
     p->next = (candidate_control_state_t){.backend = CANDIDATE_CONTROL_WAL,.generation = 1,.owner_epoch = pool->options.owner_epoch,
         .checkpoint_id = checkpoint + 1,.transaction_highwater = o->system.transaction_highwater,.page_highwater = o->system.page_highwater,
         .request_epoch = o->system.current_epoch,.retention_floor = o->system.retention_floor,.visible_csn = o->witness.highest_csn,
-        .outcome_root = pool->anchor.outcome_root,.allocation_root = pool->anchor.allocation_root,.catalog_root = pool->anchor.catalog_root,
+        .outcome_root = pool->anchor.outcome_root,.allocation_root = pool->anchor.allocation_root,.catalog_root = p->catalog_root,
         .gc_horizon = pool->anchor.gc_horizon};
     memcpy(p->next.uuid,pool->options.uuid,16);
     candidate_wal_cursor_t cursor = candidate_wal_cursor(pool->options.wal);
@@ -288,10 +291,11 @@ static void release_plan(candidate_buffer_t *pool, plan_t *p)
     p->dirty = NULL; p->transactions = NULL;
 }
 
-static candidate_wal_status_t run(candidate_buffer_t *pool, uint32_t max_pages, candidate_buffer_checkpoint_t *out)
+static candidate_wal_status_t run(candidate_buffer_t *pool, uint32_t max_pages, candidate_page_ref_t catalog_root,
+    candidate_buffer_checkpoint_t *out)
 {
     buffer_scan_t scan = {.target_end = 0};
-    plan_t plan = {0};
+    plan_t plan = {.catalog_root = catalog_root};
     candidate_wal_status_t status = candidate_buffer_scan(pool,&scan);
     if (status == CANDIDATE_WAL_OK) status = check_cut(pool,&scan);
     if (status == CANDIDATE_WAL_OK) status = collect(pool,&scan,&plan);
@@ -322,7 +326,43 @@ candidate_wal_status_t candidate_buffer_checkpoint(candidate_buffer_t *pool, uin
     if (pool == NULL) return CANDIDATE_WAL_INVALID;
     candidate_wal_status_t status = candidate_buffer_enter(pool,BUFFER_CHECKPOINT);
     if (status != CANDIDATE_WAL_OK) return status;
-    status = run(pool,max_pages,out);
+    status = run(pool,max_pages,pool->anchor.catalog_root,out);
+    candidate_buffer_leave(pool,BUFFER_IDLE);
+    return candidate_buffer_result(pool,status);
+}
+
+static candidate_wal_status_t check_store(candidate_buffer_t *pool, candidate_page_ref_t descriptor)
+{
+    candidate_page_ref_t current = pool->anchor.catalog_root;
+    if (descriptor.id == 0 || descriptor.generation == 0) return CANDIDATE_WAL_INVALID;
+    if (current.id != 0 && (current.id != descriptor.id || current.generation != descriptor.generation)) return CANDIDATE_WAL_INVALID;
+    candidate_store_node_t node;
+    candidate_wal_status_t status = read_root(pool,descriptor,pool->install);
+    if (status != CANDIDATE_WAL_OK) return status == CANDIDATE_WAL_UNSUPPORTED ? CANDIDATE_WAL_INVALID : status;
+    status = candidate_store_decode(pool->options.uuid,pool->install,CANDIDATE_PAGE_BYTES,&node);
+    if (status != CANDIDATE_WAL_OK || node.kind != CANDIDATE_STORE_DESCRIPTOR) return CANDIDATE_WAL_INVALID;
+    candidate_redo_options_t request = {.checkpoint = &pool->anchor,.target = pool->options.target,.memory = &pool->memory};
+    memcpy(request.uuid,pool->options.uuid,16);
+    candidate_redo_preview_t *preview = NULL;
+    status = candidate_redo_preview_open(pool->options.wal,&request,&preview);
+    candidate_store_check_t check = {.descriptor = descriptor,.load = candidate_redo_preview_load,.context = preview,.memory = &pool->memory};
+    memcpy(check.uuid,pool->options.uuid,16);
+    candidate_store_info_t info;
+    if (status == CANDIDATE_WAL_OK) status = candidate_store_check(&check,&info);
+    candidate_redo_preview_close(&preview);
+    return status;
+}
+
+candidate_wal_status_t candidate_buffer_publish_store(candidate_buffer_t *pool, candidate_page_ref_t descriptor,
+    uint32_t max_pages, candidate_buffer_checkpoint_t *out)
+{
+    if (out == NULL) return CANDIDATE_WAL_INVALID;
+    *out = (candidate_buffer_checkpoint_t){0};
+    if (pool == NULL) return CANDIDATE_WAL_INVALID;
+    candidate_wal_status_t status = candidate_buffer_enter(pool,BUFFER_CHECKPOINT);
+    if (status != CANDIDATE_WAL_OK) return status;
+    status = check_store(pool,descriptor);
+    if (status == CANDIDATE_WAL_OK) status = run(pool,max_pages,descriptor,out);
     candidate_buffer_leave(pool,BUFFER_IDLE);
     return candidate_buffer_result(pool,status);
 }

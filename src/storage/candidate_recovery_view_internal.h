@@ -19,7 +19,8 @@ typedef struct {
     const candidate_wal_witness_t *witness;
     candidate_recovery_info_t info;
     candidate_wal_status_t status;
-    uint32_t count, pending_count;
+    uint32_t count, pending_count, store_pages, descriptors;
+    candidate_page_ref_t descriptor;
     uint64_t group_lsn;
     bool allows_unfinished;
     candidate_recovery_mark_t mark;

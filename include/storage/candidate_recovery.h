@@ -12,11 +12,13 @@ typedef struct {
     const candidate_wal_io_t *io;
     const candidate_wal_memory_t *memory;
 } candidate_recovery_options_t;
+/* store_root는 검증한 유일 type3 descriptor이며 anchor.catalog_root가 0이면 아직 게시되지 않은 bootstrap 결과다. */
 typedef struct {
     candidate_control_state_t anchor;
     candidate_redo_info_t redo;
-    uint32_t live_pages, free_pages;
+    uint32_t live_pages, free_pages, store_pages;
     uint64_t versions, wal_end_lsn;
+    candidate_page_ref_t store_root;
     size_t resident_bytes;
 } candidate_recovery_info_t;
 typedef struct {

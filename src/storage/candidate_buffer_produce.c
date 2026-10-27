@@ -8,28 +8,13 @@
 
 #define BEGIN_BYTES 16u
 #define END_BYTES 24u
-#define EVENT_BYTES 40u
 #define IMAGE_BYTES (32u + CANDIDATE_PAGE_BYTES)
 #define DELTA_RUNS 128u
 #define DELTA_GAP 16u
 #define RESERVE_EVENT 16u
 
-typedef struct {
-    candidate_page_ref_t ref;
-    uint64_t previous_lsn, lsn;
-    size_t offset, bytes;
-    uint32_t runs;
-    bool is_image;
-} planned_t;
-
-typedef struct {
-    uint64_t transaction_id, previous_lsn, group_id, begin_lsn, end_lsn, event_lsn;
-    uint32_t count, events, crc;
-    uint16_t event_type;
-    size_t event_offset;
-    uint8_t event[EVENT_BYTES];
-    planned_t pages[CANDIDATE_BUFFER_GROUP_PAGES];
-} production_t;
+typedef buffer_planned_t planned_t;
+typedef buffer_production_t production_t;
 
 static void write_le(uint8_t *p, uint64_t value, unsigned size)
 {
@@ -44,9 +29,19 @@ static uint32_t page_crc(const uint8_t *p)
     return crc32c(crc,p + 56,CANDIDATE_PAGE_BYTES - 56);
 }
 
-static uint8_t *desired(candidate_buffer_t *pool, uint32_t index) { return pool->install + (size_t)index * CANDIDATE_PAGE_BYTES; }
+uint8_t *candidate_buffer_desired(candidate_buffer_t *pool, uint32_t index)
+{
+    return pool->install + (size_t)index * CANDIDATE_PAGE_BYTES;
+}
 
-static uint8_t *base_of(candidate_buffer_t *pool, uint32_t index) { return pool->scratch + (size_t)index * CANDIDATE_PAGE_BYTES; }
+uint8_t *candidate_buffer_base(candidate_buffer_t *pool, uint32_t index)
+{
+    return pool->scratch + (size_t)index * CANDIDATE_PAGE_BYTES;
+}
+
+static uint8_t *desired(candidate_buffer_t *pool, uint32_t index) { return candidate_buffer_desired(pool,index); }
+
+static uint8_t *base_of(candidate_buffer_t *pool, uint32_t index) { return candidate_buffer_base(pool,index); }
 
 static uint32_t count_runs(const uint8_t *base, const uint8_t *page, size_t *bytes)
 {
@@ -85,7 +80,6 @@ static candidate_wal_status_t plan_page(candidate_buffer_t *pool, production_t *
     candidate_wal_status_t status = candidate_page_decode_header(pool->options.uuid,next,CANDIDATE_PAGE_BYTES,&info);
     if (status == CANDIDATE_WAL_CORRUPT) status = CANDIDATE_WAL_INVALID;
     if (status != CANDIDATE_WAL_OK) return status;
-    if (info.type == 3) return CANDIDATE_WAL_UNSUPPORTED;
     if (info.location.ref.id != k->ref.id || info.location.ref.generation != k->ref.generation) return CANDIDATE_WAL_INVALID;
     buffer_page_t *page = candidate_buffer_page(pool,k->ref.id);
     if (page == NULL || page->generation != k->ref.generation) return CANDIDATE_WAL_UNSUPPORTED;
@@ -124,7 +118,7 @@ static candidate_wal_status_t check_request(candidate_buffer_t *pool, const buff
 static candidate_wal_status_t place(candidate_buffer_t *pool, production_t *p)
 {
     candidate_wal_cursor_t cursor = candidate_wal_cursor(pool->options.wal);
-    size_t staged = BEGIN_BYTES + END_BYTES + (size_t)p->events * EVENT_BYTES;
+    size_t staged = BEGIN_BYTES + END_BYTES + (size_t)p->events * BUFFER_EVENT_BYTES;
     for (uint32_t i = 0; i < p->count; i++) {
         if (p->pages[i].bytes > pool->staging_bytes - staged) return CANDIDATE_WAL_LIMIT;
         staged += p->pages[i].bytes;
@@ -133,7 +127,8 @@ static candidate_wal_status_t place(candidate_buffer_t *pool, production_t *p)
     candidate_wal_status_t status = candidate_wal_place(pool->options.wal,&cursor,BEGIN_BYTES,&p->begin_lsn);
     for (uint32_t i = 0; status == CANDIDATE_WAL_OK && i < p->count; i++)
         status = candidate_wal_place(pool->options.wal,&cursor,p->pages[i].bytes,&p->pages[i].lsn);
-    if (status == CANDIDATE_WAL_OK && p->events != 0) status = candidate_wal_place(pool->options.wal,&cursor,EVENT_BYTES,&p->event_lsn);
+    for (uint32_t i = 0; status == CANDIDATE_WAL_OK && i < p->events; i++)
+        status = candidate_wal_place(pool->options.wal,&cursor,BUFFER_EVENT_BYTES,&p->event_lsns[i]);
     uint64_t end_record = 0;
     if (status == CANDIDATE_WAL_OK) status = candidate_wal_place(pool->options.wal,&cursor,END_BYTES,&end_record);
     p->end_lsn = cursor.position;
@@ -197,9 +192,11 @@ static void encode_records(candidate_buffer_t *pool, production_t *p)
         }
         at += k->bytes;
     }
-    if (p->events == 0) return;
-    p->event_offset = at;
-    memcpy(s + at,p->event,EVENT_BYTES); write_le(s + at,p->group_id,8);
+    for (uint32_t i = 0; i < p->events; i++) {
+        p->event_offsets[i] = at;
+        memcpy(s + at,p->event[i],BUFFER_EVENT_BYTES); write_le(s + at,p->group_id,8);
+        at += BUFFER_EVENT_BYTES;
+    }
 }
 
 static uint64_t frame_bytes(size_t payload) { return (96 + payload + 7) & ~(uint64_t)7; }
@@ -229,7 +226,9 @@ static candidate_wal_record_t group_record(candidate_buffer_t *pool, const produ
         const planned_t *k = &p->pages[index - 1];
         r.type = k->is_image ? 4 : 5; r.lsn = k->lsn; r.payload = pool->staging + k->offset; r.payload_bytes = k->bytes;
     } else if (index <= p->count + p->events) {
-        r.type = p->event_type; r.lsn = p->event_lsn; r.payload = pool->staging + p->event_offset; r.payload_bytes = EVENT_BYTES;
+        uint32_t e = index - p->count - 1;
+        r.type = p->event_types[e]; r.lsn = p->event_lsns[e]; r.payload = pool->staging + p->event_offsets[e];
+        r.payload_bytes = BUFFER_EVENT_BYTES;
     } else {
         r.type = 8; r.lsn = p->end_lsn - frame_bytes(END_BYTES); r.payload = finish; r.payload_bytes = END_BYTES;
     }
@@ -261,7 +260,8 @@ static candidate_wal_status_t copy_request(candidate_buffer_t *pool, const candi
     candidate_buffer_group_t saved = *group;
     if (saved.transaction_id == 0 || saved.count == 0 || saved.count > CANDIDATE_BUFFER_GROUP_PAGES || saved.pages == NULL)
         return CANDIDATE_WAL_INVALID;
-    *p = (production_t){.transaction_id = saved.transaction_id,.previous_lsn = saved.previous_lsn,.count = saved.count};
+    memset(p,0,sizeof(*p));
+    p->transaction_id = saved.transaction_id; p->previous_lsn = saved.previous_lsn; p->count = saved.count;
     for (uint32_t i = 0; i < saved.count; i++) {
         candidate_buffer_page_t page = saved.pages[i];
         if (page.page == NULL || page.ref.id == 0 || page.ref.generation == 0) return CANDIDATE_WAL_INVALID;
@@ -274,21 +274,22 @@ static candidate_wal_status_t copy_request(candidate_buffer_t *pool, const candi
     return CANDIDATE_WAL_OK;
 }
 
-static candidate_wal_status_t refuse(candidate_buffer_t *pool, buffer_scan_t *scan, candidate_wal_status_t status)
+candidate_wal_status_t candidate_buffer_refuse(candidate_buffer_t *pool, buffer_scan_t *scan, candidate_wal_status_t status)
 {
     candidate_buffer_end_scan(scan);
     return status == CANDIDATE_WAL_CORRUPT ? candidate_buffer_fence(pool,status) : status;
 }
 
-static candidate_wal_status_t emit(candidate_buffer_t *pool, production_t *p, buffer_scan_t *scan,
+candidate_wal_status_t candidate_buffer_emit(candidate_buffer_t *pool, production_t *p, buffer_scan_t *scan,
     candidate_buffer_admission_t *out)
 {
     p->group_id = scan->observed.max_group_id + 1;
     candidate_wal_status_t status = place(pool,p);
+    if (status == CANDIDATE_WAL_OK && p->placed != NULL) status = p->placed(pool,p);
     if (status == CANDIDATE_WAL_OK) status = finalize_pages(pool,p,scan->witness);
     if (status == CANDIDATE_WAL_OK) status = check_capacity(pool,p);
     if (status == CANDIDATE_WAL_OK) status = candidate_buffer_commit_scan(pool,scan);
-    if (status != CANDIDATE_WAL_OK) return refuse(pool,scan,status);
+    if (status != CANDIDATE_WAL_OK) return candidate_buffer_refuse(pool,scan,status);
     candidate_buffer_end_scan(scan);
     encode_records(pool,p);
     buffer_cut_t intended = pool->observed.cut;
@@ -306,8 +307,8 @@ static candidate_wal_status_t produce(candidate_buffer_t *pool, production_t *p,
     candidate_wal_status_t status = candidate_buffer_scan(pool,&scan);
     if (status == CANDIDATE_WAL_OK) status = check_request(pool,&scan,p);
     for (uint32_t i = 0; status == CANDIDATE_WAL_OK && i < p->count; i++) status = plan_page(pool,p,i);
-    if (status != CANDIDATE_WAL_OK) return refuse(pool,&scan,status);
-    return emit(pool,p,&scan,out);
+    if (status != CANDIDATE_WAL_OK) return candidate_buffer_refuse(pool,&scan,status);
+    return candidate_buffer_emit(pool,p,&scan,out);
 }
 
 candidate_wal_status_t candidate_buffer_write_group(candidate_buffer_t *pool, const candidate_buffer_group_t *group,
@@ -326,7 +327,7 @@ candidate_wal_status_t candidate_buffer_write_group(candidate_buffer_t *pool, co
     return candidate_buffer_result(pool,status);
 }
 
-static candidate_wal_status_t check_system(candidate_buffer_t *pool, const buffer_scan_t *scan, uint64_t count)
+candidate_wal_status_t candidate_buffer_check_system(candidate_buffer_t *pool, const buffer_scan_t *scan, uint64_t count)
 {
     const buffer_observation_t *o = &scan->observed;
     if (has_pending_history(o)) return CANDIDATE_WAL_BUSY;
@@ -336,7 +337,7 @@ static candidate_wal_status_t check_system(candidate_buffer_t *pool, const buffe
     return check_cursor(pool,o);
 }
 
-static candidate_wal_status_t load_root(candidate_buffer_t *pool, production_t *p, uint32_t index, candidate_page_ref_t ref)
+candidate_wal_status_t candidate_buffer_load_root(candidate_buffer_t *pool, production_t *p, uint32_t index, candidate_page_ref_t ref)
 {
     const buffer_page_t *page = candidate_buffer_page(pool,ref.id);
     if (page == NULL || page->generation != ref.generation) return CANDIDATE_WAL_UNSUPPORTED;
@@ -354,8 +355,8 @@ static candidate_page_location_t root_location(const candidate_buffer_t *pool, c
 static candidate_wal_status_t plan_roots(candidate_buffer_t *pool, production_t *p, const candidate_witness_system_info_t *system,
     uint64_t next)
 {
-    candidate_wal_status_t status = load_root(pool,p,0,pool->anchor.outcome_root);
-    if (status == CANDIDATE_WAL_OK) status = load_root(pool,p,1,pool->anchor.allocation_root);
+    candidate_wal_status_t status = candidate_buffer_load_root(pool,p,0,pool->anchor.outcome_root);
+    if (status == CANDIDATE_WAL_OK) status = candidate_buffer_load_root(pool,p,1,pool->anchor.allocation_root);
     candidate_catalog_root_t catalog = {0}; candidate_allocation_root_t allocation = {0};
     if (status == CANDIDATE_WAL_OK) status = candidate_catalog_decode_root(pool->options.uuid,base_of(pool,0),CANDIDATE_PAGE_BYTES,&catalog);
     if (status == CANDIDATE_WAL_OK)
@@ -374,26 +375,31 @@ static candidate_wal_status_t plan_roots(candidate_buffer_t *pool, production_t 
     return status == CANDIDATE_WAL_CORRUPT ? CANDIDATE_WAL_INVALID : status;
 }
 
+candidate_wal_status_t candidate_buffer_force_group(candidate_buffer_t *pool, const candidate_buffer_admission_t *admission)
+{
+    const buffer_cut_t intended = pool->observed.cut;
+    if (intended.end_lsn != admission->end_lsn) return candidate_buffer_fence(pool,CANDIDATE_WAL_CORRUPT);
+    candidate_wal_status_t status = candidate_wal_force(pool->options.wal,admission->end_lsn);
+    if (status == CANDIDATE_WAL_OK) status = candidate_buffer_verify_cut(pool,&intended);
+    return status == CANDIDATE_WAL_OK ? status : candidate_buffer_fence(pool,status);
+}
+
 static candidate_wal_status_t reserve(candidate_buffer_t *pool, production_t *p, uint64_t count,
     candidate_buffer_reservation_t *out)
 {
     buffer_scan_t scan = {.target_end = 0};
     candidate_wal_status_t status = candidate_buffer_scan(pool,&scan);
     candidate_witness_system_info_t system = scan.observed.system;
-    if (status == CANDIDATE_WAL_OK) status = check_system(pool,&scan,count);
+    if (status == CANDIDATE_WAL_OK) status = candidate_buffer_check_system(pool,&scan,count);
     uint64_t next = system.transaction_highwater + count;
     if (status == CANDIDATE_WAL_OK) status = plan_roots(pool,p,&system,next);
-    if (status != CANDIDATE_WAL_OK) return refuse(pool,&scan,status);
-    write_le(p->event + 8,system.transaction_highwater,8); write_le(p->event + 16,next,8);
-    write_le(p->event + 24,system.page_highwater,8); write_le(p->event + 32,system.page_highwater,8);
+    if (status != CANDIDATE_WAL_OK) return candidate_buffer_refuse(pool,&scan,status);
+    write_le(p->event[0] + 8,system.transaction_highwater,8); write_le(p->event[0] + 16,next,8);
+    write_le(p->event[0] + 24,system.page_highwater,8); write_le(p->event[0] + 32,system.page_highwater,8);
     candidate_buffer_admission_t admission;
-    status = emit(pool,p,&scan,&admission);
+    status = candidate_buffer_emit(pool,p,&scan,&admission);
+    if (status == CANDIDATE_WAL_OK) status = candidate_buffer_force_group(pool,&admission);
     if (status != CANDIDATE_WAL_OK) return status;
-    const buffer_cut_t intended = pool->observed.cut;
-    if (intended.end_lsn != admission.end_lsn) return candidate_buffer_fence(pool,CANDIDATE_WAL_CORRUPT);
-    status = candidate_wal_force(pool->options.wal,admission.end_lsn);
-    if (status == CANDIDATE_WAL_OK) status = candidate_buffer_verify_cut(pool,&intended);
-    if (status != CANDIDATE_WAL_OK) return candidate_buffer_fence(pool,status);
     *out = (candidate_buffer_reservation_t){admission.group_id,admission.end_lsn,system.transaction_highwater,next};
     return CANDIDATE_WAL_OK;
 }
@@ -407,7 +413,9 @@ candidate_wal_status_t candidate_buffer_reserve_transactions(candidate_buffer_t 
     buffer_operation_t previous = pool->operation;
     candidate_wal_status_t status = candidate_buffer_enter(pool,BUFFER_ADMIT);
     if (status != CANDIDATE_WAL_OK) return status;
-    production_t production = {.events = 1,.event_type = RESERVE_EVENT};
+    production_t production;
+    memset(&production,0,sizeof(production));
+    production.events = 1; production.event_types[0] = RESERVE_EVENT;
     status = reserve(pool,&production,count,out);
     candidate_buffer_leave(pool,previous);
     return candidate_buffer_result(pool,status);

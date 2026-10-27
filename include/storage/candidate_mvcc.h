@@ -2,8 +2,8 @@
 #define STORAGE_CANDIDATE_MVCC_H
 
 #include "storage/candidate_recovery.h"
+#include "storage/candidate_store.h"
 
-#define CANDIDATE_MVCC_ROWS 64u
 #define CANDIDATE_MVCC_TRANSACTIONS 64u
 #define CANDIDATE_MVCC_READERS 64u
 #define CANDIDATE_MVCC_WRITES 4u
@@ -20,14 +20,7 @@ typedef enum {
 
 typedef struct { uint64_t table_id, row_id; } candidate_mvcc_key_t;
 typedef struct {
-    candidate_mvcc_key_t key;
-    candidate_page_ref_t page;
-} candidate_mvcc_row_t;
-typedef struct {
     candidate_recovery_options_t recovery;
-    const candidate_mvcc_row_t *rows;
-    uint32_t row_count;
-    candidate_page_ref_t result_page;
     uint64_t result_table_id, wal_budget_bytes;
 } candidate_mvcc_options_t;
 
@@ -72,22 +65,30 @@ typedef struct {
 } candidate_mvcc_txn_info_t;
 typedef struct {
     uint64_t owner_id, owner_epoch, request_epoch, visible_csn, last_csn;
-    uint64_t next_transaction_id, transaction_end, wal_credit_bytes, gate_entries;
+    uint64_t next_transaction_id, transaction_end, wal_credit_bytes, gate_entries, structure_groups;
     uint32_t active, readers, outcomes;
+    candidate_page_ref_t store;
     candidate_wal_status_t fence;
 } candidate_mvcc_info_t;
+typedef struct {
+    candidate_store_descriptor_t descriptor;
+    uint64_t descriptor_lsn;
+    uint32_t root_count, root_level;
+} candidate_mvcc_store_info_t;
 
 typedef struct candidate_mvcc candidate_mvcc_t;
 
 /* 기존 후보 파일에 candidate_recovery_recover의 전체 복구·게시를 실행하고 그 배타 handle을 닫을 때까지 보유한다. */
-/* 선언 행·결과 page는 이미 LIVE인 type1 page여야 하며 실패 시 *out은 NULL이고 복구 게시 효과는 남을 수 있다. */
-/* SQL/ACK·page 할당·split·GC·runtime checkpoint를 제공하지 않으며 WAL 전체 보존과 고정 한도에서 LIMIT로 거절한다. */
+/* control.catalog_root가 비면 검증된 미게시 descriptor를 채택하거나 새 store를 system group으로 만든 뒤 checkpoint로 게시한다. */
+/* 게시된 store의 결과 table과 options가 다르면 INVALID이며 실패 시 *out은 NULL이고 복구·bootstrap 효과는 남을 수 있다. */
+/* SQL/ACK·GC·runtime checkpoint를 제공하지 않으며 WAL 전체 보존과 고정 한도에서 LIMIT로 거절한다. */
 candidate_wal_status_t candidate_mvcc_open(const candidate_mvcc_options_t *options, candidate_mvcc_t **out);
 /* 계획을 복사·정규화하고 ADMIT/BEGIN을 append한다. 같은 nonce는 EXISTS, 진행 중 같은 행은 BUSY, 이후 변경 snapshot은 STALE이다. */
-/* 거절은 효과 전이며 append 뒤 실패는 owner fence와 UNKNOWN이다. */
+/* key는 양수 table/row이고 결과 table은 INVALID다. 거절은 효과 전이며 append 뒤 실패는 owner fence와 UNKNOWN이다. */
 candidate_wal_status_t candidate_mvcc_begin(candidate_mvcc_t *mvcc, const candidate_mvcc_request_t *request,
     candidate_mvcc_txn_t *out);
-/* 최신 공유 page에 기존 slot을 모두 보존한 채 자기 version과 결과 version을 한 번만 추가한다. */
+/* 필요한 leaf split·root 증가·append page 할당을 완성 txn0 system group으로 먼저 쓰고, 최신 leaf와 append page에 */
+/* 기존 항목을 보존한 채 자기 version·head와 결과 version을 한 번만 추가한다. system group은 논리 ABORT 뒤에도 남는다. */
 candidate_wal_status_t candidate_mvcc_apply(candidate_mvcc_t *mvcc, const candidate_mvcc_txn_t *txn);
 /* RESULT_CHUNK·COMMIT을 terminal 순서 CSN으로 append하고 force가 끝난 뒤에만 COMMITTED와 응답 본문을 돌려준다. */
 /* force·append 실패는 재시도 없이 UNKNOWN으로 남기고 owner를 fence한다. 끝난 handle은 0으로 지운다. */
@@ -109,6 +110,8 @@ candidate_wal_status_t candidate_mvcc_query(candidate_mvcc_t *mvcc, const candid
 candidate_wal_status_t candidate_mvcc_inspect(candidate_mvcc_t *mvcc, const candidate_mvcc_txn_t *txn,
     candidate_mvcc_txn_info_t *out);
 candidate_mvcc_info_t candidate_mvcc_info(candidate_mvcc_t *mvcc);
+/* 게시된 descriptor와 root page의 현재 상태를 pool에서 읽는다. */
+candidate_wal_status_t candidate_mvcc_store_info(candidate_mvcc_t *mvcc, candidate_mvcc_store_info_t *out);
 /* ACTIVE 거래나 열린 reader가 있으면 BUSY다. fence된 owner는 미해결 거래를 복구에 남기고 닫는다. */
 /* 닫기와 겹치는 다른 호출을 막는 것은 caller 책임이며 fork 자식의 닫기는 FORKED다. */
 candidate_wal_status_t candidate_mvcc_close(candidate_mvcc_t **mvcc);

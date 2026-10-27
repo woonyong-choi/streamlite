@@ -2,6 +2,8 @@
 
 #include <string.h>
 
+#include "storage/candidate_store.h"
+
 typedef enum { FRAME_CLEAN, FRAME_ELIGIBLE, FRAME_PINNED, FRAME_BUSY, FRAME_UNRESOLVED } eligibility_t;
 
 static uint64_t read_le(const uint8_t *p, unsigned size)
@@ -38,6 +40,19 @@ static candidate_wal_status_t check_versions(const candidate_buffer_t *pool, con
     return CANDIDATE_WAL_OK;
 }
 
+static candidate_wal_status_t check_heads(const candidate_buffer_t *pool, const uint8_t *bytes, uint64_t *required,
+    bool *is_resolved)
+{
+    candidate_store_node_t node;
+    candidate_wal_status_t status = candidate_store_decode(pool->options.uuid,bytes,CANDIDATE_PAGE_BYTES,&node);
+    if (status != CANDIDATE_WAL_OK || node.kind != CANDIDATE_STORE_LEAF) return status;
+    for (uint32_t i = 0; i < node.count; i++) {
+        uint64_t transaction_id = node.entries[i].head_transaction;
+        if (transaction_id != 0 && !require_terminal(pool,transaction_id,required)) *is_resolved = false;
+    }
+    return CANDIDATE_WAL_OK;
+}
+
 static candidate_wal_status_t classify(candidate_buffer_t *pool, uint32_t slot, uint64_t *required, eligibility_t *out)
 {
     const buffer_frame_t *f = &pool->frames[slot];
@@ -50,11 +65,11 @@ static candidate_wal_status_t classify(candidate_buffer_t *pool, uint32_t slot, 
         if (!require_terminal(pool,f->contributors[i],required)) is_resolved = false;
     const uint8_t *bytes = candidate_buffer_frame_bytes(pool,slot);
     unsigned type = (unsigned)read_le(bytes + 22,2);
-    if (type == 3 || type < 1 || type > 5) return CANDIDATE_WAL_UNSUPPORTED;
-    if (type == 1) {
-        candidate_wal_status_t status = check_versions(pool,bytes,required,&is_resolved);
-        if (status != CANDIDATE_WAL_OK) return status;
-    }
+    if (type < 1 || type > 5) return CANDIDATE_WAL_UNSUPPORTED;
+    candidate_wal_status_t status = CANDIDATE_WAL_OK;
+    if (type == 1) status = check_versions(pool,bytes,required,&is_resolved);
+    if (type == 3) status = check_heads(pool,bytes,required,&is_resolved);
+    if (status != CANDIDATE_WAL_OK) return status;
     *out = is_resolved ? FRAME_ELIGIBLE : FRAME_UNRESOLVED;
     return CANDIDATE_WAL_OK;
 }

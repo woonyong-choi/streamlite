@@ -46,7 +46,7 @@ candidate_wal_status_t candidate_publish_next(const publish_t *p, const candidat
         .checkpoint_id = checkpoint + 1,.redo_begin = redo,.transaction_highwater = p->system_transaction_highwater,
         .page_highwater = page_highwater,.request_epoch = info.current_epoch,.retention_floor = info.retention_floor,
         .visible_csn = info.visible_csn,.outcome_root = p->anchor.outcome_root,.allocation_root = p->anchor.allocation_root,
-        .gc_horizon = p->allocation_root.gc_horizon};
+        .catalog_root = p->anchor.catalog_root,.gc_horizon = p->allocation_root.gc_horizon};
     memcpy(next->uuid,p->recovery->uuid,16);
     return CANDIDATE_WAL_OK;
 }

@@ -104,7 +104,6 @@ static candidate_wal_status_t verify_anchor(void *context, const candidate_contr
 {
     candidate_recovery_t *r = context;
     if (r->is_terminal_repair) return prepare_terminal(r,anchor);
-    if (anchor->catalog_root.id != 0) return CANDIDATE_WAL_UNSUPPORTED;
     candidate_recovery_info_t info = {.anchor = *anchor};
     candidate_redo_options_t redo = {.checkpoint = anchor,.memory = &r->memory,
         .target = {r,read_target,write_target,sync_target}};

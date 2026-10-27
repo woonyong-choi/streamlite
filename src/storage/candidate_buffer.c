@@ -5,6 +5,7 @@
 #include <unistd.h>
 
 #include "storage/candidate_catalog.h"
+#include "storage/candidate_store.h"
 #include "storage/checksum.h"
 #include "candidate_recovery_internal.h"
 #include "candidate_redo_internal.h"
@@ -155,6 +156,7 @@ candidate_wal_status_t candidate_buffer_check_page(const uint8_t uuid[16], const
     candidate_wal_status_t status = candidate_page_decode_header(uuid,p,CANDIDATE_PAGE_BYTES,info);
     if (status != CANDIDATE_WAL_OK) return status;
     if (info->type == 1 || info->type == 2) return candidate_page_decode(uuid,p,CANDIDATE_PAGE_BYTES,info);
+    if (info->type == 3) { candidate_store_node_t node; return candidate_store_decode(uuid,p,CANDIDATE_PAGE_BYTES,&node); }
     unsigned kind = (unsigned)read_le(p + 70,2);
     if (info->type == 4 && kind == 1) { candidate_catalog_root_t v; return candidate_catalog_decode_root(uuid,p,CANDIDATE_PAGE_BYTES,&v); }
     if (info->type == 4 && kind == 2) { candidate_catalog_node_t v; return candidate_catalog_decode_node(uuid,p,CANDIDATE_PAGE_BYTES,&v); }
@@ -339,7 +341,7 @@ static candidate_wal_status_t start(candidate_buffer_t *pool)
     if (control.selected < 0 || control.is_poisoned) return CANDIDATE_WAL_UNSUPPORTED;
     pool->anchor = control.slots[control.selected];
     if (memcmp(pool->anchor.uuid,pool->options.uuid,16) != 0 || pool->anchor.backend != CANDIDATE_CONTROL_WAL) return CANDIDATE_WAL_UNSUPPORTED;
-    if (pool->anchor.catalog_root.id != 0 || pool->options.owner_epoch < pool->anchor.owner_epoch) return CANDIDATE_WAL_UNSUPPORTED;
+    if (pool->options.owner_epoch < pool->anchor.owner_epoch) return CANDIDATE_WAL_UNSUPPORTED;
     candidate_wal_status_t status = candidate_wal_ensure_pin(pool->options.wal);
     if (status != CANDIDATE_WAL_OK) return candidate_buffer_result(pool,status);
     buffer_scan_t scan = {.is_opening = true};
@@ -350,6 +352,7 @@ static candidate_wal_status_t start(candidate_buffer_t *pool)
     pool->fpi_floor_lsn = scan.observed.last_checkpoint_begin;
     candidate_buffer_end_scan(&scan);
     if (status == CANDIDATE_WAL_OK) status = corroborate(pool);
+    if (status == CANDIDATE_WAL_OK && pool->anchor.catalog_root.id != 0) status = candidate_buffer_prove(pool,&pool->anchor);
     buffer_scan_t again = {.target_end = 0};
     if (status == CANDIDATE_WAL_OK) status = candidate_buffer_scan(pool,&again);
     bool is_same = memcmp(&again.observed.cut,&pool->observed.cut,sizeof(pool->observed.cut)) == 0;
@@ -483,7 +486,7 @@ candidate_buffer_info_t candidate_buffer_info(const candidate_buffer_t *pool)
     if (pool == NULL) return (candidate_buffer_info_t){0};
     candidate_buffer_info_t info = {.anchor = pool->anchor,.pool_id = pool->pool_id,.baseline_lsn = pool->baseline_lsn,
         .admitted_lsn = pool->admitted_lsn,.observed_end_lsn = pool->observed.cut.end_lsn,.fpi_floor_lsn = pool->fpi_floor_lsn,
-        .last_group_id = pool->observed.max_group_id,
+        .last_group_id = pool->observed.max_group_id,.page_highwater = pool->observed.system.page_highwater,
         .groups_admitted = pool->groups_admitted,.pages_written = pool->pages_written,.data_syncs = pool->data_syncs,
         .evictions = pool->evictions,.frames = pool->frame_count,.leases = pool->active_leases,.known_pages = pool->known_pages,
         .transactions = pool->transaction_count,.frame_bytes = pool->frame_bytes,.staging_bytes = pool->staging_bytes,

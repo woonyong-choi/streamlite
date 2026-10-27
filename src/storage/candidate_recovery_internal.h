@@ -23,8 +23,9 @@ typedef struct {
     candidate_recovery_view_mode_t mode;
     uint64_t owner_epoch;
     candidate_wal_info_t cut;
-    uint32_t live_pages, free_pages;
+    uint32_t live_pages, free_pages, store_pages;
     uint64_t versions;
+    candidate_page_ref_t store_root;
     candidate_outcome_witness_info_t outcomes;
     size_t resident_bytes;
 } candidate_recovery_view_info_t;

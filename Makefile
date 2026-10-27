@@ -138,7 +138,7 @@ $(BUILD_DIR)/test_candidate_wal: $(BUILD_DIR)/tests/test_candidate_wal.o $(CANDI
 CANDIDATE_WITNESS_MODULE ?= $(BUILD_DIR)/storage/candidate_wal_witness.o
 CANDIDATE_SYSTEM_MODULE ?= $(BUILD_DIR)/storage/candidate_wal_system.o
 CANDIDATE_WITNESS_CHECKPOINT_MODULE ?= $(BUILD_DIR)/storage/candidate_wal_checkpoint.o
-CANDIDATE_WITNESS_OBJS = $(CANDIDATE_WITNESS_MODULE) $(CANDIDATE_SYSTEM_MODULE) $(BUILD_DIR)/storage/candidate_catalog.o $(BUILD_DIR)/storage/candidate_allocation_format.o $(BUILD_DIR)/storage/candidate_page.o $(CANDIDATE_WITNESS_CHECKPOINT_MODULE) $(CANDIDATE_CHECKPOINT_OBJS) $(BUILD_DIR)/storage/candidate_control_format.o $(BUILD_DIR)/storage/candidate_digest.o
+CANDIDATE_WITNESS_OBJS = $(CANDIDATE_WITNESS_MODULE) $(CANDIDATE_SYSTEM_MODULE) $(BUILD_DIR)/storage/candidate_catalog.o $(BUILD_DIR)/storage/candidate_allocation_format.o $(BUILD_DIR)/storage/candidate_page.o $(BUILD_DIR)/storage/candidate_store_format.o $(CANDIDATE_WITNESS_CHECKPOINT_MODULE) $(CANDIDATE_CHECKPOINT_OBJS) $(BUILD_DIR)/storage/candidate_control_format.o $(BUILD_DIR)/storage/candidate_digest.o
 $(BUILD_DIR)/test_candidate_wal_checkpoint: $(BUILD_DIR)/tests/test_candidate_wal_checkpoint.o $(CANDIDATE_WITNESS_OBJS) $(CANDIDATE_WAL_OBJS) $(BUILD_DIR)/storage/checksum.o
 CANDIDATE_WAL_CHECKPOINT_REPORT ?= $(BUILD_DIR)/fault/test_candidate_wal_checkpoint.json
 CANDIDATE_WAL_CHECKPOINT_ARGS ?=
@@ -151,7 +151,7 @@ $(BUILD_DIR)/test_candidate_outcome_witness: $(BUILD_DIR)/tests/test_candidate_o
 CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.json
 CANDIDATE_RECOVERY_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery.o
 CANDIDATE_RECOVERY_TERMINAL_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery_terminal.o
-CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(BUILD_DIR)/storage/candidate_recovery_physical.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o $(BUILD_DIR)/storage/candidate_wal_identity.o
+CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(BUILD_DIR)/storage/candidate_store_graph.o $(BUILD_DIR)/storage/candidate_recovery_physical.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o $(BUILD_DIR)/storage/candidate_wal_identity.o
 $(BUILD_DIR)/test_candidate_checkpoint_state: $(BUILD_DIR)/tests/test_candidate_checkpoint_state.o $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_STATE_REPORT ?= $(BUILD_DIR)/fault/test_candidate_checkpoint_state.json
@@ -259,7 +259,7 @@ test-candidate-recovery-publish-reads: $(BUILD_DIR)/test_candidate_recovery_publ
 		|| exit 1; done
 CANDIDATE_BUFFER_OBJS ?= $(BUILD_DIR)/storage/candidate_buffer.o $(BUILD_DIR)/storage/candidate_buffer_scan.o \
 	$(BUILD_DIR)/storage/candidate_buffer_flush.o $(BUILD_DIR)/storage/candidate_buffer_checkpoint.o \
-	$(BUILD_DIR)/storage/candidate_buffer_produce.o
+	$(BUILD_DIR)/storage/candidate_buffer_produce.o $(BUILD_DIR)/storage/candidate_buffer_structure.o
 CANDIDATE_BUFFER_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_buffer.o $(BUILD_DIR)/tests/test_candidate_buffer_flush.o \
 	$(BUILD_DIR)/tests/test_candidate_buffer_checkpoint.o $(BUILD_DIR)/tests/test_candidate_buffer_repair.o \
 	$(BUILD_DIR)/tests/test_candidate_buffer_source.o \
@@ -270,13 +270,14 @@ $(BUILD_DIR)/test_candidate_buffer: $(CANDIDATE_BUFFER_TEST_OBJS) $(CANDIDATE_PU
 CANDIDATE_BUFFER_TIMEOUT ?= 900
 CANDIDATE_BUFFER_REPORT ?= $(BUILD_DIR)/fault/test_candidate_buffer
 CANDIDATE_BUFFER_CASES ?= budget pinned lease shared-leaf membership terminal redirty fpi checkpoint-order checkpoint-active \
-	close-reentry stale-base append-mutate checkpoint-dangling-version swap-proof swap-control callback-complete-group
+	close-reentry stale-base append-mutate admit-dangling-version admit-dangling-allocation swap-proof swap-control callback-complete-group
 .PHONY: test-candidate-buffer
 test-candidate-buffer: $(BUILD_DIR)/test_candidate_buffer
 	@for c in $(CANDIDATE_BUFFER_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_BUFFER_TIMEOUT) --seed $(FAULT_SEED) \
 		--report $(CANDIDATE_BUFFER_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_buffer $$c || exit 1; done
 CANDIDATE_MVCC_OBJS ?= $(BUILD_DIR)/storage/candidate_mvcc.o $(BUILD_DIR)/storage/candidate_mvcc_versions.o \
-	$(BUILD_DIR)/storage/candidate_mvcc_log.o $(BUILD_DIR)/storage/candidate_mvcc_open.o
+	$(BUILD_DIR)/storage/candidate_mvcc_log.o $(BUILD_DIR)/storage/candidate_mvcc_open.o $(BUILD_DIR)/storage/candidate_mvcc_read.o \
+	$(BUILD_DIR)/storage/candidate_mvcc_tree.o $(BUILD_DIR)/storage/candidate_mvcc_structure.o $(BUILD_DIR)/storage/candidate_mvcc_apply.o
 CANDIDATE_MVCC_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_mvcc.o $(BUILD_DIR)/tests/test_candidate_mvcc_fixture.o
 $(BUILD_DIR)/test_candidate_mvcc: $(CANDIDATE_MVCC_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) $(CANDIDATE_MVCC_OBJS) \
 	$(CANDIDATE_BUFFER_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
@@ -299,6 +300,30 @@ CANDIDATE_MVCC_BOUNDARY_CASES ?= id-control id-exhaust group-credit reserve-cont
 test-candidate-mvcc-boundary: $(BUILD_DIR)/test_candidate_mvcc_boundary
 	@for c in $(CANDIDATE_MVCC_BOUNDARY_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_MVCC_TIMEOUT) --seed $(FAULT_SEED) \
 		--report $(CANDIDATE_MVCC_BOUNDARY_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_mvcc_boundary $$c || exit 1; done
+CANDIDATE_MVCC_STORE_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_mvcc_store.o $(BUILD_DIR)/tests/test_candidate_mvcc_store_codec.o \
+	$(BUILD_DIR)/tests/test_candidate_mvcc_fixture.o
+$(BUILD_DIR)/test_candidate_mvcc_store: $(CANDIDATE_MVCC_STORE_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) $(CANDIDATE_MVCC_OBJS) \
+	$(CANDIDATE_BUFFER_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_MVCC_STORE_REPORT ?= $(BUILD_DIR)/fault/test_candidate_mvcc_store
+CANDIDATE_MVCC_STORE_CASES ?= codec graph split-growth split-active split-kill split-abort bootstrap-adopt store-control \
+	split-alloc-fault split-end-fault split-force-fault split-nomem structure-refusal
+.PHONY: test-candidate-mvcc-store
+test-candidate-mvcc-store: $(BUILD_DIR)/test_candidate_mvcc_store
+	@for c in $(CANDIDATE_MVCC_STORE_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_MVCC_TIMEOUT) --seed $(FAULT_SEED) \
+		--report $(CANDIDATE_MVCC_STORE_REPORT)-$$c.json -- ./$(BUILD_DIR)/test_candidate_mvcc_store $$c || exit 1; done
+CANDIDATE_MVCC_STORE_BOUNDARY_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_mvcc_store_boundary.o \
+	$(BUILD_DIR)/tests/test_candidate_mvcc_fixture.o
+$(BUILD_DIR)/test_candidate_mvcc_store_boundary: $(CANDIDATE_MVCC_STORE_BOUNDARY_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_MVCC_OBJS) $(CANDIDATE_BUFFER_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_MVCC_STORE_BOUNDARY_REPORT ?= $(BUILD_DIR)/fault/test_candidate_mvcc_store_boundary
+CANDIDATE_MVCC_STORE_BOUNDARY_CASES ?= healthy-existing leaf-head-identity descriptor-child-generation version-row-identity
+.PHONY: test-candidate-mvcc-store-boundary
+test-candidate-mvcc-store-boundary: $(BUILD_DIR)/test_candidate_mvcc_store_boundary
+	@for c in $(CANDIDATE_MVCC_STORE_BOUNDARY_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_MVCC_TIMEOUT) \
+		--seed $(FAULT_SEED) --report $(CANDIDATE_MVCC_STORE_BOUNDARY_REPORT)-$$c.json -- \
+		./$(BUILD_DIR)/test_candidate_mvcc_store_boundary $$c || exit 1; done
 .PHONY: test-candidate-outcome-witness
 test-candidate-outcome-witness: $(BUILD_DIR)/test_candidate_outcome_witness
 	$(TEST_RUNNER) --report $(CANDIDATE_OUTCOME_REPORT) -- ./$(BUILD_DIR)/test_candidate_outcome_witness

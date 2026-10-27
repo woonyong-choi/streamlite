@@ -4,6 +4,7 @@
 
 #include "storage/candidate_allocation.h"
 #include "storage/candidate_catalog.h"
+#include "storage/candidate_store.h"
 
 #define SYSTEM_GROUP_LIMIT 64u
 typedef struct {
@@ -93,6 +94,7 @@ candidate_wal_status_t candidate_system_image(candidate_wal_system_t *s, const c
     if (status != CANDIDATE_WAL_OK) return status;
     const uint8_t *bytes = r->payload + 32;
     if (info.type <= 2) status = candidate_page_decode(s->uuid, bytes, 8192, &info);
+    else if (info.type == 3) { candidate_store_node_t node; status = candidate_store_decode(s->uuid, bytes, 8192, &node); }
     else if (info.body_bytes < 8) status = CANDIDATE_WAL_CORRUPT;
     else if (info.type == 4) {
         if (read_le(bytes + 70, 2) == 1) { candidate_catalog_root_t root; status = candidate_catalog_decode_root(s->uuid, bytes, 8192, &root); }

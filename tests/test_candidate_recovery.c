@@ -227,7 +227,7 @@ static void normal_and_rejections(void)
     for (unsigned mode = 0; mode <= 9; mode++) {
         fixture_t f = fixture(mode,1); candidate_recovery_options_t request = options(&f); candidate_recovery_t *r = (void *)1;
         candidate_wal_status_t status = candidate_recovery_open(&request,&r);
-        candidate_wal_status_t expected = mode == 0 ? CANDIDATE_WAL_OK : mode == 7 ? CANDIDATE_WAL_UNSUPPORTED : mode == 9 ? CANDIDATE_WAL_STALE : CANDIDATE_WAL_CORRUPT;
+        candidate_wal_status_t expected = mode == 0 ? CANDIDATE_WAL_OK : mode == 9 ? CANDIDATE_WAL_STALE : CANDIDATE_WAL_CORRUPT;
         printf("STATUS mode=%u actual=%u expected=%u\n",mode,status,expected); CHECK(status == expected);
         if (status == CANDIDATE_WAL_OK) {
             check_result(r,1); candidate_recovery_info_t info = candidate_recovery_info(r);
@@ -413,18 +413,19 @@ static void unfinished_and_tail(void)
 
 static void control_fallback(void)
 {
-    for (unsigned unsupported = 0; unsupported < 2; unsupported++) {
+    for (unsigned dangling = 0; dangling < 2; dangling++) {
         fixture_t f = fixture(0,1); candidate_recovery_options_t request = options(&f); candidate_recovery_t *r = NULL;
         OK(candidate_recovery_open(&request,&r)); OK(candidate_recovery_close(&r)); writes = 0;
         candidate_control_options_t co = {.backend = 1,.verify = setup_verify}; memcpy(co.uuid,uuid,16); candidate_control_t *control = NULL;
         OK(candidate_control_open(f.control,&co,&control)); candidate_control_state_t next = f.anchor; next.checkpoint_id = 2;
-        if (unsupported != 0) next.catalog_root = (candidate_page_ref_t){1,1};
+        if (dangling != 0) next.catalog_root = (candidate_page_ref_t){1,1};
         OK(candidate_control_publish(control,&next)); OK(candidate_control_close(&control));
-        CHECK(candidate_recovery_open(&request,&r) == (unsupported == 0 ? CANDIDATE_WAL_OK : CANDIDATE_WAL_UNSUPPORTED));
-        if (unsupported == 0) {
-            CHECK(candidate_recovery_info(r).anchor.checkpoint_id == 1); check_result(r,1); OK(candidate_recovery_close(&r));
-        } else CHECK(r == NULL);
-        CHECK(writes == 0); printf("FALLBACK %s unsupported=%u writes=%u\n",f.wal,unsupported,writes);
+        OK(candidate_recovery_open(&request,&r));
+        candidate_recovery_info_t info = candidate_recovery_info(r);
+        CHECK(info.anchor.checkpoint_id == 1 && info.anchor.catalog_root.id == 0 && info.store_root.id == 0);
+        check_result(r,1); OK(candidate_recovery_close(&r));
+        CHECK(writes == 0); printf("FALLBACK %s dangling_catalog_root=%u selected=%llu writes=%u\n",f.wal,dangling,
+            (unsigned long long)info.anchor.checkpoint_id,writes);
     }
 }
 

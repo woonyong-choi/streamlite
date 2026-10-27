@@ -14,6 +14,9 @@
 #define CHECK(c) do { checks++; if (!(c)) { fprintf(stderr, "%s:%d: %s\n", __func__, __LINE__, #c); exit(1); } } while (0)
 #define OK(c) CHECK((c) == CANDIDATE_WAL_OK)
 #define FX_GROUP_DEPENDENCIES 256u
+#ifndef TEST_DIR_PATH
+#define TEST_DIR_PATH "build"
+#endif
 
 extern unsigned checks;
 extern const uint8_t fx_uuid[16];

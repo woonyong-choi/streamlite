@@ -270,39 +270,63 @@ static void expect_unpublished(bf_t *b, uint64_t old, candidate_wal_status_t sta
     expect_rejected_history(b);
 }
 
-static void case_checkpoint_dangling_version(void)
+static void case_admit_dangling_version(void)
 {
-    bf_t b; bf_boot(&b,"checkpoint-dangling-version",4);
+    bf_t b; bf_boot(&b,"admit-dangling-version",4);
     b.is_weak_verifier = true;
     uint64_t old = selected_id(&b), bogus = candidate_buffer_info(b.pool).anchor.page_highwater + 50;
-    fx_txn_t t; bf_begin(&b,&t); candidate_buffer_admission_t a;
+    fx_txn_t t; bf_begin(&b,&t); candidate_buffer_admission_t a, none; memset(&none,0,sizeof(none));
     uint8_t before_page[CANDIDATE_PAGE_BYTES], pages[1][CANDIDATE_PAGE_BYTES];
     bf_copy(&b,b.pages[1],before_page);
     bf_with_previous(before_page,t.id,51,(candidate_version_ref_t){{bogus,1},0,1},pages[0]);
-    OK(candidate_buffer_admit(b.pool,bf_external_pages(&b,&t,&b.pages[1],pages,1,true),&a));
-    bf_commit(&b,&t);
+    uint64_t end = bf_external_pages(&b,&t,&b.pages[1],pages,1,true);
+    uint8_t control[32], data[32], now[32]; fx_sha256_file(b.fx->control,control); fx_sha256_file(b.fx->data,data);
     bf_trace(&b,true);
-    candidate_buffer_checkpoint_t c;
-    candidate_wal_status_t status = candidate_buffer_checkpoint(b.pool,4,&c);
+    memset(&a,0xa5,sizeof(a));
+    candidate_wal_status_t status = candidate_buffer_admit(b.pool,end,&a);
+    CHECK(memcmp(&a,&none,sizeof(a)) == 0 && candidate_buffer_info(b.pool).is_fenced);
+    CHECK(b.counts[EV_DATA_WRITE] == 0 && b.counts[EV_CONTROL_WRITE] == 0);
+    fx_sha256_file(b.fx->control,now); CHECK(memcmp(now,control,32) == 0);
+    fx_sha256_file(b.fx->data,now); CHECK(memcmp(now,data,32) == 0);
+    bf_commit(&b,&t);
+    candidate_buffer_checkpoint_t c = {.dirty_entries = 9,.remaining_dirty = 9,.end_lsn = 9};
+    EXPECT(candidate_buffer_checkpoint(b.pool,4,&c),CANDIDATE_WAL_POISONED);
     bf_trace(&b,false);
+    CHECK(c.anchor.checkpoint_id == 0 && c.dirty_entries == 0 && c.remaining_dirty == 0 && c.end_lsn == 0 && c.writeback.written == 0);
+    CHECK(b.counts[EV_DATA_WRITE] == 0 && b.counts[EV_CONTROL_WRITE] == 0);
+    fx_sha256_file(b.fx->control,now); CHECK(memcmp(now,control,32) == 0);
+    fx_sha256_file(b.fx->data,now); CHECK(memcmp(now,data,32) == 0);
+    printf("ADMIT-DANGLING-VERSION data_writes=%u control_writes=%u\n",b.counts[EV_DATA_WRITE],b.counts[EV_CONTROL_WRITE]);
     expect_unpublished(&b,old,status);
-    bf_report(&b,"checkpoint-dangling-version",status);
+    bf_report(&b,"admit-dangling-version",status);
     bf_free(&b);
 }
 
-static void case_checkpoint_dangling_allocation(void)
+static void case_admit_dangling_allocation(void)
 {
-    bf_t b; bf_boot(&b,"checkpoint-dangling-allocation",4);
+    bf_t b; bf_boot(&b,"admit-dangling-allocation",4);
     b.is_weak_verifier = true;
     uint64_t old = selected_id(&b);
-    candidate_buffer_admission_t a;
-    OK(candidate_buffer_admit(b.pool,bf_alloc_node_ref(&b),&a));
+    candidate_buffer_admission_t a, none; memset(&none,0,sizeof(none));
+    uint64_t end = bf_alloc_node_ref(&b);
+    uint8_t control[32], data[32], now[32]; fx_sha256_file(b.fx->control,control); fx_sha256_file(b.fx->data,data);
     bf_trace(&b,true);
-    candidate_buffer_checkpoint_t c;
-    candidate_wal_status_t status = candidate_buffer_checkpoint(b.pool,4,&c);
+    memset(&a,0xa5,sizeof(a));
+    candidate_wal_status_t status = candidate_buffer_admit(b.pool,end,&a);
+    CHECK(memcmp(&a,&none,sizeof(a)) == 0 && candidate_buffer_info(b.pool).is_fenced);
+    CHECK(b.counts[EV_DATA_WRITE] == 0 && b.counts[EV_CONTROL_WRITE] == 0);
+    fx_sha256_file(b.fx->control,now); CHECK(memcmp(now,control,32) == 0);
+    fx_sha256_file(b.fx->data,now); CHECK(memcmp(now,data,32) == 0);
+    candidate_buffer_checkpoint_t c = {.dirty_entries = 9,.remaining_dirty = 9,.end_lsn = 9};
+    EXPECT(candidate_buffer_checkpoint(b.pool,4,&c),CANDIDATE_WAL_POISONED);
     bf_trace(&b,false);
+    CHECK(c.anchor.checkpoint_id == 0 && c.dirty_entries == 0 && c.remaining_dirty == 0 && c.end_lsn == 0 && c.writeback.written == 0);
+    CHECK(b.counts[EV_DATA_WRITE] == 0 && b.counts[EV_CONTROL_WRITE] == 0);
+    fx_sha256_file(b.fx->control,now); CHECK(memcmp(now,control,32) == 0);
+    fx_sha256_file(b.fx->data,now); CHECK(memcmp(now,data,32) == 0);
+    printf("ADMIT-DANGLING-ALLOCATION data_writes=%u control_writes=%u\n",b.counts[EV_DATA_WRITE],b.counts[EV_CONTROL_WRITE]);
     expect_unpublished(&b,old,status);
-    bf_report(&b,"checkpoint-dangling-allocation",status);
+    bf_report(&b,"admit-dangling-allocation",status);
     bf_free(&b);
 }
 
@@ -361,7 +385,7 @@ const bf_case_t BF_REPAIR_CASES[] = {
     {"new-page-external",case_new_page_external},{"new-page-producer-direct",case_new_page_producer_direct},
     {"new-page-external-direct",case_new_page_external_direct},{"append-mutate",case_append_mutate},{"append-correct",case_append_correct},
     {"checkpoint-mutate-chunk",case_checkpoint_mutate_chunk},{"checkpoint-mutate-end",case_checkpoint_mutate_end},
-    {"checkpoint-dirty-root",case_checkpoint_dirty_root},{"checkpoint-dangling-version",case_checkpoint_dangling_version},
-    {"checkpoint-dangling-allocation",case_checkpoint_dangling_allocation},{"force-read-error",case_force_read_error},
+    {"checkpoint-dirty-root",case_checkpoint_dirty_root},{"admit-dangling-version",case_admit_dangling_version},
+    {"admit-dangling-allocation",case_admit_dangling_allocation},{"force-read-error",case_force_read_error},
     {"force-read-eof",case_force_read_eof},{"pinned-wal",case_pinned_wal},{NULL,NULL}
 };

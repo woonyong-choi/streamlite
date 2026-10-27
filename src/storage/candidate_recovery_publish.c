@@ -15,7 +15,6 @@ static candidate_catalog_load_t catalog_load(candidate_recovery_t *r, const cand
 
 static candidate_wal_status_t preview_anchor(candidate_recovery_t *r, const candidate_control_state_t *anchor)
 {
-    if (anchor->catalog_root.id != 0) return CANDIDATE_WAL_UNSUPPORTED;
     candidate_recovery_info_t info = {.anchor = *anchor};
     candidate_redo_options_t redo = {.checkpoint = anchor,.target = candidate_recovery_target(r),.memory = &r->memory};
     memcpy(redo.uuid,r->uuid,16);

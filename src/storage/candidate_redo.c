@@ -6,6 +6,7 @@
 #include "storage/candidate_allocation.h"
 #include "storage/candidate_catalog.h"
 #include "storage/candidate_digest.h"
+#include "storage/candidate_store.h"
 #include "storage/candidate_wal_witness.h"
 #include "storage/checksum.h"
 #include "candidate_redo_state_internal.h"
@@ -47,6 +48,7 @@ static candidate_wal_status_t check_page(const uint8_t uuid[16], const uint8_t *
     candidate_wal_status_t status=candidate_page_decode_header(uuid,p,8192,info);
     if (status!=CANDIDATE_WAL_OK) return status;
     if (info->type==1 || info->type==2) return candidate_page_decode(uuid,p,8192,info);
+    if (info->type==3) { candidate_store_node_t node; return candidate_store_decode(uuid,p,8192,&node); }
     unsigned kind=(unsigned)read_le(p+70,2);
     if (info->type==4) {
         if (kind==1) { candidate_catalog_root_t value; return candidate_catalog_decode_root(uuid,p,8192,&value); }

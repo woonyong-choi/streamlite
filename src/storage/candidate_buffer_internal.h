@@ -87,6 +87,31 @@ typedef struct {
 
 typedef enum { BUFFER_IDLE, BUFFER_ADMIT, BUFFER_PIN, BUFFER_FLUSH, BUFFER_CHECKPOINT, BUFFER_CLOSE } buffer_operation_t;
 
+#define BUFFER_EVENT_BYTES 40u
+#define BUFFER_GROUP_EVENTS (CANDIDATE_WITNESS_RECORDS - CANDIDATE_BUFFER_GROUP_PAGES - 2u)
+
+typedef struct {
+    candidate_page_ref_t ref;
+    uint64_t previous_lsn, lsn;
+    size_t offset, bytes;
+    uint32_t runs;
+    bool is_image;
+} buffer_planned_t;
+
+typedef struct buffer_production buffer_production_t;
+typedef candidate_wal_status_t (*buffer_placed_t)(struct candidate_buffer *pool, buffer_production_t *production);
+struct buffer_production {
+    uint64_t transaction_id, previous_lsn, group_id, begin_lsn, end_lsn;
+    uint32_t count, events, crc;
+    uint16_t event_types[BUFFER_GROUP_EVENTS];
+    uint64_t event_lsns[BUFFER_GROUP_EVENTS];
+    size_t event_offsets[BUFFER_GROUP_EVENTS];
+    uint8_t event[BUFFER_GROUP_EVENTS][BUFFER_EVENT_BYTES];
+    buffer_planned_t pages[CANDIDATE_BUFFER_GROUP_PAGES];
+    buffer_placed_t placed;
+    void *context;
+};
+
 struct candidate_buffer {
     candidate_buffer_options_t options;
     buffer_meter_t meter;
@@ -148,6 +173,21 @@ candidate_wal_status_t candidate_buffer_check_versions(const uint8_t uuid[16], c
 candidate_wal_status_t candidate_buffer_check_capacity(candidate_buffer_t *pool, buffer_capture_t *capture);
 candidate_wal_status_t candidate_buffer_install(candidate_buffer_t *pool, const buffer_scan_t *scan);
 candidate_wal_status_t candidate_buffer_admit_group(candidate_buffer_t *pool, uint64_t end_lsn, candidate_buffer_admission_t *out);
+
+uint8_t *candidate_buffer_desired(candidate_buffer_t *pool, uint32_t index);
+uint8_t *candidate_buffer_base(candidate_buffer_t *pool, uint32_t index);
+/* system group 공통 전제와 거래 ID 증가량 count의 한도를 append 전에 검사한다. */
+candidate_wal_status_t candidate_buffer_check_system(candidate_buffer_t *pool, const buffer_scan_t *scan, uint64_t count);
+/* 등록된 현재 page를 index의 IMAGE 계획과 base에 둔다. */
+candidate_wal_status_t candidate_buffer_load_root(candidate_buffer_t *pool, buffer_production_t *production, uint32_t index,
+    candidate_page_ref_t ref);
+/* 실패 시 scan을 닫고 CORRUPT만 pool을 차단한다. */
+candidate_wal_status_t candidate_buffer_refuse(candidate_buffer_t *pool, buffer_scan_t *scan, candidate_wal_status_t status);
+/* 배치·완성·용량 검사 뒤 의도 cut을 묶고 append·admit하며 scan을 닫는다. append 뒤 실패는 pool 차단이다. */
+candidate_wal_status_t candidate_buffer_emit(candidate_buffer_t *pool, buffer_production_t *production, buffer_scan_t *scan,
+    candidate_buffer_admission_t *out);
+/* 받은 system group 끝까지 force하고 의도 cut을 다시 대조하며 실패는 pool 차단이다. */
+candidate_wal_status_t candidate_buffer_force_group(candidate_buffer_t *pool, const candidate_buffer_admission_t *admission);
 
 candidate_wal_status_t candidate_buffer_prepare_writeback(candidate_buffer_t *pool, uint32_t max_pages, buffer_batch_t *batch);
 void candidate_buffer_release_writeback(candidate_buffer_t *pool, buffer_batch_t *batch);

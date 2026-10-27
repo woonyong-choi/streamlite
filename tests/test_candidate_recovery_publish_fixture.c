@@ -33,7 +33,7 @@ uint64_t fx_position(const fx_t *fx) { return candidate_wal_info(fx->w).valid_en
 fx_t *fx_create(const char *name, uint64_t owner)
 {
     fx_t *fx = calloc(1,sizeof(*fx)); CHECK(fx != NULL);
-    CHECK(snprintf(fx->wal,sizeof(fx->wal),"build/%s",name) > 0);
+    CHECK(snprintf(fx->wal,sizeof(fx->wal),"%s/%s",TEST_DIR_PATH,name) > 0);
     CHECK(snprintf(fx->control,sizeof(fx->control),"%s.control",fx->wal) > 0);
     CHECK(snprintf(fx->data,sizeof(fx->data),"%s.pages",fx->wal) > 0);
     candidate_wal_options_t options = {.owner_epoch = owner}; memcpy(options.uuid,fx_uuid,16);

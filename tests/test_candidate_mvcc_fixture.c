@@ -15,6 +15,10 @@ static mf_fsync_hook_t fsync_hook;
 static void *fsync_context;
 static mf_pwrite_hook_t pwrite_hook;
 static void *pwrite_context;
+static mf_pwrite_hook_t pwrite_fault;
+static void *pwrite_fault_context;
+static mf_fsync_hook_t fsync_fault;
+static void *fsync_fault_context;
 
 static uint64_t read_le(const uint8_t *p, unsigned size)
 {
@@ -31,18 +35,34 @@ static bool is_armed(unsigned *counter, unsigned fail_at)
 
 static ssize_t hook_pread(int fd, void *bytes, size_t size, off_t offset) { return pread(fd,bytes,size,offset); }
 
+static bool is_pwrite_fault(const void *bytes, size_t size)
+{
+    mf_pwrite_hook_t predicate = pwrite_fault;
+    if (predicate == NULL || !predicate(pwrite_fault_context,bytes,size)) return false;
+    pwrite_fault = NULL;
+    return true;
+}
+
 static ssize_t hook_pwrite(int fd, const void *bytes, size_t size, off_t offset)
 {
-    if (is_armed(&mf_faults.pwrites,mf_faults.fail_pwrite_at)) { errno = EIO; return -1; }
+    if (is_armed(&mf_faults.pwrites,mf_faults.fail_pwrite_at) || is_pwrite_fault(bytes,size)) { errno = EIO; return -1; }
     ssize_t written = pwrite(fd,bytes,size,offset);
     mf_pwrite_hook_t hook = pwrite_hook;
     if (written == (ssize_t)size && hook != NULL && hook(pwrite_context,bytes,size)) pwrite_hook = NULL;
     return written;
 }
 
+static bool is_fsync_fault(void)
+{
+    mf_fsync_hook_t predicate = fsync_fault;
+    if (predicate == NULL || !predicate(fsync_fault_context)) return false;
+    fsync_fault = NULL;
+    return true;
+}
+
 static int hook_fsync(int fd)
 {
-    if (is_armed(&mf_faults.fsyncs,mf_faults.fail_fsync_at)) { errno = EIO; return -1; }
+    if (is_armed(&mf_faults.fsyncs,mf_faults.fail_fsync_at) || is_fsync_fault()) { errno = EIO; return -1; }
     mf_fsync_hook_t hook = fsync_hook;
     if (hook != NULL && hook(fsync_context)) fsync_hook = NULL;
     return fsync(fd);
@@ -69,33 +89,42 @@ void mf_arm_allocation(unsigned after)
 {
     mf_faults.fail_allocation_at = __atomic_load_n(&mf_faults.allocations,__ATOMIC_RELAXED) + after;
 }
-void mf_disarm(void) { mf_faults.fail_fsync_at = 0; mf_faults.fail_pwrite_at = 0; mf_faults.fail_allocation_at = 0; }
+void mf_disarm(void)
+{
+    mf_faults.fail_fsync_at = 0; mf_faults.fail_pwrite_at = 0; mf_faults.fail_allocation_at = 0;
+    pwrite_fault = NULL; fsync_fault = NULL;
+}
 void mf_arm_fsync_hook(mf_fsync_hook_t hook, void *context) { fsync_context = context; fsync_hook = hook; }
 void mf_arm_pwrite_hook(mf_pwrite_hook_t hook, void *context) { pwrite_context = context; pwrite_hook = hook; }
+void mf_arm_pwrite_fault(mf_pwrite_hook_t predicate, void *context) { pwrite_fault_context = context; pwrite_fault = predicate; }
+void mf_arm_fsync_fault(mf_fsync_hook_t predicate, void *context) { fsync_fault_context = context; fsync_fault = predicate; }
 
 void mf_read_page(const mf_t *f, uint64_t id, uint8_t out[CANDIDATE_PAGE_BYTES])
 {
-    int fd = open(f->built.fx->data,O_RDONLY); CHECK(fd >= 0);
+    int fd = open(TEST_DB_PATH(f),O_RDONLY); CHECK(fd >= 0);
     memset(out,0,CANDIDATE_PAGE_BYTES);
     ssize_t n = pread(fd,out,CANDIDATE_PAGE_BYTES,(off_t)((id - 1) * CANDIDATE_PAGE_BYTES));
     CHECK(close(fd) == 0);
     CHECK(n == 0 || n == CANDIDATE_PAGE_BYTES);
 }
 
-static void find_pages(mf_t *f)
+static void seed(mf_t *f)
 {
-    unsigned found = 0;
-    for (uint64_t id = 1; id <= f->built.anchor.page_highwater && found < 2; id++) {
-        uint8_t page[CANDIDATE_PAGE_BYTES]; mf_read_page(f,id,page);
-        if (read_le(page + 22,2) != 1) continue;
-        candidate_page_ref_t ref = {id,read_le(page + 32,8)};
-        if (found++ == 0) f->row_page = ref; else f->result_page = ref;
-    }
-    CHECK(found == 2);
+    candidate_mvcc_t *m = NULL; EXPECT(mf_open(f,&m),CANDIDATE_WAL_OK);
+    candidate_mvcc_write_t writes[2] = {mf_write(0,f->initial[0],MF_PAYLOAD),mf_write(1,f->initial[1],MF_PAYLOAD)};
+    candidate_mvcc_request_t r = mf_request(0x5eed,writes,2);
+    candidate_mvcc_txn_t t; EXPECT(candidate_mvcc_begin(m,&r,&t),CANDIDATE_WAL_OK);
+    EXPECT(candidate_mvcc_apply(m,&t),CANDIDATE_WAL_OK);
+    candidate_mvcc_txn_info_t info; EXPECT(candidate_mvcc_inspect(m,&t,&info),CANDIDATE_WAL_OK);
+    candidate_mvcc_response_t response; EXPECT(candidate_mvcc_commit(m,&t,&response),CANDIDATE_WAL_OK);
+    CHECK(response.state == CANDIDATE_MVCC_COMMITTED && response.affected_rows == 2);
+    f->seed_transaction = info.transaction_id; f->seed_versions[0] = info.versions[0]; f->seed_versions[1] = info.versions[1];
+    f->is_seeded = true;
+    EXPECT(candidate_mvcc_close(&m),CANDIDATE_WAL_OK);
 }
 
 static void boot(mf_t *f, const char *prefix, const char *tag, void (*before_checkpoint)(void *, void *), void *context,
-    uint64_t txn_highwater)
+    uint64_t txn_highwater, bool should_seed)
 {
     static const req_t req[5] = {{REQ_COMMIT,STORE_NONE,1,3000,false,true},{REQ_COMMIT,STORE_NONE,1,3000,false,true},
         {REQ_COMMIT,STORE_NONE,1,MF_PAYLOAD,false,true},{REQ_COMMIT,STORE_NONE,1,MF_PAYLOAD,false,true},
@@ -105,32 +134,32 @@ static void boot(mf_t *f, const char *prefix, const char *tag, void (*before_che
     scen_t s = {.name = f->name,.requests = 5,.req = req,.before_checkpoint = before_checkpoint,.context = context,
         .txn_highwater = txn_highwater};
     f->built = scen_build(&s); scen_finish(&f->built);
-    find_pages(f);
-    for (unsigned i = 0; i < MF_ROWS; i++) f->rows[i] = (candidate_mvcc_row_t){mf_key(i),f->row_page};
     fx_payload(3,MF_PAYLOAD,f->initial[0]); fx_payload(4,MF_PAYLOAD,f->initial[1]);
     f->next_owner = 8;
-    printf("FIXTURE %s prefix=%s row_page=%" PRIu64 "/%" PRIu64 " result_page=%" PRIu64 "/%" PRIu64 "\n",tag,f->built.fx->wal,
-        f->row_page.id,f->row_page.generation,f->result_page.id,f->result_page.generation);
+    if (should_seed) seed(f);
+    printf("FIXTURE %s prefix=%s seeded=%d seed_txn=%" PRIu64 " versions=%" PRIu64 ":%u,%" PRIu64 ":%u\n",tag,f->built.fx->wal,
+        f->is_seeded,f->seed_transaction,f->seed_versions[0].page.id,f->seed_versions[0].slot,f->seed_versions[1].page.id,
+        f->seed_versions[1].slot);
 }
 
-void mf_boot(mf_t *f, const char *tag) { boot(f,"task25a",tag,NULL,NULL,0); }
+void mf_boot(mf_t *f, const char *tag) { boot(f,"task25b",tag,NULL,NULL,0,true); }
 
 void mf_boot_boundary(mf_t *f, const char *tag, void (*before_checkpoint)(void *, void *), void *context)
 {
-    boot(f,"task25a-boundary",tag,before_checkpoint,context,0);
+    boot(f,"task25b-boundary",tag,before_checkpoint,context,0,before_checkpoint == NULL);
 }
 
 void mf_boot_highwater(mf_t *f, const char *tag, uint64_t txn_highwater)
 {
-    boot(f,"task25a-boundary",tag,NULL,NULL,txn_highwater);
+    boot(f,"task25b-boundary",tag,NULL,NULL,txn_highwater,false);
 }
 
 void mf_free(mf_t *f) { scen_free(&f->built); }
 
 candidate_wal_status_t mf_open(mf_t *f, candidate_mvcc_t **out)
 {
-    candidate_mvcc_options_t o = {.recovery = fx_options(f->built.fx,f->next_owner++),.rows = f->rows,.row_count = MF_ROWS,
-        .result_page = f->result_page,.result_table_id = 900,.wal_budget_bytes = f->wal_budget_bytes};
+    candidate_mvcc_options_t o = {.recovery = fx_options(f->built.fx,f->next_owner++),.result_table_id = MF_RESULT_TABLE,
+        .wal_budget_bytes = f->wal_budget_bytes};
     o.recovery.io = &HOOKS; o.recovery.memory = &MEMORY;
     candidate_wal_status_t status = candidate_mvcc_open(&o,out);
     printf("OPEN owner=%" PRIu64 " status=%s\n",o.recovery.owner_epoch,mf_status(status));
@@ -156,9 +185,16 @@ candidate_mvcc_request_t mf_request(uint64_t nonce, const candidate_mvcc_write_t
     return r;
 }
 
-void mf_fill(uint8_t seed, uint8_t out[MF_PAYLOAD])
+void mf_fill(uint8_t seed_byte, uint8_t out[MF_PAYLOAD])
 {
-    for (unsigned i = 0; i < MF_PAYLOAD; i++) out[i] = (uint8_t)(seed * 17 + i);
+    for (unsigned i = 0; i < MF_PAYLOAD; i++) out[i] = (uint8_t)(seed_byte * 17 + i);
+}
+
+void mf_expect_initial(const mf_t *f, const candidate_mvcc_value_t *v, unsigned row)
+{
+    if (!f->is_seeded) { CHECK(!v->is_found); return; }
+    CHECK(v->is_found && v->size == MF_PAYLOAD && memcmp(v->bytes,f->initial[row],MF_PAYLOAD) == 0);
+    CHECK(v->transaction_id == f->seed_transaction);
 }
 
 static uint8_t *read_segment(const mf_t *f, size_t *size)
@@ -173,10 +209,22 @@ static uint8_t *read_segment(const mf_t *f, size_t *size)
     return bytes;
 }
 
+static uint16_t image_type(const candidate_wal_record_t *r)
+{
+    if (r->type != 4 || r->payload_bytes < 32 + 24) return 0;
+    return (uint16_t)read_le(r->payload + 32 + 22,2);
+}
+
 static void observe_record(const candidate_wal_record_t *r, uint64_t end, uint64_t transaction_id, mf_chain_t *chain, mf_wal_t *wal)
 {
     wal->records++; wal->end_lsn = end;
     if (r->transaction_id == 0 && r->type == 16) { wal->reserves++; wal->highwater = read_le(r->payload + 16,8); }
+    if (r->transaction_id == 0 && r->type == 3) { wal->group_allocations = 0; wal->has_group_store = false; }
+    if (r->transaction_id == 0 && r->type == 4 && image_type(r) == 3) wal->has_group_store = true;
+    if (r->transaction_id == 0 && r->type == 6) wal->group_allocations++;
+    if (r->transaction_id == 0 && r->type == 8 && wal->has_group_store) {
+        wal->structures++; wal->allocations += wal->group_allocations;
+    }
     if (r->type == 10) wal->commits++;
     if (r->type == 11) wal->aborts++;
     if (r->transaction_id != transaction_id || chain->count == MF_RECORDS) return;
@@ -212,7 +260,7 @@ unsigned mf_scan_records(const mf_t *f, uint64_t from_lsn, mf_record_t *out, uns
         if (r.lsn >= from_lsn) {
             CHECK(count < capacity);
             mf_record_t *o = &out[count++];
-            *o = (mf_record_t){.type = r.type,.lsn = r.lsn,.end = at + total,.transaction_id = r.transaction_id};
+            *o = (mf_record_t){.type = r.type,.page_type = image_type(&r),.lsn = r.lsn,.end = at + total,.transaction_id = r.transaction_id};
             for (unsigned i = 0; i < 3 && (size_t)(i + 1) * 8 <= r.payload_bytes; i++) o->words[i] = read_le(r.payload + i * 8,8);
         }
         at += total;
@@ -247,11 +295,15 @@ unsigned mf_slots(const uint8_t page[CANDIDATE_PAGE_BYTES], mf_slot_t *out, unsi
     return count;
 }
 
-const mf_slot_t *mf_find_slot(const mf_slot_t *slots, unsigned count, uint64_t transaction_id, uint64_t table_id)
+void mf_read_version(const mf_t *f, candidate_version_ref_t ref, uint8_t page[CANDIDATE_PAGE_BYTES], mf_slot_t *out)
 {
-    for (unsigned i = 0; i < count; i++)
-        if (slots[i].transaction_id == transaction_id && slots[i].table_id == table_id) return &slots[i];
-    return NULL;
+    static mf_slot_t slots[MF_SLOTS];
+    CHECK(ref.page.id != 0);
+    mf_read_page(f,ref.page.id,page);
+    CHECK(read_le(page + 24,8) == ref.page.id && read_le(page + 32,8) == ref.page.generation);
+    unsigned count = mf_slots(page,slots,MF_SLOTS);
+    CHECK(ref.slot < count && slots[ref.slot].generation == ref.slot_generation);
+    *out = slots[ref.slot];
 }
 
 const char *mf_status(candidate_wal_status_t s)

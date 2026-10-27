@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "storage/candidate_store.h"
 #include "candidate_redo_internal.h"
 #include "candidate_wal_internal.h"
 #include "candidate_wal_witness_internal.h"
@@ -255,6 +256,38 @@ static candidate_wal_status_t check_metadata(state_t *s, const uint8_t *bytes, u
     return CANDIDATE_WAL_UNSUPPORTED;
 }
 
+static candidate_wal_status_t note_store(state_t *s, candidate_page_ref_t ref, const uint8_t *bytes)
+{
+    candidate_store_node_t node;
+    candidate_wal_status_t status = candidate_store_decode(s->load.uuid,bytes,8192,&node);
+    if (status != CANDIDATE_WAL_OK) return status;
+    s->store_pages++;
+    if (node.kind != CANDIDATE_STORE_DESCRIPTOR) return CANDIDATE_WAL_OK;
+    s->descriptors++; s->descriptor = ref;
+    return CANDIDATE_WAL_OK;
+}
+
+static candidate_wal_status_t store_loader(void *context, candidate_page_ref_t ref, uint8_t bytes[8192])
+{
+    return load_page(context,ref,bytes);
+}
+
+static candidate_wal_status_t check_store(state_t *s, const candidate_control_state_t *anchor)
+{
+    candidate_page_ref_t root = anchor->catalog_root;
+    if (root.id != 0 && (s->descriptors != 1 || !same_page(s->descriptor,root))) return CANDIDATE_WAL_CORRUPT;
+    if (s->descriptors > 1) return CANDIDATE_WAL_CORRUPT;
+    if (s->descriptors == 0) return s->store_pages == 0 ? CANDIDATE_WAL_OK : CANDIDATE_WAL_CORRUPT;
+    candidate_store_check_t request = {.descriptor = s->descriptor,.load = store_loader,.context = s,.memory = s->load.memory};
+    memcpy(request.uuid,s->load.uuid,16);
+    candidate_store_info_t info;
+    candidate_wal_status_t status = candidate_store_check(&request,&info);
+    if (status != CANDIDATE_WAL_OK) return status;
+    if (info.pages != s->store_pages) return CANDIDATE_WAL_CORRUPT;
+    s->info.store_root = s->descriptor; s->info.store_pages = info.pages;
+    return CANDIDATE_WAL_OK;
+}
+
 static candidate_wal_status_t check_pages(state_t *s)
 {
     candidate_allocation_info_t info = candidate_allocation_info(s->allocation);
@@ -273,6 +306,7 @@ static candidate_wal_status_t check_pages(state_t *s)
         candidate_page_info_t page; status = candidate_page_decode_header(s->load.uuid,bytes,8192,&page);
         if (status != CANDIDATE_WAL_OK) return status;
         if (page.type == 1 || page.type == 2) status = candidate_page_decode(s->load.uuid,bytes,8192,&page);
+        else if (page.type == 3) status = note_store(s,e.ref,bytes);
         else status = check_metadata(s,bytes,page.type);
         if (status != CANDIDATE_WAL_OK) return status;
         if (page.type == 1) status = check_versions(s,bytes,&page);
@@ -320,6 +354,7 @@ candidate_wal_status_t candidate_recovery_graph_check(state_t *s, const candidat
     const candidate_catalog_load_t *load, const candidate_wal_witness_t *witness)
 {
     s->load = *load; s->witness = witness;
+    s->store_pages = 0; s->descriptors = 0; s->descriptor = (candidate_page_ref_t){0};
     candidate_witness_info_t observed = candidate_wal_witness_info(witness);
     bool is_resolved = observed.unfinished == 0 && observed.incomplete_group_lsn == 0;
     candidate_wal_status_t status = CANDIDATE_WAL_OK;
@@ -331,6 +366,7 @@ candidate_wal_status_t candidate_recovery_graph_check(state_t *s, const candidat
     }
     if (status == CANDIDATE_WAL_OK) status = check_reference(s,anchor->outcome_root,4,1);
     if (status == CANDIDATE_WAL_OK) status = check_pages(s);
+    if (status == CANDIDATE_WAL_OK) status = check_store(s,anchor);
     s->load = (candidate_catalog_load_t){0}; s->witness = NULL;
     return status;
 }
@@ -444,6 +480,7 @@ void candidate_recovery_view_settle(candidate_recovery_view_t *v)
 {
     const candidate_recovery_info_t *graph = &v->graph->info;
     v->info.live_pages = graph->live_pages; v->info.free_pages = graph->free_pages; v->info.versions = graph->versions;
+    v->info.store_pages = graph->store_pages; v->info.store_root = graph->store_root;
     v->info.outcomes.wal_end_lsn = v->info.cut.valid_end_lsn;
     size_t bytes = sizeof(*v) + sizeof(*v->graph) + candidate_allocation_info(v->graph->allocation).resident_bytes;
     bytes += candidate_admissions_resident_bytes(v->admissions) + candidate_wal_witness_info(v->witness).resident_bytes;
@@ -490,6 +527,7 @@ void candidate_recovery_view_fill(const candidate_recovery_view_t *v, candidate_
     if (v == NULL || info == NULL) return;
     info->live_pages = v->info.live_pages; info->free_pages = v->info.free_pages;
     info->versions = v->info.versions; info->wal_end_lsn = v->info.cut.valid_end_lsn;
+    info->store_pages = v->info.store_pages; info->store_root = v->info.store_root;
 }
 
 candidate_catalog_lookup_t candidate_recovery_view_lookup(const candidate_recovery_view_t *v,

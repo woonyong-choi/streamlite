@@ -4,19 +4,13 @@
 #include <string.h>
 #include <unistd.h>
 
-#define POOL_FRAMES (MVCC_PAGES + 16u)
+#define POOL_FRAMES (2u * MVCC_STRUCTURE_PAGES + 64u)
 #define POOL_LEASES 8u
-#define SCRATCH_BYTES (2u * MVCC_PLAN_PAGES * CANDIDATE_PAGE_BYTES)
 
 static uint64_t next_owner_id;
 
 static void *allocate_default(void *context, size_t size) { (void)context; return malloc(size); }
 static void release_default(void *context, void *p, size_t size) { (void)context; (void)size; free(p); }
-
-static bool same_page(candidate_page_ref_t a, candidate_page_ref_t b)
-{
-    return a.id == b.id && a.generation == b.generation;
-}
 
 static bool issue_owner_id(uint64_t *out)
 {
@@ -28,40 +22,13 @@ static bool issue_owner_id(uint64_t *out)
     return true;
 }
 
-static candidate_wal_status_t declare_page(candidate_mvcc_t *m, candidate_page_ref_t ref, uint32_t *index)
-{
-    if (ref.id == 0 || ref.generation == 0) return CANDIDATE_WAL_INVALID;
-    for (uint32_t i = 0; i < m->page_count; i++)
-        if (same_page(m->pages[i],ref)) { *index = i; return CANDIDATE_WAL_OK; }
-    if (m->page_count == MVCC_PAGES) return CANDIDATE_WAL_LIMIT;
-    m->pages[m->page_count] = ref; *index = m->page_count++;
-    return CANDIDATE_WAL_OK;
-}
-
-static candidate_wal_status_t declare_row(candidate_mvcc_t *m, const candidate_mvcc_row_t *row, uint64_t result_table)
-{
-    candidate_mvcc_key_t key = row->key;
-    if (key.table_id == 0 || key.row_id == 0 || key.table_id == result_table) return CANDIDATE_WAL_INVALID;
-    if (mvcc_find_row(m,key) != NULL) return CANDIDATE_WAL_INVALID;
-    uint32_t page;
-    candidate_wal_status_t status = declare_page(m,row->page,&page);
-    if (status == CANDIDATE_WAL_OK) m->rows[m->row_count++] = (mvcc_row_t){key,page};
-    return status;
-}
-
 static candidate_wal_status_t declare(candidate_mvcc_t *m, const candidate_mvcc_options_t *o)
 {
-    if (o->rows == NULL || o->row_count == 0 || o->result_table_id == 0) return CANDIDATE_WAL_INVALID;
-    if (o->row_count > CANDIDATE_MVCC_ROWS || o->wal_budget_bytes > CANDIDATE_WAL_MAX_BYTES) return CANDIDATE_WAL_LIMIT;
-    for (uint32_t i = 0; i < o->row_count; i++) {
-        candidate_mvcc_row_t row = o->rows[i];
-        candidate_wal_status_t status = declare_row(m,&row,o->result_table_id);
-        if (status != CANDIDATE_WAL_OK) return status;
-    }
-    for (uint32_t i = 0; i < m->page_count; i++) if (same_page(m->pages[i],o->result_page)) return CANDIDATE_WAL_INVALID;
+    if (o->result_table_id == 0) return CANDIDATE_WAL_INVALID;
+    if (o->wal_budget_bytes > CANDIDATE_WAL_MAX_BYTES) return CANDIDATE_WAL_LIMIT;
     m->result_table_id = o->result_table_id;
     m->wal_budget_bytes = o->wal_budget_bytes == 0 ? CANDIDATE_WAL_MAX_BYTES : o->wal_budget_bytes;
-    return declare_page(m,o->result_page,&m->result_page);
+    return CANDIDATE_WAL_OK;
 }
 
 static candidate_wal_status_t init_locks(candidate_mvcc_t *m, bool *has_locks)
@@ -82,8 +49,10 @@ static candidate_wal_status_t allocate_state(candidate_mvcc_t *m)
     m->table = m->memory.allocate(m->memory.context,sizeof(*m->table));
     if (m->table == NULL) return CANDIDATE_WAL_NOMEM;
     memset(m->table,0,sizeof(*m->table));
-    m->scratch = m->memory.allocate(m->memory.context,SCRATCH_BYTES);
-    return m->scratch == NULL ? CANDIDATE_WAL_NOMEM : CANDIDATE_WAL_OK;
+    m->work = m->memory.allocate(m->memory.context,sizeof(*m->work));
+    if (m->work == NULL) return CANDIDATE_WAL_NOMEM;
+    memset(m->work,0,sizeof(*m->work));
+    return CANDIDATE_WAL_OK;
 }
 
 static candidate_mvcc_state_t state_of(candidate_outcome_state_t state)
@@ -132,15 +101,26 @@ static candidate_wal_status_t open_pool(candidate_mvcc_t *m)
     return candidate_buffer_open(&o,&m->pool);
 }
 
-static candidate_wal_status_t check_pages(candidate_mvcc_t *m)
+static candidate_wal_status_t publish_store(candidate_mvcc_t *m)
 {
-    for (uint32_t i = 0; i < m->page_count; i++) {
-        candidate_wal_status_t status = mvcc_page_copy(m,i,m->scratch);
-        if (status == CANDIDATE_WAL_INVALID) return CANDIDATE_WAL_UNSUPPORTED;
-        if (status == CANDIDATE_WAL_OK) status = mvcc_check_page(m,m->scratch);
-        if (status != CANDIDATE_WAL_OK) return status;
-    }
-    return CANDIDATE_WAL_OK;
+    candidate_page_ref_t descriptor = m->recovery->info.store_root;
+    candidate_wal_status_t status = CANDIDATE_WAL_OK;
+    if (descriptor.id == 0) status = mvcc_create_store(m,&descriptor);
+    candidate_buffer_checkpoint_t receipt;
+    if (status == CANDIDATE_WAL_OK) status = candidate_buffer_publish_store(m->pool,descriptor,0,&receipt);
+    if (status == CANDIDATE_WAL_OK) m->store = descriptor;
+    return status;
+}
+
+static candidate_wal_status_t open_store(candidate_mvcc_t *m)
+{
+    candidate_page_ref_t published = candidate_buffer_info(m->pool).anchor.catalog_root;
+    m->store = published;
+    candidate_wal_status_t status = published.id == 0 ? publish_store(m) : CANDIDATE_WAL_OK;
+    mvcc_store_t store;
+    if (status == CANDIDATE_WAL_OK) status = mvcc_load_store(m,&store);
+    if (status == CANDIDATE_WAL_OK && store.descriptor.result_table_id != m->result_table_id) status = CANDIDATE_WAL_INVALID;
+    return status == CANDIDATE_WAL_OK ? mvcc_check_store(m) : status;
 }
 
 static candidate_wal_status_t bootstrap(candidate_mvcc_t *m, const candidate_recovery_options_t *options)
@@ -153,11 +133,10 @@ static candidate_wal_status_t bootstrap(candidate_mvcc_t *m, const candidate_rec
     candidate_recovery_view_close(&m->recovery->view);
     candidate_wal_witness_close(&m->recovery->terminal_history);
     status = open_pool(m);
-    if (status == CANDIDATE_WAL_OK) status = check_pages(m);
     if (status != CANDIDATE_WAL_OK) return status;
     m->wal_transactions = candidate_buffer_info(m->pool).transactions;
     m->next_id = 1; m->id_end = 0;
-    return CANDIDATE_WAL_OK;
+    return open_store(m);
 }
 
 static candidate_wal_status_t release_owner(candidate_mvcc_t *m, bool has_locks)
@@ -166,7 +145,7 @@ static candidate_wal_status_t release_owner(candidate_mvcc_t *m, bool has_locks)
     candidate_wal_status_t closed = candidate_recovery_close(&m->recovery);
     if (status == CANDIDATE_WAL_OK) status = closed;
     candidate_wal_memory_t memory = m->memory;
-    if (m->scratch != NULL) memory.release(memory.context,m->scratch,SCRATCH_BYTES);
+    if (m->work != NULL) memory.release(memory.context,m->work,sizeof(*m->work));
     if (m->table != NULL) memory.release(memory.context,m->table,sizeof(*m->table));
     if (has_locks) { (void)pthread_mutex_destroy(&m->io_gate); (void)pthread_mutex_destroy(&m->state_lock); }
     memory.release(memory.context,m,sizeof(*m));

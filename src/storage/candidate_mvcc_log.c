@@ -23,6 +23,7 @@
 #define PLAN_WRITE_BYTES 20u
 #define SEGMENT_HEADER_BYTES 64u
 #define BATCH_RECORDS 2u
+#define STRUCTURE_METADATA_PAGES 4u
 
 typedef struct {
     candidate_wal_cursor_t cursor;
@@ -53,10 +54,21 @@ uint64_t mvcc_group_bytes(uint32_t pages)
     return padded(GROUP_BEGIN_BYTES) + (uint64_t)pages * padded(IMAGE_BYTES) + padded(GROUP_END_BYTES);
 }
 
-uint64_t mvcc_credit_bytes(uint32_t pages)
+static uint64_t structure_bytes(void)
 {
-    uint64_t commit = padded(CHUNK_BYTES) + padded(COMMIT_BYTES + DEPENDENCY_BYTES);
-    return mvcc_group_bytes(pages) + commit + padded(ABORT_BYTES);
+    uint64_t pages = MVCC_STRUCTURE_PAGES + STRUCTURE_METADATA_PAGES;
+    return mvcc_group_bytes((uint32_t)pages) + (uint64_t)MVCC_STRUCTURE_EVENTS * padded(GROUP_EVENT_BYTES);
+}
+
+uint64_t mvcc_terminal_bytes(void)
+{
+    return padded(CHUNK_BYTES) + padded(COMMIT_BYTES + DEPENDENCY_BYTES) + padded(ABORT_BYTES);
+}
+
+uint64_t mvcc_credit_bytes(uint32_t writes)
+{
+    uint64_t structure = (uint64_t)(writes + 1) * structure_bytes();
+    return mvcc_group_bytes(writes + 1) + structure + mvcc_terminal_bytes();
 }
 
 static int compare_writes(const void *left, const void *right)
@@ -86,9 +98,8 @@ static candidate_wal_status_t copy_write(const candidate_mvcc_t *m, const candid
     candidate_mvcc_write_t w = *source;
     if (w.size > CANDIDATE_MVCC_PAYLOAD_BYTES) return CANDIDATE_WAL_LIMIT;
     if (w.size > 0 && w.bytes == NULL) return CANDIDATE_WAL_INVALID;
-    const mvcc_row_t *row = mvcc_find_row(m,w.key);
-    if (row == NULL) return CANDIDATE_WAL_UNSUPPORTED;
-    *out = (mvcc_write_t){.key = w.key,.page = row->page,.size = w.size};
+    if (w.key.table_id == 0 || w.key.row_id == 0 || w.key.table_id == m->result_table_id) return CANDIDATE_WAL_INVALID;
+    *out = (mvcc_write_t){.key = w.key,.size = w.size};
     if (w.size > 0) memcpy(out->bytes,w.bytes,w.size);
     return CANDIDATE_WAL_OK;
 }
@@ -109,18 +120,6 @@ candidate_wal_status_t mvcc_plan_copy(const candidate_mvcc_t *m, const candidate
     for (uint32_t i = 1; i < out->count; i++)
         if (compare_writes(&out->writes[i - 1],&out->writes[i]) == 0) return CANDIDATE_WAL_INVALID;
     return digest_plan(out);
-}
-
-uint32_t mvcc_plan_pages(const candidate_mvcc_t *m, const mvcc_plan_t *plan, uint32_t pages[MVCC_PLAN_PAGES])
-{
-    uint32_t count = 0;
-    for (uint32_t i = 0; i < plan->count; i++) {
-        bool is_seen = false;
-        for (uint32_t j = 0; j < count; j++) is_seen = is_seen || pages[j] == plan->writes[i].page;
-        if (!is_seen) pages[count++] = plan->writes[i].page;
-    }
-    pages[count++] = m->result_page;
-    return count;
 }
 
 static candidate_wal_status_t open_batch(candidate_mvcc_t *m, mvcc_batch_t *b)

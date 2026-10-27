@@ -38,6 +38,12 @@ typedef struct {
     uint32_t count;
 } candidate_buffer_group_t;
 
+/* 앞의 count-allocated개는 기존 page, 뒤의 allocated개는 현재 page_highwater 다음 ID를 차례로 쓰는 세대1 새 page다. */
+typedef struct {
+    const candidate_buffer_page_t *pages;
+    uint32_t count, allocated;
+} candidate_buffer_structure_t;
+
 typedef struct {
     uint64_t group_id, begin_lsn, end_lsn;
     uint64_t transaction_last_lsn, transaction_records;
@@ -62,7 +68,7 @@ typedef struct {
 
 typedef struct {
     candidate_control_state_t anchor;
-    uint64_t pool_id, baseline_lsn, admitted_lsn, observed_end_lsn, fpi_floor_lsn, last_group_id;
+    uint64_t pool_id, baseline_lsn, admitted_lsn, observed_end_lsn, fpi_floor_lsn, last_group_id, page_highwater;
     uint64_t groups_admitted, pages_written, data_syncs, evictions;
     uint32_t frames, resident, dirty, pinned, leases, known_pages, transactions;
     size_t frame_bytes, staging_bytes, requested_bytes, peak_requested_bytes, budget_bytes, borrowed_bytes;
@@ -91,6 +97,11 @@ candidate_wal_status_t candidate_buffer_write_group(candidate_buffer_t *pool, co
 /* root 내용과 WAL system 상태 불일치는 append 전 UNSUPPORTED이고 append·force 뒤 실패는 pool 차단이다. */
 candidate_wal_status_t candidate_buffer_reserve_transactions(candidate_buffer_t *pool, uint64_t count,
     candidate_buffer_reservation_t *out);
+/* 기존·새 page IMAGE와 catalog/allocation root·allocation node IMAGE, page 예약과 새 page마다 ALLOC event를 */
+/* 한 system group으로 append·admit하고 끝까지 force한 뒤에만 receipt를 채운다. 64 page·record 한도를 넘으면 append 전 LIMIT다. */
+/* 새 page ID·세대 불일치는 append 전 INVALID, 미등록 기존 page는 UNSUPPORTED이며 append·force 뒤 실패는 pool 차단이다. */
+candidate_wal_status_t candidate_buffer_write_structure(candidate_buffer_t *pool, const candidate_buffer_structure_t *structure,
+    candidate_buffer_admission_t *out);
 /* lease는 frame 세대와 pool에 묶이며 page bytes는 copy로만 읽는다. */
 candidate_wal_status_t candidate_buffer_pin(candidate_buffer_t *pool, candidate_page_ref_t ref, candidate_buffer_lease_t *out);
 candidate_wal_status_t candidate_buffer_copy(candidate_buffer_t *pool, const candidate_buffer_lease_t *lease,
@@ -105,6 +116,10 @@ candidate_wal_status_t candidate_buffer_flush(candidate_buffer_t *pool, uint32_t
 /* BEGIN 뒤 실패는 pool 차단이며 callback 안의 직접 WAL append는 게시 없는 BUSY다. */
 candidate_wal_status_t candidate_buffer_checkpoint(candidate_buffer_t *pool, uint32_t max_pages,
     candidate_buffer_checkpoint_t *out);
+/* 같은 checkpoint로 catalog_root가 비어 있는 anchor에 처음 store descriptor를 게시하며 게시 전 전체 type3 graph를 검증한다. */
+/* 이미 다른 descriptor가 게시됐거나 descriptor가 등록된 type3 page가 아니면 효과 전 INVALID다. */
+candidate_wal_status_t candidate_buffer_publish_store(candidate_buffer_t *pool, candidate_page_ref_t descriptor,
+    uint32_t max_pages, candidate_buffer_checkpoint_t *out);
 /* peak은 마지막 최상위 작업 시작부터의 pool 요청량이며 borrowed는 빌린 WAL/control의 별도 상주량이다. */
 candidate_buffer_info_t candidate_buffer_info(const candidate_buffer_t *pool);
 /* dirty frame을 쓰지 않고 닫으며 빌린 handle은 닫지 않는다. 작업 중 호출과 해제 callback 안의 재진입은 BUSY다. */

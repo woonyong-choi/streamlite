@@ -7,7 +7,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-#define RESULT_TABLE 900u
+#define RESULT_TABLE MF_RESULT_TABLE
 #define ROW_A 0u
 #define ROW_B 1u
 #define ROW_NEW 2u
@@ -109,22 +109,36 @@ static void expect_chain(const mf_t *f, uint64_t transaction_id, uint16_t termin
         out->terminal_end,wal.reserves,wal.highwater);
 }
 
-static void expect_pages(const mf_t *f, uint64_t a, uint64_t b, bool has_result_a)
+static void expect_prior(const mf_t *f, candidate_version_ref_t ref, unsigned row)
 {
-    uint8_t page[CANDIDATE_PAGE_BYTES]; static mf_slot_t slots[MF_SLOTS];
-    mf_read_page(f,f->row_page.id,page);
-    unsigned count = mf_slots(page,slots,MF_SLOTS);
-    const mf_slot_t *va = mf_find_slot(slots,count,a,1), *vb = mf_find_slot(slots,count,b,1);
-    CHECK(count >= 6 && va != NULL && vb != NULL && va->row_id == 3 && vb->row_id == 4);
-    CHECK(va->frozen_csn == 0 && vb->frozen_csn == 0 && va->generation == 1 && vb->generation == 1);
-    CHECK(slots[va->previous.slot].transaction_id == 3 && slots[vb->previous.slot].transaction_id == 4);
-    CHECK(memcmp(slots[2].bytes,f->initial[0],MF_PAYLOAD) == 0 && memcmp(slots[3].bytes,f->initial[1],MF_PAYLOAD) == 0);
-    mf_read_page(f,f->result_page.id,page);
-    count = mf_slots(page,slots,MF_SLOTS);
-    CHECK(mf_find_slot(slots,count,b,RESULT_TABLE) != NULL);
-    CHECK((mf_find_slot(slots,count,a,RESULT_TABLE) != NULL) == has_result_a);
-    printf("SLOTS row_page=%" PRIu64 " result_page=%" PRIu64 " result_slots=%u a=%" PRIu64 " b=%" PRIu64 "\n",f->row_page.id,
-        f->result_page.id,count,a,b);
+    uint8_t page[CANDIDATE_PAGE_BYTES]; mf_slot_t prior;
+    mf_read_version(f,ref,page,&prior);
+    CHECK(prior.transaction_id == f->seed_transaction && prior.row_id == mf_key(row).row_id);
+    CHECK(memcmp(prior.bytes,f->initial[row],MF_PAYLOAD) == 0);
+}
+
+static void expect_result_slot(const mf_t *f, candidate_version_ref_t ref, uint64_t transaction_id)
+{
+    uint8_t page[CANDIDATE_PAGE_BYTES]; mf_slot_t s;
+    mf_read_version(f,ref,page,&s);
+    CHECK(s.transaction_id == transaction_id && s.table_id == RESULT_TABLE && s.row_id == transaction_id);
+}
+
+static void expect_pages(const mf_t *f, const candidate_mvcc_txn_info_t *a, const candidate_mvcc_txn_info_t *b, bool has_result_a)
+{
+    uint8_t page[CANDIDATE_PAGE_BYTES]; mf_slot_t va, vb;
+    mf_read_version(f,a->versions[0],page,&va);
+    CHECK(va.transaction_id == a->transaction_id && va.table_id == 1 && va.row_id == 3 && va.frozen_csn == 0 && va.generation == 1);
+    expect_prior(f,va.previous,ROW_A);
+    mf_read_version(f,b->versions[0],page,&vb);
+    CHECK(vb.transaction_id == b->transaction_id && vb.table_id == 1 && vb.row_id == 4 && vb.frozen_csn == 0 && vb.generation == 1);
+    expect_prior(f,vb.previous,ROW_B);
+    CHECK(a->versions[0].page.id == b->versions[0].page.id && a->versions[0].slot != b->versions[0].slot);
+    expect_result_slot(f,b->result,b->transaction_id);
+    if (has_result_a) expect_result_slot(f,a->result,a->transaction_id);
+    printf("SLOTS append=%" PRIu64 " a=%" PRIu64 ":%u b=%" PRIu64 ":%u results=%" PRIu64 ":%u,%" PRIu64 ":%u\n",a->versions[0].page.id,
+        a->transaction_id,a->versions[0].slot,b->transaction_id,b->versions[0].slot,a->result.page.id,a->result.slot,b->result.page.id,
+        b->result.slot);
 }
 
 static void *run_a(void *context)
@@ -161,7 +175,8 @@ static void check_overlap(mf_t *f, candidate_mvcc_t *m, worker_t *a, worker_t *b
 {
     candidate_mvcc_txn_info_t live; EXPECT(candidate_mvcc_inspect(m,&a->txn,&live),CANDIDATE_WAL_OK);
     CHECK(live.state == CANDIDATE_MVCC_ACTIVE && live.is_applied && a->abort_at == 0 && a->applied_at < b->committed_at);
-    CHECK(a->info.versions[0].page.id == f->row_page.id && b->info.versions[0].page.id == f->row_page.id);
+    CHECK(a->info.versions[0].page.id == b->info.versions[0].page.id);
+    CHECK(a->info.versions[0].page.generation == b->info.versions[0].page.generation);
     CHECK(a->info.versions[0].slot != b->info.versions[0].slot);
     expect_response(&b->response,b->info.transaction_id,1);
     candidate_mvcc_value_t v = read_reader(m,old,ROW_A); expect_bytes(&v,f->initial[0]);
@@ -216,8 +231,8 @@ static void case_overlap(void)
     EXPECT(candidate_mvcc_reader_close(m,&old),CANDIDATE_WAL_OK);
     EXPECT(candidate_mvcc_close(&m),CANDIDATE_WAL_OK);
     expect_restart(&f,&a,&b,false);
-    expect_pages(&f,a.info.transaction_id,b.info.transaction_id,true);
-    printf("SCOPE native-only first storage slice; not SQL/ACK27, not full25 structural/index/GC, no throughput claim\n");
+    expect_pages(&f,&a.info,&b.info,true);
+    printf("SCOPE native persisted-store slice; not SQL/ACK27, not full25 SQL/GC, no throughput claim\n");
     mf_free(&f);
 }
 
@@ -232,7 +247,7 @@ static void run_sequential(mf_t *f, candidate_mvcc_t *m, worker_t *a, worker_t *
     EXPECT(candidate_mvcc_inspect(m,&b->txn,&b->info),CANDIDATE_WAL_OK);
     EXPECT(candidate_mvcc_commit(m,&b->txn,&b->response),CANDIDATE_WAL_OK);
     expect_response(&b->response,b->info.transaction_id,1);
-    CHECK(a->info.versions[0].page.id == b->info.versions[0].page.id && f->row_page.id == a->info.versions[0].page.id);
+    CHECK(a->info.versions[0].page.id == b->info.versions[0].page.id && f->is_seeded);
     if (!commit_a) { EXPECT(candidate_mvcc_abort(m,&a->txn),CANDIDATE_WAL_OK); return; }
     EXPECT(candidate_mvcc_commit(m,&a->txn,&a->response),CANDIDATE_WAL_OK);
     expect_response(&a->response,a->info.transaction_id,1);
@@ -249,7 +264,7 @@ static void case_pair(const char *tag, bool commit_a)
     mf_chain_t chain; expect_chain(&f,a.info.transaction_id,commit_a ? 10 : 11,&chain);
     expect_restart(&f,&a,&b,commit_a);
     expect_restart(&f,&a,&b,commit_a);
-    expect_pages(&f,a.info.transaction_id,b.info.transaction_id,true);
+    expect_pages(&f,&a.info,&b.info,true);
     mf_free(&f);
 }
 
@@ -293,10 +308,10 @@ static void case_kill(void)
     printf("KILLED child=%ld after B durable response a=%" PRIu64 " b=%" PRIu64 " csn=%" PRIu64 "\n",(long)pid,
         report[0].info.transaction_id,report[1].info.transaction_id,report[1].response.csn);
     mf_chain_t chain; expect_chain(&f,report[0].info.transaction_id,0,&chain);
-    f.next_owner = 9;
+    f.next_owner++;
     expect_restart(&f,&report[0],&report[1],false);
     expect_chain(&f,report[0].info.transaction_id,11,&chain);
-    expect_pages(&f,report[0].info.transaction_id,report[1].info.transaction_id,true);
+    expect_pages(&f,&report[0].info,&report[1].info,true);
     mf_free(&f);
 }
 
@@ -354,8 +369,10 @@ static void check_plans(candidate_mvcc_t *m, const uint8_t *bytes)
     r.count = 4; EXPECT(candidate_mvcc_begin(m,&r,&t),CANDIDATE_WAL_INVALID);
     candidate_mvcc_write_t big = mf_write(ROW_A,bytes,CANDIDATE_MVCC_PAYLOAD_BYTES + 1);
     r = mf_request(0x2102,&big,1); EXPECT(candidate_mvcc_begin(m,&r,&t),CANDIDATE_WAL_LIMIT);
-    candidate_mvcc_write_t unknown = {{1,77},bytes,MF_PAYLOAD};
-    r = mf_request(0x2103,&unknown,1); EXPECT(candidate_mvcc_begin(m,&r,&t),CANDIDATE_WAL_UNSUPPORTED);
+    candidate_mvcc_write_t result_row = {{RESULT_TABLE,77},bytes,MF_PAYLOAD};
+    r = mf_request(0x2103,&result_row,1); EXPECT(candidate_mvcc_begin(m,&r,&t),CANDIDATE_WAL_INVALID);
+    candidate_mvcc_write_t zero_row = {{1,0},bytes,MF_PAYLOAD};
+    r = mf_request(0x2104,&zero_row,1); EXPECT(candidate_mvcc_begin(m,&r,&t),CANDIDATE_WAL_INVALID);
     expect_unchanged(m,&before);
 }
 
@@ -423,21 +440,29 @@ static void case_limits(void)
     candidate_mvcc_reader_t readers[CANDIDATE_MVCC_READERS + 1];
     for (unsigned i = 0; i < CANDIDATE_MVCC_READERS; i++) EXPECT(candidate_mvcc_reader_open(m,&readers[i]),CANDIDATE_WAL_OK);
     EXPECT(candidate_mvcc_reader_open(m,&readers[CANDIDATE_MVCC_READERS]),CANDIDATE_WAL_LIMIT);
-    unsigned committed = 0; candidate_wal_status_t status = CANDIDATE_WAL_OK;
+    unsigned committed = 0;
     uint8_t bytes[MF_PAYLOAD];
-    while (status == CANDIDATE_WAL_OK && committed < CANDIDATE_PAGE_MAX_SLOTS) {
+    candidate_mvcc_info_t start = candidate_mvcc_info(m);
+    candidate_page_ref_t first_append = {0}, last_append = {0};
+    while (committed < CANDIDATE_PAGE_MAX_SLOTS) {
         mf_fill((uint8_t)committed,bytes);
         candidate_mvcc_write_t w = mf_write(ROW_A,bytes,MF_PAYLOAD); candidate_mvcc_request_t r = mf_request(0x3000 + committed,&w,1);
-        candidate_mvcc_info_t before = candidate_mvcc_info(m);
-        candidate_mvcc_txn_t t; status = candidate_mvcc_begin(m,&r,&t);
-        if (status != CANDIDATE_WAL_OK) { expect_unchanged(m,&before); break; }
+        candidate_mvcc_txn_t t; EXPECT(candidate_mvcc_begin(m,&r,&t),CANDIDATE_WAL_OK);
         EXPECT(candidate_mvcc_apply(m,&t),CANDIDATE_WAL_OK);
+        candidate_mvcc_txn_info_t info; EXPECT(candidate_mvcc_inspect(m,&t,&info),CANDIDATE_WAL_OK);
+        if (committed == 0) first_append = info.versions[0].page;
+        last_append = info.versions[0].page;
         candidate_mvcc_response_t response; EXPECT(candidate_mvcc_commit(m,&t,&response),CANDIDATE_WAL_OK);
         committed++;
     }
-    EXPECT(status,CANDIDATE_WAL_LIMIT); CHECK(committed >= 1);
+    candidate_mvcc_info_t grown = candidate_mvcc_info(m);
+    CHECK(grown.structure_groups > start.structure_groups && last_append.id > first_append.id);
     candidate_mvcc_value_t v = read_reader(m,&readers[0],ROW_A); expect_bytes(&v,f.initial[0]);
-    printf("LIMIT page-capacity committed=%u readers=%u\n",committed,candidate_mvcc_info(m).readers);
+    candidate_mvcc_reader_t fresh; EXPECT(candidate_mvcc_reader_close(m,&readers[1]),CANDIDATE_WAL_OK);
+    EXPECT(candidate_mvcc_reader_open(m,&fresh),CANDIDATE_WAL_OK);
+    v = read_reader(m,&fresh,ROW_A); expect_bytes(&v,bytes); readers[1] = fresh;
+    printf("CAPACITY versions_beyond_one_page committed=%u appends=%" PRIu64 "->%" PRIu64 " structure_groups=%" PRIu64 " readers=%u\n",
+        committed,first_append.id,last_append.id,grown.structure_groups - start.structure_groups,candidate_mvcc_info(m).readers);
     for (unsigned i = 0; i < CANDIDATE_MVCC_READERS; i++) EXPECT(candidate_mvcc_reader_close(m,&readers[i]),CANDIDATE_WAL_OK);
     EXPECT(candidate_mvcc_close(&m),CANDIDATE_WAL_OK);
     f.wal_budget_bytes = CANDIDATE_WAL_SEGMENT_BYTES;

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "storage/candidate_digest.h"
+#include "storage/candidate_store.h"
 #include "storage/checksum.h"
 #include "candidate_wal_internal.h"
 #include "candidate_wal_witness_internal.h"
@@ -254,11 +255,24 @@ static candidate_wal_status_t check_history(const candidate_buffer_t *pool, cons
     return CANDIDATE_WAL_OK;
 }
 
+static candidate_wal_status_t check_heads(const uint8_t uuid[16], const uint8_t *bytes, const candidate_wal_witness_t *witness)
+{
+    candidate_store_node_t node;
+    candidate_wal_status_t status = candidate_store_decode(uuid,bytes,CANDIDATE_PAGE_BYTES,&node);
+    if (status != CANDIDATE_WAL_OK || node.kind != CANDIDATE_STORE_LEAF) return status;
+    for (uint32_t i = 0; i < node.count; i++) {
+        uint64_t transaction_id = node.entries[i].head_transaction;
+        if (transaction_id != 0 && candidate_wal_witness_find(witness,transaction_id) == NULL) return CANDIDATE_WAL_CORRUPT;
+    }
+    return CANDIDATE_WAL_OK;
+}
+
 candidate_wal_status_t candidate_buffer_check_versions(const uint8_t uuid[16], const uint8_t *bytes,
     const candidate_wal_witness_t *witness)
 {
     candidate_page_info_t info;
     candidate_wal_status_t status = candidate_page_decode_header(uuid,bytes,CANDIDATE_PAGE_BYTES,&info);
+    if (status == CANDIDATE_WAL_OK && info.type == 3) return check_heads(uuid,bytes,witness);
     if (status != CANDIDATE_WAL_OK || info.type != 1) return status;
     status = candidate_page_decode(uuid,bytes,CANDIDATE_PAGE_BYTES,&info);
     if (status != CANDIDATE_WAL_OK) return status;
@@ -341,15 +355,6 @@ static candidate_wal_status_t collect_changes(candidate_buffer_t *pool, buffer_c
     return CANDIDATE_WAL_OK;
 }
 
-static bool has_new_page(candidate_buffer_t *pool, const buffer_capture_t *capture)
-{
-    for (uint32_t i = 0; i < capture->pages; i++) {
-        const buffer_page_t *page = candidate_buffer_page(pool,capture->changes[i].id);
-        if (page == NULL || page->generation != capture->changes[i].generation) return true;
-    }
-    return false;
-}
-
 static candidate_wal_status_t prove_live(candidate_buffer_t *pool)
 {
     candidate_wal_status_t status = candidate_buffer_prove(pool,&pool->anchor);
@@ -367,7 +372,7 @@ candidate_wal_status_t candidate_buffer_check_capture(candidate_buffer_t *pool, 
     for (uint32_t i = 0; status == CANDIDATE_WAL_OK && i < capture->pages; i++) status = build_page(pool,scan,i);
     if (status == CANDIDATE_WAL_CORRUPT || status == CANDIDATE_WAL_UNSUPPORTED) return candidate_buffer_fence(pool,status);
     if (status == CANDIDATE_WAL_OK) status = candidate_buffer_check_capacity(pool,capture);
-    if (status == CANDIDATE_WAL_OK && has_new_page(pool,capture)) status = prove_live(pool);
+    if (status == CANDIDATE_WAL_OK && capture->pages != 0) status = prove_live(pool);
     if (status != CANDIDATE_WAL_OK) return status;
     *out = (candidate_buffer_admission_t){.group_id = capture->group_id,.begin_lsn = capture->begin_lsn,.end_lsn = capture->end_lsn,
         .pages = capture->pages};

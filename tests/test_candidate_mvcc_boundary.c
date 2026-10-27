@@ -149,7 +149,7 @@ static void case_id_control(void)
     uint64_t second = begin_abort(m,0x7402,value);
     CHECK(second > first && second > UINT64_MAX - ID_BATCH);
     expect_aborted(m,0x7402,value,second);
-    candidate_mvcc_value_t v = read_row(m,ROW_A); expect_bytes(&v,f.initial[0]);
+    candidate_mvcc_value_t v = read_row(m,ROW_A); mf_expect_initial(&f,&v,ROW_A);
     printf("ID-CONTROL first=%" PRIu64 " max-first=%" PRIu64 " second=%" PRIu64 " max-second=%" PRIu64 "\n",first,UINT64_MAX - first,
         second,UINT64_MAX - second);
     EXPECT(candidate_mvcc_close(&m),CANDIDATE_WAL_OK);
@@ -176,14 +176,14 @@ static void case_id_exhaust(void)
     candidate_mvcc_info_t info = candidate_mvcc_info(m);
     CHECK(info.outcomes == outcomes + ID_BATCH && info.active == 0 && info.fence == CANDIDATE_WAL_OK);
     begin_refused(&f,m,0x7600,value);
-    candidate_mvcc_value_t v = read_row(m,ROW_A); expect_bytes(&v,f.initial[0]);
+    candidate_mvcc_value_t v = read_row(m,ROW_A); mf_expect_initial(&f,&v,ROW_A);
     EXPECT(candidate_mvcc_close(&m),CANDIDATE_WAL_OK);
     recover_full(&f);
     EXPECT(mf_open(&f,&m),CANDIDATE_WAL_OK);
     print_ids("id-exhaust-reopen",m);
     for (unsigned i = 0; i < ID_BATCH; i++) expect_aborted(m,0x7500 + i,value,ids[i]);
-    v = read_row(m,ROW_A); expect_bytes(&v,f.initial[0]);
-    v = read_row(m,ROW_B); expect_bytes(&v,f.initial[1]);
+    v = read_row(m,ROW_A); mf_expect_initial(&f,&v,ROW_A);
+    v = read_row(m,ROW_B); mf_expect_initial(&f,&v,ROW_B);
     begin_refused(&f,m,0x7601,value);
     printf("ID-EXHAUST-REOPEN aborted=%u last=%" PRIu64 "\n",ID_BATCH,ids[ID_BATCH - 1]);
     EXPECT(candidate_mvcc_close(&m),CANDIDATE_WAL_OK);
@@ -232,12 +232,12 @@ static void case_group_credit(void)
     printf("GROUP-OPENED last_group=%" PRIu64 " max-last_group=%" PRIu64 " fenced=%d\n",pool.last_group_id,UINT64_MAX - pool.last_group_id,
         pool.is_fenced);
     CHECK(!pool.is_fenced && pool.last_group_id >= g.last && candidate_mvcc_info(m).fence == CANDIDATE_WAL_OK);
-    candidate_mvcc_value_t v = read_row(m,ROW_A); expect_bytes(&v,f.initial[0]);
-    v = read_row(m,ROW_B); expect_bytes(&v,f.initial[1]);
+    candidate_mvcc_value_t v = read_row(m,ROW_A); mf_expect_initial(&f,&v,ROW_A);
+    v = read_row(m,ROW_B); mf_expect_initial(&f,&v,ROW_B);
     uint8_t value[MF_PAYLOAD]; mf_fill(0xe3,value);
     begin_refused(&f,m,0x7701,value);
     CHECK(candidate_buffer_info(m->pool).last_group_id == pool.last_group_id);
-    v = read_row(m,ROW_A); expect_bytes(&v,f.initial[0]);
+    v = read_row(m,ROW_A); mf_expect_initial(&f,&v,ROW_A);
     EXPECT(candidate_mvcc_close(&m),CANDIDATE_WAL_OK);
     mf_free(&f);
 }
@@ -385,9 +385,10 @@ static void expect_owner_fenced(candidate_mvcc_t *m, const uint8_t *bytes)
     CHECK(info.fence != CANDIDATE_WAL_OK && begin != CANDIDATE_WAL_OK && reader != CANDIDATE_WAL_OK);
 }
 
-static void expect_resolved(mf_t *f, candidate_mvcc_t *m, uint64_t nonce, const uint8_t *bytes, uint64_t transaction_id,
-    bool is_committed)
+static void expect_resolved(mf_t *f, candidate_mvcc_t *m, uint64_t nonce, const uint8_t *bytes,
+    const candidate_mvcc_txn_info_t *ti, bool is_committed)
 {
+    uint64_t transaction_id = ti->transaction_id;
     candidate_mvcc_answer_t a = query_row(m,nonce,ROW_A,bytes);
     candidate_mvcc_value_t v = read_row(m,ROW_A);
     printf("RESOLVED id=%" PRIu64 " lookup=%d state=%d committed_on_disk=%d row_matches_new=%d\n",transaction_id,(int)a.lookup,
@@ -396,11 +397,10 @@ static void expect_resolved(mf_t *f, candidate_mvcc_t *m, uint64_t nonce, const 
     CHECK(a.response.state == (is_committed ? CANDIDATE_MVCC_COMMITTED : CANDIDATE_MVCC_ABORTED));
     expect_bytes(&v,is_committed ? bytes : f->initial[0]);
     v = read_row(m,ROW_B); expect_bytes(&v,f->initial[1]);
-    uint8_t page[CANDIDATE_PAGE_BYTES]; static mf_slot_t slots[MF_SLOTS];
-    mf_read_page(f,f->row_page.id,page);
-    unsigned count = mf_slots(page,slots,MF_SLOTS);
-    const mf_slot_t *s = mf_find_slot(slots,count,transaction_id,1);
-    CHECK(s != NULL && s->row_id == mf_key(ROW_A).row_id && memcmp(s->bytes,bytes,MF_PAYLOAD) == 0);
+    uint8_t page[CANDIDATE_PAGE_BYTES]; mf_slot_t s;
+    mf_read_version(f,ti->versions[0],page,&s);
+    CHECK(s.transaction_id == transaction_id && s.table_id == 1 && s.row_id == mf_key(ROW_A).row_id);
+    CHECK(memcmp(s.bytes,bytes,MF_PAYLOAD) == 0);
 }
 
 static void case_terminal(const char *tag, effect_t effect, bool is_commit, uint64_t nonce)
@@ -436,7 +436,7 @@ static void case_terminal(const char *tag, effect_t effect, bool is_commit, uint
     printf("TERMINAL-CLOSE status=%s\n",mf_status(candidate_mvcc_close(&m)));
     CHECK(m == NULL);
     EXPECT(mf_open(&f,&m),CANDIDATE_WAL_OK);
-    expect_resolved(&f,m,nonce,value,ti.transaction_id,terminal == 10);
+    expect_resolved(&f,m,nonce,value,&ti,terminal == 10);
     CHECK(is_commit || terminal == 11);
     EXPECT(candidate_mvcc_close(&m),CANDIDATE_WAL_OK);
     mf_free(&f);
