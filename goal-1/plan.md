@@ -182,3 +182,21 @@ Task24a2의 source gate 추가 확인: 4MiB segment에서 IMAGE 포함 최소 gr
 R1 형식 선택은 `STREAMLITE`10B와0 padding6B의16B 식별자·format4·SLPG envelope다. metadata64B는 유지해 control header80B, inline free IDs1508·chain2038로 정한다. 대안8B SLDB0004는 layout 변경이 작지만 전체 제품명이 드러나지 않아 선택하지 않는다. 이는 구조/명료성 판단이며 성능 우열 실측이 아니다. 활성LRP2/LRO2/LRCT/LHD2/LHD3/LPK1/LTX1은 각각SLR2/SLO2/SLCT/SLD2/SLD3/SLK1/SLT1으로 옮긴다. heap2/3은 옛버전호환이 아닌 현재 root/leaf의 서로 다른 종류이므로 두 알고리즘은 유지한다. 기본 COW의 실제 게시/fallback·회수/큰사슬·값 왕복을 재검증하며 새로운 별도경계캠페인을 기계적으로 요구하지 않는다.
 
 R1 배포 버전은 미배포0.3.0으로 분리한다. 기존GitHub v0.2.0 tag/릴리스는 당시ToteDB 원본이므로 새 namespace·형식4에 재사용하지 않는다. 이는 가역적인 pre1 minor 선택이며 tag갱신/발행/업로드는 수행하지 않는다. 기존0.2.0 Changelog와원자료를보존한다.
+
+## Task24a3 physical authority execution choice
+
+R1은9538da7e, R2는191ccc95로 각각 검증·commit됐다. 다음24a3은 page/physical redo와 실제 buffer/force/checkpoint proof가 함께 큰 경계여서24a3a와24a3b로 분리하고 R1/R2/24a3a 뒤 별도 checkpoint를 추가한다. 기존 parent24a3와 after24a3 및 이후 모든 의무는 그대로다. Task24a3a를 parent/전체 완료로 보고하지 않는다.
+
+두 source how와 구조가 다른 A/B, 독립 심사 및 parent는 canonical view 단일 소유 A에 B의 순차 물리 관측과 작업 수명에만 있는 bounded index를 이식한다. 각각15/14는 설계 판단이다. 페이지별 전체R..B 반복주사를 정상 경로로 정하거나56B/record index를 resident seed에 평생 보유하는 안은 선택하지 않는다. 전 LIVE bytes 복사는65536×8192=512MiB라128MiB 전체 요청과 맞지 않으며 새 전체 baseline파일 rewrite/수명 경계도 현재 넣지 않는다. mutable target의 checksum/ref/LSN은 torn·suffix-absent LIVE 복원 bytes가 아니다.
+
+현재 canonical observe_pages는 최신ref/endLSN만 두고 witness도 정확한 previousPageLSN 연결을 증명하지 않으므로 초기·suffix의 실제 물리 연쇄 검증을 추가한다. FPI locator·실제 beforeR cut/초기 hash state·B digest를 같은 관측에 결합한다. 기존 candidate_wal_tail_hash 규칙을 재사용하며 나중에 임의 view와WAL을 붙여 digest를 새로 만든 것을 권위로 승격하지 않는다. 기존 suffix의after=current 조건은 유지하고 역사적R..B는 소유reader의 명시적 bounded 경계로 읽는다. B 이전 물리 replay는 거래/ID/nonce 의미 reducer를 다시 돌리지 않는다.
+
+첫24a3a의 실제 쓰기는 RESOLVED view로 제한하고 PREVIEW는 미확정 bytes를 읽기 재구성으로 검증한다. 초기 capture의 전체 조사 비용과 작업 index/정리·rangehash 비용, 오래된 LIVE FPI가R을 붙잡는 한계는 실제 비교 비용이다. source/next와index/scratch/WAL/control의 동시에 살아 있는 요청을 계수하고 LIMIT/NOMEM·출력NULL·source보존을 구분한다. 실제buffer와retired 구조기여자의 B force·LIVE version 실제state/CSN·checkpoint anchor전환은24a3b에서 검증해야 한다. 내구codec/bootstrap·reader·실제회수와 MVCC/writer/총비용/제품은 계속 후속 미완료다.
+
+24a3a의 모든LIVE 재구성IMAGE를 보존하는 첫 경계는 clean target의 내구/수명 권위가 아직 연결되지 않은 보수적인 로컬 단계다. 오래된 cold LIVE 하나가R을 붙잡는 비용을 WAL의 본질이나 최적 구현 비용으로 일반화하지 않는다.24a3b/24a4/24a6은 실제로 동기화된 clean page 기준선과 소유 write-before-overwrite FPI, dirty recLSN·양slot 의존성을 결합해 불필요한 전체cold-DB IMAGE 재작성을 피할 수 있는지 닫아야 한다. 원자료의 임의 bitrot와 우리 쓰기 중 torn/crash를 같은 실패라고 섞지 않고, COW와WAL에 같은 고장 모델·거절/복구 보장을 적용한다. 근거 없이 mutable target을 immutable baseline으로 부르는 것은 계속 금지한다. 작은cap 반복재사용을 통과하려고 매주기 전체cold payload를 다시 기록한다면 그 쓰기·동기화·메모리 비용을 실제 수집하고, 현재구현의 한계와 WAL구조 자체를 구분한다. 이는 후속 계약/구현/실측 의무이며 완료 사실이 아니다.
+
+## Writer-first priority after the current repair — 2026-10-27
+
+사용자는 현재 반례 수리를 끝낸 뒤 실제 다중 writer와 COW/WAL 총비용 실행을 우선하라고 다시 지시했다.24a3a와 별도 checkpoint 다음25/26/27을 먼저 진행하고,27 검토 뒤 미완료24a3b·24a4–6을 재개한다. 원래 scope와 모든 과업은 유지하며 단위별 검증·commit도 그대로다. 현재 제품의 writer_active·database work.active/배타 file lock·session db->run과 후보 pool의 직렬 caller 가정을 공유 transaction/version/논리 merge·짧은 물리 임계구간으로 바꿔야 한다. 기존 전역 거래 락만 풀거나 요청 진입점만 늘린 것을 실제 writer로 세지 않는다.
+
+전체 WAL을 보존하고 명시한 cap에서 거절하는 bounded fixture는 실제 writer 중첩·가시성·논리 abort·복구를 먼저 검증할 수 있다. cold seed/회수 완성을 그 국소 정확성의 필수 선행으로 고정한 것은 실행 순서였으며 이를 수정한다. 실제 회수·반복 재사용·GC·checkpoint·복구 debt는 양 후보 안전성30과 steady 총비용31/32 전에 여전히 닫아야 한다. cap 도달 전의 빠른 구간이나 미뤄 둔 정리를 빼고 비교하지 않는다. 현재 source 조사·설계 선택과 실제 구현/실측은 구분한다.

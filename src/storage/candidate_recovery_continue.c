@@ -92,9 +92,12 @@ static candidate_wal_status_t advance(candidate_recovery_view_t *v, candidate_wa
 {
     candidate_recovery_marks_t marks = {0};
     candidate_wal_status_t status = clone_evidence(v, source);
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_physical_begin(&v->graph->physical, &v->memory);
     if (status == CANDIDATE_WAL_OK) status = replay(v, wal, &source->info.cut, transport);
     if (status == CANDIDATE_WAL_OK) status = validate(v, wal, load, &marks);
     if (status == CANDIDATE_WAL_OK) status = candidate_recovery_view_compact(v, &marks);
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_physical_settle(v);
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_view_check_cut(v, wal, load->uuid);
     return status;
 }
 

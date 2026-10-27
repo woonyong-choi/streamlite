@@ -134,6 +134,14 @@ candidate_wal_status_t candidate_wal_check_suffix(const candidate_wal_suffix_t *
     return is_range ? CANDIDATE_WAL_OK : CANDIDATE_WAL_INVALID;
 }
 
+candidate_wal_status_t candidate_wal_check_range(const candidate_wal_suffix_t *request, const candidate_wal_info_t *current)
+{
+    if (request->visitor == NULL) return CANDIDATE_WAL_INVALID;
+    if (!is_frame_boundary(&request->after) || !is_ordered(&request->after, current)) return CANDIDATE_WAL_STALE;
+    bool is_range = is_frame_boundary(&request->before) && is_ordered(&request->before, &request->after);
+    return is_range ? CANDIDATE_WAL_OK : CANDIDATE_WAL_INVALID;
+}
+
 static candidate_wal_status_t read_segment(const candidate_wal_reader_t *reader, uint64_t lsn, uint64_t end_lsn)
 {
     if (end_lsn - lsn < CANDIDATE_WAL_HEADER_BYTES) return CANDIDATE_WAL_CORRUPT;

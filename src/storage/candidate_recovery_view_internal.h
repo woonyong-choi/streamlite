@@ -4,12 +4,15 @@
 #include "storage/candidate_allocation.h"
 #include "candidate_outcome_witness_internal.h"
 #include "candidate_recovery_internal.h"
+#include "candidate_recovery_physical_internal.h"
 #include "candidate_wal_identity_internal.h"
 
 #define CANDIDATE_RECOVERY_HISTORY_SLOTS (2u * CANDIDATE_ALLOCATION_ENTRIES)
 
 typedef void (*candidate_recovery_mark_t)(void *context, const candidate_witness_transaction_t *transaction);
-typedef struct { candidate_page_ref_t ref; uint64_t lsn; } candidate_recovery_page_t;
+/* lsn은 마지막 완성 group 끝, image_lsn은 현재 세대 최신 IMAGE가 든 group의 시작이다. */
+typedef struct { candidate_page_ref_t ref; uint64_t lsn, image_lsn; } candidate_recovery_page_t;
+typedef struct { candidate_page_ref_t ref; uint64_t previous_lsn; bool is_image; } candidate_recovery_pending_t;
 typedef struct {
     candidate_catalog_load_t load;
     candidate_allocation_t *allocation;
@@ -17,10 +20,12 @@ typedef struct {
     candidate_recovery_info_t info;
     candidate_wal_status_t status;
     uint32_t count, pending_count;
+    uint64_t group_lsn;
     bool allows_unfinished;
     candidate_recovery_mark_t mark;
     void *mark_context;
-    candidate_page_ref_t pending[CANDIDATE_WITNESS_PAGES];
+    candidate_recovery_physical_t physical;
+    candidate_recovery_pending_t pending[CANDIDATE_WITNESS_PAGES];
     candidate_recovery_page_t pages[CANDIDATE_RECOVERY_HISTORY_SLOTS];
 } candidate_recovery_graph_t;
 struct candidate_recovery_view {
@@ -60,6 +65,8 @@ const candidate_wal_witness_t *candidate_recovery_view_witness(const candidate_r
 candidate_wal_status_t candidate_recovery_view_check_request(const candidate_recovery_view_request_t *request);
 candidate_wal_status_t candidate_recovery_graph_clone(const candidate_recovery_graph_t *source,
     const candidate_wal_memory_t *memory, candidate_recovery_graph_t **out);
+/* 이력에 없는 ID는 ref.id가0인 빈 항목이다. */
+const candidate_recovery_page_t *candidate_recovery_graph_page(const candidate_recovery_graph_t *graph, uint64_t id);
 bool candidate_recovery_view_observe(void *view, const candidate_wal_record_t *record);
 candidate_wal_status_t candidate_recovery_graph_check(candidate_recovery_graph_t *graph,
     const candidate_control_state_t *anchor, const candidate_catalog_load_t *load, const candidate_wal_witness_t *witness);

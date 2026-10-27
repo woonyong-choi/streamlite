@@ -529,13 +529,15 @@ candidate_wal_status_t candidate_wal_read_at(candidate_wal_t *w, uint64_t lsn, c
     return map_read(w, end_read(w, status));
 }
 
-candidate_wal_status_t candidate_wal_visit_suffix(candidate_wal_t *w, const candidate_wal_suffix_t *request)
+typedef candidate_wal_status_t (*range_check_t)(const candidate_wal_suffix_t *, const candidate_wal_info_t *);
+
+static candidate_wal_status_t visit_owned(candidate_wal_t *w, const candidate_wal_suffix_t *request, range_check_t check)
 {
     candidate_wal_status_t status = check_access(w);
     if (status != CANDIDATE_WAL_OK) return status;
     if (request == NULL) return CANDIDATE_WAL_INVALID;
     candidate_wal_suffix_t saved = *request;
-    status = candidate_wal_check_suffix(&saved, &w->info);
+    status = check(&saved, &w->info);
     if (status != CANDIDATE_WAL_OK) return status;
     candidate_wal_reader_t reader = {w->uuid, w->buffer, read_owned, w};
     candidate_wal_suffix_count_t count;
@@ -544,6 +546,16 @@ candidate_wal_status_t candidate_wal_visit_suffix(candidate_wal_t *w, const cand
     status = end_read(w, count.is_first_behind ? CANDIDATE_WAL_OK : status);
     if (status != CANDIDATE_WAL_OK) return map_read(w, status);
     return count.is_first_behind ? CANDIDATE_WAL_CORRUPT : candidate_wal_match_suffix(&saved, &count);
+}
+
+candidate_wal_status_t candidate_wal_visit_suffix(candidate_wal_t *w, const candidate_wal_suffix_t *request)
+{
+    return visit_owned(w, request, candidate_wal_check_suffix);
+}
+
+candidate_wal_status_t candidate_wal_visit_range(candidate_wal_t *w, const candidate_wal_suffix_t *request)
+{
+    return visit_owned(w, request, candidate_wal_check_range);
 }
 
 candidate_wal_status_t candidate_wal_pin(candidate_wal_t *w)

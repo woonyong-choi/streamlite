@@ -244,6 +244,18 @@ UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build/recovery-closure-check SANITI
 
 각 target의 report 접두사와 사례 목록은 Makefile의 `CANDIDATE_CLOSURE_REPORT`·`CANDIDATE_CLOSURE_CASES`, `CANDIDATE_CLOSURE_BOUNDARY_REPORT`·`CANDIDATE_CLOSURE_BOUNDARY_CASES`, `CANDIDATE_CLOSURE_TRANSPORT_REPORT`·`CANDIDATE_CLOSURE_TRANSPORT_CASES`, `CANDIDATE_CLOSURE_CALLBACKS_REPORT`·`CANDIDATE_CLOSURE_CALLBACKS_CASES`, `CANDIDATE_WAL_READ_BOUNDARY_REPORT`·`CANDIDATE_WAL_READ_BOUNDARY_CASES`, `CANDIDATE_IDENTITY_REPORT`로 지정한다. 재실행에는 사용하지 않은 build·report 경로를 준다. 복구 view와 transport를 함께 바꿨으면 이 선택형 시험만으로 기존 WAL·checkpoint·redo·복구·buffer 회귀를 대신하지 않는다. raw 경계 시험의 IO는 잘못된 읽기 주소의 기존 오류 분류이며 실제 디스크 장애나 전원 차단을 증명하지 않는다.
 
+[물리 권위 시험](../tests/test_candidate_recovery_physical.c)은 별도 선택형 `test-candidate-recovery-physical` target으로 실행한다.
+
+```sh
+UBSAN_OPTIONS=halt_on_error=1 make BUILD_DIR=build/recovery-physical-check SANITIZE=undefined \
+  CFLAGS="-Wall -Wextra -Werror -g -Iinclude -Itests -fsanitize=undefined -fno-sanitize-recover=undefined" \
+  LDFLAGS="-fsanitize=undefined -fno-sanitize-recover=undefined" \
+  test-candidate-recovery-physical \
+  CANDIDATE_PHYSICAL_REPORT=build/recovery-physical-check/fault/recovery-physical
+```
+
+`CANDIDATE_PHYSICAL_CASES`로 사례를, `CANDIDATE_PHYSICAL_TIMEOUT`으로 runner 제한 시간을 정한다. fixture는 기존 view fixture와 같이 `build/` 아래 PID·serial 이름과 배타 생성 파일을 쓰므로 이전 산출물을 지우지 않는다. 물리 증명은 view 관측과 suffix 검증에 포함되므로 이 target만으로 view·closure·redo·복구·publish·buffer 회귀를 대신하지 않는다. 이 target은 국소 seeded preview/redo 후보의 검증이며 buffer 연결·내구 seed·reader 수명·실제 WAL 회수·writer 검증이 아니다.
+
 ### 공통 비용 수집
 
 [사전 계획](design/streamlite.md#공통-비용-수집의-사전-계획)에 따라 E0–E3를 비교한다. `common-cost-driver`는 기존 공유 라이브러리의 내부 제어로 cache/workspace를 각각 켠다. 공개 API·배포 기본값은 바꾸지 않는다. 아래 명령의 `PLAN_COMMIT`은 그 계획과 수집기를 고정한 commit이고 `PREFIX`는 기존 실행 영역에서 사용하지 않은 파일 접두사다. `.registration.json`과 `.raw.jsonl`, manifest·DB·로그를 접두사별로 보존한다.

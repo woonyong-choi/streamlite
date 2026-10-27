@@ -8,57 +8,19 @@
 #include "storage/candidate_digest.h"
 #include "storage/candidate_wal_witness.h"
 #include "storage/checksum.h"
-#include "candidate_redo_internal.h"
+#include "candidate_redo_state_internal.h"
 #include "candidate_wal_internal.h"
 #include "candidate_wal_witness_internal.h"
 
-#define HISTORY_SLOTS (2u * CANDIDATE_ALLOCATION_ENTRIES)
+#define HISTORY_SLOTS CANDIDATE_REDO_HISTORY_SLOTS
 #define DATA_PRESENT 1u
 #define DATA_CORROBORATED 2u
 
-typedef struct {
-    uint64_t id, generation, last_lsn, data_generation, data_lsn;
-    unsigned flags;
-    uint32_t record_back;
-} history_t;
-typedef struct {
-    uint64_t lsn, previous_record, group_end;
-    uint8_t digest[32];
-} source_record_t;
-typedef struct {
-    history_t *history;
-    source_record_t *source;
-    uint64_t generation, previous_lsn, record_lsn;
-    bool has_image, should_write;
-    uint8_t bytes[CANDIDATE_PAGE_BYTES];
-} staged_t;
-typedef struct {
-    uint8_t digest[32];
-    uint8_t *scratch;
-    candidate_wal_status_t status;
-    uint64_t page_records;
-} fingerprint_t;
-typedef struct {
-    candidate_redo_options_t options;
-    candidate_wal_t *wal;
-    candidate_redo_info_t info;
-    fingerprint_t fingerprint;
-    history_t history[HISTORY_SLOTS];
-    staged_t staged[CANDIDATE_WITNESS_PAGES];
-    uint8_t scratch[CANDIDATE_WAL_RECORD_BYTES];
-    uint64_t group_id, transaction_id, owner_epoch, last_lsn;
-    uint32_t group_crc, expected_pages, expected_records, group_records;
-    unsigned staged_count;
-    bool is_applying, is_preview;
-    source_record_t *records;
-    uint64_t record_count, record_capacity;
-} workspace_t;
-struct candidate_redo_preview {
-    candidate_wal_memory_t memory;
-    candidate_wal_t *wal;
-    uint8_t page[CANDIDATE_PAGE_BYTES], known[CANDIDATE_PAGE_BYTES];
-    workspace_t workspace;
-};
+typedef candidate_redo_history_t history_t;
+typedef candidate_redo_source_t source_record_t;
+typedef candidate_redo_stage_t staged_t;
+typedef candidate_redo_fingerprint_t fingerprint_t;
+typedef candidate_redo_workspace_t workspace_t;
 
 static uint64_t read_le(const uint8_t *p, unsigned count)
 {
@@ -72,7 +34,7 @@ static void write_le(uint8_t *p, uint64_t value, unsigned count)
     for (unsigned i=0; i<count; i++) p[i]=(uint8_t)(value>>(8*i));
 }
 
-static uint32_t page_crc(const uint8_t *p)
+uint32_t candidate_redo_page_crc(const uint8_t *p)
 {
     const uint8_t zero[4]={0};
     uint32_t crc=crc32c(0,p,52);
@@ -149,7 +111,7 @@ static candidate_wal_status_t read_target(workspace_t *w, history_t *h)
     uint8_t page[8192]; bool is_present=false;
     candidate_wal_status_t status=w->options.target.read(w->options.target.context,h->id,page,&is_present);
     if (status!=CANDIDATE_WAL_OK || !is_present) return status;
-    if (page_crc(page)!=read_le(page+52,4)) return CANDIDATE_WAL_OK;
+    if (candidate_redo_page_crc(page)!=read_le(page+52,4)) return CANDIDATE_WAL_OK;
     candidate_page_info_t info;
     status=check_page(w->options.uuid,page,&info);
     if (status!=CANDIDATE_WAL_OK) return status;
@@ -158,7 +120,7 @@ static candidate_wal_status_t read_target(workspace_t *w, history_t *h)
     return CANDIDATE_WAL_OK;
 }
 
-static history_t *find_history(workspace_t *w, uint64_t id)
+history_t *candidate_redo_find_history(workspace_t *w, uint64_t id)
 {
     uint64_t hash=id*UINT64_C(11400714819323198485);
     unsigned slot=(unsigned)(hash^(hash>>32))&(HISTORY_SLOTS-1);
@@ -222,12 +184,23 @@ static candidate_wal_status_t index_record(workspace_t *w, staged_t *s, const hi
     return CANDIDATE_WAL_OK;
 }
 
+static uint64_t seed_of(const workspace_t *w, const history_t *h)
+{
+    return w->seeds==NULL ? 0 : w->seeds[h-w->history];
+}
+
+static bool is_before_seed(const workspace_t *w, const history_t *h)
+{
+    return h->id==0 || w->group_lsn<seed_of(w,h);
+}
+
 static candidate_wal_status_t stage_page(workspace_t *w, const candidate_wal_record_t *r)
 {
     if (r->payload_bytes<32 || w->staged_count==64) return CANDIDATE_WAL_CORRUPT;
     if (r->type==4 && r->payload_bytes!=8224) return CANDIDATE_WAL_CORRUPT;
     uint64_t id=read_le(r->payload+8,8); if (id==0) return CANDIDATE_WAL_CORRUPT;
-    history_t *h=find_history(w,id);
+    history_t *h=candidate_redo_find_history(w,id);
+    if (w->seeds!=NULL && is_before_seed(w,h)) { w->skipped_pages++; return CANDIDATE_WAL_OK; }
     if (h->id==0) {
         if (w->is_applying) return CANDIDATE_WAL_CORRUPT;
         if (w->info.distinct_pages==CANDIDATE_ALLOCATION_ENTRIES) return CANDIDATE_WAL_LIMIT;
@@ -248,15 +221,30 @@ static candidate_wal_status_t stage_page(workspace_t *w, const candidate_wal_rec
     return apply_delta(s,r);
 }
 
-static candidate_wal_status_t check_history(staged_t *s, uint64_t end)
+candidate_wal_status_t candidate_redo_check_link(uint64_t generation, uint64_t last_lsn, const candidate_redo_link_t *next)
+{
+    if (generation!=0 && generation==next->generation) return next->previous_lsn==last_lsn ? CANDIDATE_WAL_OK : CANDIDATE_WAL_CORRUPT;
+    if (!next->is_image || next->previous_lsn!=0) return CANDIDATE_WAL_CORRUPT;
+    bool is_next=generation==0 || (generation!=UINT64_MAX && next->generation==generation+1);
+    return is_next ? CANDIDATE_WAL_OK : CANDIDATE_WAL_CORRUPT;
+}
+
+static candidate_wal_status_t check_link(const workspace_t *w, const staged_t *s)
+{
+    const history_t *h=s->history;
+    uint64_t seed=seed_of(w,h);
+    if (seed==0 || h->generation!=0) {
+        candidate_redo_link_t next={s->generation,s->previous_lsn,s->has_image};
+        return candidate_redo_check_link(h->generation,h->last_lsn,&next);
+    }
+    return s->has_image && w->group_lsn==seed ? CANDIDATE_WAL_OK : CANDIDATE_WAL_CORRUPT;
+}
+
+static candidate_wal_status_t check_history(const workspace_t *w, staged_t *s, uint64_t end)
 {
     history_t *h=s->history;
-    if (h->generation==s->generation) {
-        if (s->previous_lsn!=h->last_lsn) return CANDIDATE_WAL_CORRUPT;
-    } else {
-        if (!s->has_image || s->previous_lsn!=0) return CANDIDATE_WAL_CORRUPT;
-        if (h->generation!=0 && (h->generation==UINT64_MAX || s->generation!=h->generation+1)) return CANDIDATE_WAL_CORRUPT;
-    }
+    candidate_wal_status_t status=check_link(w,s);
+    if (status!=CANDIDATE_WAL_OK) return status;
     if (end-s->record_lsn>UINT32_MAX) return CANDIDATE_WAL_LIMIT;
     h->generation=s->generation; h->last_lsn=end; h->record_back=(uint32_t)(end-s->record_lsn);
     if (h->data_generation==s->generation && h->data_lsn==end) h->flags|=DATA_CORROBORATED;
@@ -271,7 +259,7 @@ static candidate_wal_status_t prepare_stage(workspace_t *w, staged_t *s, uint64_
         if (!(h->flags & DATA_PRESENT) || h->data_generation!=s->generation || h->data_lsn!=s->previous_lsn)
             return CANDIDATE_WAL_CORRUPT;
     }
-    write_le(s->bytes+40,end,8); write_le(s->bytes+52,page_crc(s->bytes),4);
+    write_le(s->bytes+40,end,8); write_le(s->bytes+52,candidate_redo_page_crc(s->bytes),4);
     candidate_page_info_t info;
     candidate_wal_status_t status=check_page(w->options.uuid,s->bytes,&info);
     if (status!=CANDIDATE_WAL_OK) return status;
@@ -291,9 +279,10 @@ static candidate_wal_status_t write_stage(workspace_t *w, staged_t *s, uint64_t 
 
 static candidate_wal_status_t finish_group(workspace_t *w, const candidate_wal_record_t *r)
 {
+    uint32_t pages=w->staged_count+w->skipped_pages;
     if (r->payload_bytes!=24 || read_le(r->payload,8)!=w->group_id) return CANDIDATE_WAL_CORRUPT;
-    if (w->staged_count!=w->expected_pages || w->group_records!=w->expected_records) return CANDIDATE_WAL_CORRUPT;
-    if (read_le(r->payload+8,4)!=w->staged_count || read_le(r->payload+12,4)!=w->group_records) return CANDIDATE_WAL_CORRUPT;
+    if (pages!=w->expected_pages || w->group_records!=w->expected_records) return CANDIDATE_WAL_CORRUPT;
+    if (read_le(r->payload+8,4)!=pages || read_le(r->payload+12,4)!=w->group_records) return CANDIDATE_WAL_CORRUPT;
     if (read_le(r->payload+16,4)!=w->group_crc || read_le(r->payload+20,4)!=0) return CANDIDATE_WAL_CORRUPT;
     uint64_t end=r->lsn+120;
     for (unsigned i=0; i<w->staged_count; i++) {
@@ -301,7 +290,7 @@ static candidate_wal_status_t finish_group(workspace_t *w, const candidate_wal_r
         if (s->has_image && read_le(s->bytes+40,8)!=end) return CANDIDATE_WAL_CORRUPT;
         if (s->source!=NULL && !w->is_applying) s->source->group_end=end;
         if (s->source!=NULL && w->is_applying && s->source->group_end!=end) { candidate_wal_reject(w->wal); return CANDIDATE_WAL_CORRUPT; }
-        candidate_wal_status_t status=w->is_applying ? prepare_stage(w,s,end) : check_history(s,end);
+        candidate_wal_status_t status=w->is_applying ? prepare_stage(w,s,end) : check_history(w,s,end);
         if (status!=CANDIDATE_WAL_OK) return status;
     }
     if (w->is_applying) for (unsigned i=0; i<w->staged_count; i++) {
@@ -311,14 +300,15 @@ static candidate_wal_status_t finish_group(workspace_t *w, const candidate_wal_r
     w->info.groups++; w->group_id=0; w->staged_count=0; return CANDIDATE_WAL_OK;
 }
 
-static candidate_wal_status_t visit_record(workspace_t *w, const candidate_wal_record_t *r)
+candidate_wal_status_t candidate_redo_visit_record(workspace_t *w, const candidate_wal_record_t *r)
 {
     if (r->type==3) {
         if (w->group_id!=0 || r->payload_bytes!=16) return CANDIDATE_WAL_CORRUPT;
         w->group_id=read_le(r->payload,8); if (w->group_id==0) return CANDIDATE_WAL_CORRUPT;
         w->transaction_id=r->transaction_id; w->owner_epoch=r->owner_epoch;
         w->expected_pages=(uint32_t)read_le(r->payload+8,4); w->expected_records=(uint32_t)read_le(r->payload+12,4);
-        w->staged_count=0; w->group_records=0; w->group_crc=candidate_wal_witness_crc(0,r); w->last_lsn=r->lsn;
+        w->staged_count=0; w->skipped_pages=0; w->group_records=0; w->group_crc=candidate_wal_witness_crc(0,r);
+        w->last_lsn=r->lsn; w->group_lsn=r->lsn;
         return CANDIDATE_WAL_OK;
     }
     if (w->group_id==0) return CANDIDATE_WAL_OK;
@@ -337,7 +327,7 @@ static bool visit(void *context, const candidate_wal_record_t *r)
 {
     workspace_t *w=context;
     if (!hash_record(&w->fingerprint,r)) return false;
-    w->fingerprint.status=visit_record(w,r);
+    w->fingerprint.status=candidate_redo_visit_record(w,r);
     return w->fingerprint.status==CANDIDATE_WAL_OK;
 }
 
@@ -484,7 +474,7 @@ static candidate_wal_status_t fill_from_data(candidate_redo_preview_t *p, const 
     workspace_t *w=&p->workspace; bool is_present=false; uint8_t page[CANDIDATE_PAGE_BYTES];
     candidate_wal_status_t status=w->options.target.read(w->options.target.context,h->id,page,&is_present);
     if (status!=CANDIDATE_WAL_OK) return status;
-    if (!is_present || page_crc(page)!=read_le(page+52,4)) return CANDIDATE_WAL_CORRUPT;
+    if (!is_present || candidate_redo_page_crc(page)!=read_le(page+52,4)) return CANDIDATE_WAL_CORRUPT;
     candidate_page_info_t info;
     status=check_page(w->options.uuid,page,&info);
     if (status!=CANDIDATE_WAL_OK) return status;
@@ -528,11 +518,11 @@ candidate_wal_status_t candidate_redo_preview_load(void *context, candidate_page
 {
     candidate_redo_preview_t *p=context;
     if (p==NULL || out==NULL || ref.id==0) return CANDIDATE_WAL_INVALID;
-    const history_t *h=find_history(&p->workspace,ref.id);
+    const history_t *h=candidate_redo_find_history(&p->workspace,ref.id);
     if (h->id==0 || h->generation==0) return CANDIDATE_WAL_CORRUPT;
     candidate_wal_status_t status=reconstruct(p,h);
     if (status!=CANDIDATE_WAL_OK) return status;
-    write_le(p->page+40,h->last_lsn,8); write_le(p->page+52,page_crc(p->page),4);
+    write_le(p->page+40,h->last_lsn,8); write_le(p->page+52,candidate_redo_page_crc(p->page),4);
     candidate_page_info_t info;
     status=check_page(p->workspace.options.uuid,p->page,&info);
     if (status!=CANDIDATE_WAL_OK) return status;
@@ -553,5 +543,6 @@ void candidate_redo_preview_close(candidate_redo_preview_t **preview)
     candidate_wal_memory_t memory=p->memory;
     if (p->workspace.records!=NULL)
         memory.release(memory.context,p->workspace.records,(size_t)p->workspace.record_capacity*sizeof(*p->workspace.records));
+    if (p->workspace.seeds!=NULL) memory.release(memory.context,p->workspace.seeds,HISTORY_SLOTS*sizeof(*p->workspace.seeds));
     memory.release(memory.context,p,sizeof(*p));
 }

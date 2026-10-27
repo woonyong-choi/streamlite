@@ -26,6 +26,8 @@ candidate_wal_status_t candidate_wal_read_frame(const candidate_wal_reader_t *re
     candidate_wal_record_t *out);
 /* request 형식과 현재 cut만 대조하며 after 불일치는 STALE, 불가능한 범위는 INVALID다. */
 candidate_wal_status_t candidate_wal_check_suffix(const candidate_wal_suffix_t *request, const candidate_wal_info_t *current);
+/* after가 현재 cut 안의 frame 경계가 아니면 STALE, before..after가 불가능한 범위면 INVALID다. */
+candidate_wal_status_t candidate_wal_check_range(const candidate_wal_suffix_t *request, const candidate_wal_info_t *current);
 /* before 끝부터 after 끝까지 padding·segment header·frame만 읽으며 IO·CORRUPT·UNSUPPORTED는 transport 실패지만 첫 기록 owner가 before 최고값보다 낮으면 visitor 전에 CORRUPT와 is_first_behind를 남기고 이는 transport 실패가 아니다. */
 candidate_wal_status_t candidate_wal_read_suffix(const candidate_wal_reader_t *reader, const candidate_wal_suffix_t *request,
     candidate_wal_suffix_count_t *count);

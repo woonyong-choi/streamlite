@@ -30,7 +30,7 @@ get_goal의 기존 등록은 역사적 blocked 상태이며 resume API는 없다
 
 ## Audit preservation and current execution
 
-Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. The Additional checkpoint after Task23 led to completed publication-counter and pinned-read repairs23s/23t. Task24 completes isolated bounded buffering/live checkpoint validation and its checkpoint is complete. Task24a1 completes isolated in-memory semantic transfer; Task24a2a completes isolated owning validation views; checkpoint24a2 is complete; the first incomplete boundary is explicit priority R1/R2 and then24a3 within required seeded log reuse24a. All remaining24a subunits and Tasks25–39 remain required. Completed candidate recovery/buffering/semantic transfer does not activate product SQL/ACK or establish MVCC/GC, actual independent writers, log reuse, streams or maintenance/recovery-inclusive COW/WAL measurements. The whole goal stays active. Existing COW transaction behavior and original data evidence remain preserved; latest R1 explicitly replaces old namespace/format acceptance, while all writer/total-cost/product requirements remain.
+Completed-entry prose is compacted during Task 16 after a full reread. The exact precompaction ledger is preserved in existing Git object `36529f6c57e08a04923df55f4a2c9765f7e85ff9:goal-1/tasks.md` (SHA-256 1813c082a787753bcc2215539f8352b3224430f05764ce6272bd411813915985). Use `git show 36529f6c:goal-1/tasks.md` and the unchanged section title for full work, commands, failures, limitations and historical next steps. This is a digest in the same approved tracking file, not a new context copy or rewritten history. At compaction, Task 6 source coverage/decisions/matrix and every incomplete entry remain verbatim; later execution updates only its own entry. The rejected earlier overall completion remains superseded. The Additional checkpoint after Task23 led to completed publication-counter and pinned-read repairs23s/23t. Task24 completes isolated bounded buffering/live checkpoint validation and its checkpoint is complete. Task24a1 completes isolated in-memory semantic transfer; Task24a2a completes isolated owning validation views; checkpoint24a2 is complete; R1/R2 and24a3a are complete; the next boundary is checkpoint24a3a, then writer-first25/26/27 before returning to required seeded log reuse24a. All remaining24a subunits and Tasks25–39 remain required. Completed candidate recovery/buffering/semantic transfer does not activate product SQL/ACK or establish MVCC/GC, actual independent writers, log reuse, streams or maintenance/recovery-inclusive COW/WAL measurements. The whole goal stays active. Existing COW transaction behavior and original data evidence remain preserved; latest R1 explicitly replaces old namespace/format acceptance, while all writer/total-cost/product requirements remain.
 
 Task 23d compacts only completed Task16–23c entries and their completed checkpoints after source review. Their exact full ledger remains in Git object `623e9d5c4da00a0adb842d3e8d4213d839ad6976:goal-1/tasks.md` (SHA-256 31dd489d6de49399434544cbfa2353500aa28e3cb458536bc2fbfe5a1d14d280). Task6 source coverage/requirement matrix and all incomplete entries remain verbatim; no source history, failure artifact or requirement is removed. This adds no context copy.
 
@@ -503,32 +503,105 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 ## Task R1 — Unify repository, local paths and distribution as StreamLite
 
 - Status: complete (local namespace/format/build/install validation and repository/path rename; no publication, independent writers or total-cost result)
-- Work performed: GitHub repository is woonyong-choi/streamlite, same id1319776529; origin/homepage and actual category/checkout/worktree paths use streamlite. Original9169 tracked bytes and other worktree heads survived the physical move and repair. Necessary old operational symlinks remain for active other owners and the unmodified Vault registry. New distribution/import, streamlite_* C API, libstreamlite, STREAMLITE_* flags and org.streamlite.ycsb callers replace old aliases. The unreleased version is0.3.0; oldv0.2.0 tag/release and historical results retain their measured identity.
-- Format decision: latest user correction supersedes old reader compatibility. New control uses STREAMLITE10B+zero6B, format4, SLPG envelope, header80B and inline IDs1508. Active record/overflow/catalog/heap root+leaf/pk/text magics use SL identifiers. No old-format reader, auto-conversion or namespace fallback. Valid foreign format refuses without mutation; original DB evidence is unchanged after actual installed rejection105. Full16B choice and narrower8B alternative reasons are streamlite-format-decision.json, not measured rankings.
-- Repairs: actual page boundary before254/255 reproduced successful publish followed by reopenCORRUPT3; original12,378,112B failure DB SHA a2e455cb2b44393a26a54e4cf97a972ff453429688b929c3759a1ad6d5c11e70 remains. Only the self-consuming free-list chain boundary uses shared fresh-tail allocation; ordinary reuse/undo and strict reader stay. Actual40B queue-name collision reproduced1FAIL; sizeof-derived prefix/name/suffix capacity repairs isolation. Fixed-test after258/258 and1PASS, then fresh full native validates the current helper. Two independent repair reviews have no remainingP1/P2. A redundant new comment was deleted; preprocessed page_file.c bytes remain identical, so runtime proof is reused.
-- Legacy removal: removed4 current CI jobs tied to historical source/old ABI and the eager git-show/compile/exec loader. Historical reports/raw/offline analysis remain. Removed unrelated PythonSQLite module-file identity assumption after actual builtin-module collection failure; retained measured component/source/binary/environment guards. Original actual writer, fairness, cleanup/recovery-inclusive COW/WAL and product gates stay required.
-- Verification evidence: all paths below are in existing .local/runs/embedded-stream-renewal. streamlite-final-native.json is actual make test-all with -Werror/fatalUBSan and Python59PASS/4conditional-OFF skips. Library SHA f8eb3b27c0d6c13c8507e25ea062a1a00e76b47f0ae19631ae5675ff9b81c876 binds Python/native use. streamlite-final-jni.json has real Java21 -Xcheck:jni StreamLite/SQLite smoke; no new YCSB result. streamlite-final-collectors-repaired.json has135PASS. streamlite-final-benchmark-build-tests-corrected.json has6PASS/1Linux-only skip. streamlite-final-metadata.json verifies actionlint, exact29 renamed native exports and default source loading. streamlite-final-packages.json covers installed v4 bytes, SQL/ACK transaction/reopen and unchanged old-format refusal. Final source archives are rebuilt/installed/smoked/Twine-checked in streamlite-r1-final-artifacts.json; sdist Makefile/page_file bytes equal final source. No upload/tag/release.
-- Preservation repair: streamlite-r1-final-preservation.json caught16 old bounded-open fixture files missing and one workspace DB changed by pre-existing hardcoded build/ test output. They were not continuously preserved. streamlite-fixture-recovery.json replays the preserved original binary only in a separate build execution path; all16 outputs exactly match original hashes. Existing identical workspace artifact restores the17th; displaced v4 DB is retained. streamlite-fixture-restoration.json records every origin/hash. Claude changed only two test paths and one narrow static Make rule to use actual BUILD_DIR. Actual GNU Make3.81 rejected parent-requested private syntax; raw failure remains, final static rule needs no fallback. streamlite-test-output-after-corrected.json confirms both cases pass, original17 hashes unchanged, and no test define leaks into fingerprint. Other original artifacts and protected tracked inputs are checked by the final preservation addendum.
-- Remaining risk: local macOS arm64 execution does not prove Linux/old-OS runtime or physical power loss. Current default remains COW. Seeded redo/durable bootstrap/reader lifetime/reuse, MVCC/locks, actual independent writers, matched maintenance/recovery total-cost measurements and product integration remain incomplete. Names/formats do not finish them. Active operational symlinks are not compatibility readers and cannot be removed while other owners rely on them. Vault reflection remains deferred.
-- AAR: a distinct BUILD_DIR alone does not isolate tests with literal data paths; inspect actual writes and hash protected originals. Preserve failed invocations and restore only byte-proven deterministic fixtures, never describe a restoration as continuous preservation. Avoid obsolete ABI shims and unrelated environment guards merely to keep old jobs green.
-- Next step: execute R2 dead raw semantic seed removal in this same session, then24a3 and the original queue, each with separate validation/record/commit.
-- Commit record: containing task-boundary commit uses subject `feat(repo)!: StreamLite 이름과 단일 저장 형식으로 변경` and marker `Goal-mode boundary: goal-1 task R1: Unify repository, local paths and distribution as StreamLite`. Verify configured identity, parentdab0f5cd, owned scope, marker and clean status after commit.
+- Work/evidence/risk/AAR/next/commit: full completed record preserved at Git `191ccc95e1ef5e2859c3019db4057dc74b381857:goal-1/tasks.md` under this same title, SHA-256 eed6a31aacbfbd3d5930d0a0b94f15fb9606b567b53094b042d60e74aa8d4332. Actual task commit `9538da7ea7ff4a0fbda195828834c4b4fb56bb67` retains the exact validated scope. Naming/install/legacy removal is not writer/totalcost/product completion. Original raw, failure specimens, restoration incident and validation limits remain in the referenced record/artifacts.
 
 ## Task R2 — Remove unused legacy paths and redundant gates
 
 - Status: complete (unused raw seed path deletion and affected local validation; no new runtime feature or whole-goal completion)
-- Work performed: actual capture/continue callers existed only in the retired tests. Removed7 files/2089 lines comprising raw seed header/module and5 dedicated fixture/test files. Removed its Make object/dependency/target/report family and the wrapper-only semantic case. Moved exact transaction/group types to witness-state internal header and exact admission type to outcome internal header; the latter directly includes the still-used witness type. Canonical witness/admissions implementation,14 view cases,closure/boundary/buffer/redo and actual-writer/fullcost/product gates remain. Current build/design docs no longer advertise the retired API/last-segment limit. Historical completed records and original raw/failure samples remain.
-- Verification evidence: streamlite-r2-baseline.json binds clean9538da7e, scope and9169 tracked hashes. Claude authored the exact7 deletions; parent executed only that verified list in streamlite-r2-deletions.json. Initial fresh compile exposed a fixture transitive include dependency; streamlite-r2-validation.json/stderr remains as failure evidence. The sole added repair is a direct owning-header include in test_candidate_recovery_closure_fixture.h, with scope addendum. streamlite-r2-validation-repaired.json records -Werror/fatalUBSan and25PASS (14view/11closure), source inputs unchanged. Independent review verifies exact3 type layouts, byte-identical surviving14 case bodies, no retired tracked references/additional comments and no remainingP1/P2. streamlite-r2-artifacts.json records actual final wheel/sdist build, both real installs/smokes and Twine; current Make/header bytes match archive and retired source/header names are absent. These are correctness controls, not new performance samples. Existing unrelated native/JNI evidence is reused because corresponding runtime source/header/compiler inputs do not change.
-- Remaining risk: this deletes only demonstrated dead paths and obsolete contracts; live persist-queue adapter, historical reports/raw, current COW comparator and required fault/writer/fullcost behaviors are not dead code. Physical seed/redo/buffer authority, durable bootstrap, reader lifetime, actual reuse/MVCC/locks/writers, total-cost and product integration remain incomplete. No upload/push/merge/Vault write.
-- AAR: when moving a shared type from an unused public wrapper, migrate direct declaration consumers as well as implementation includes; fresh compilation exposed a fixture dependency hidden by the removed transitive header. Do not restore that wrapper or broaden unrelated production includes to silence it.
-- Next step: continue Task24a3 in the same session with source-grounded B/R, page/allocation/bytes/FPI ownership and actual buffer force/lifetime validation. Read-only how preparation is task24a3-source-how.json; it is not implementation or measured proof.
-- Commit record: containing task-boundary commit uses subject `refactor(repo): 사용하지 않는 의미 seed 경로와 시험 제거` and marker `Goal-mode boundary: goal-1 task R2: Remove unused legacy paths and redundant gates`. Verify parent9538da7e, configured user identity, owned15-file scope and clean status after commit.
+- Work/evidence/risk/AAR/next/commit: full completed record preserved at Git `191ccc95e1ef5e2859c3019db4057dc74b381857:goal-1/tasks.md` under this same title, SHA-256 eed6a31aacbfbd3d5930d0a0b94f15fb9606b567b53094b042d60e74aa8d4332. Actual task commit `191ccc95e1ef5e2859c3019db4057dc74b381857` retains the exact validated scope. Naming/install/legacy removal is not writer/totalcost/product completion. Original raw, failure specimens, restoration incident and validation limits remain in the referenced record/artifacts.
+
+## Task 24a3a — Capture physical page authority and execute seeded redo
+
+- Status: complete (isolated physical authority/seeded redo and causal callback/source repairs; whole goal remains active)
+- Scope/work: canonical view owns exact page generation/previousPageLSN, allocation frontier, latest FPI and same-observation before-R/cut hash. B-only meaning and work-only bounded chronological R..B index reconstruct actual LIVE bytes; RESOLVED executes current cut, PREVIEW stays read-only. No raw seed wrapper or full DB image copy. R535536 is0.5107MiB, with positive R..B reads and zero denied-prefix reads;63LIVE/FREE/reallocation/expired-version bytes and source+next+WAL+work29,034,176B are checked as requested bytes, not RSS. Parent24a3b/24a and product remain incomplete. Issues: #263,#266.
+- Actual repairs: independent static P1 callback-time old-cut overwrite and P2 early semantic CORRUPT persistent-reject bypass first fail in3 fixed native cases on frozen C1. Single Claude code3 repairs pre-write/final cut checks and source rejection. Independent review then finds a final physical-table release callback gap in canonical open/continue;2 additional fixed release cases both fail on frozen C3, then exact2 success-only post-settle cut checks repair them. Final five original failures become PASS with STALE/zero-output/no stale write or permanent POISONED as appropriate; healthy controls, source preservation and zero leaked bytes remain. Same fixed13 case bodies run by default.
+- Verification: task24a3a-c2-before.json/c5-before.json preserve actual exit1 failures, binaries and source hashes; C1 source patch SHA8fba14bee8e886a48e5b05eccb3e0f1743b789e4f365ca6e972194d3f012711b preserves new source. task24a3a-c6-final-registration/freeze/final.json and final-verification.json record fresh -Werror/fatalUBSan, all89 actual invocations PASS/RC0/matchedtrue/stderr0, fixed13 bytes unchanged and286 inputs unchanged. Final view6/closure3/callback15/buffer17/publish18/WAL read2/checkpoint/state/files/basic gates cover changed paths. Source-causal C3 view14/closure11/boundary6/transport9/redo/identity/recovery evidence is reused where unchanged. Independent repair/execution review finds P1=0/P2=0 and confirms exact source/report hashes; reviewer did not independently execute binaries.
+- Validation limits: initial broad recovery-wal default60s times out. The previously established900s runner guard completes the identical binary/assertions in60.843s; native90s guard is unchanged. Original timeout remains. Broad publisher segments is deliberately control-stopped SIGTERM15 after normal/source/read/counter/basic/selection/empty/resolved/sparse/boundary success; segments/faults and the20target batch are not claimed complete. task24a3a-c3-validation-scope-correction.json records narrowing to final source-causal gates rather than repeating the historical full campaign. No failed assertion is relaxed or counted as success.
+- Source/quality: code1 authored source and was control-stopped143 for verification, not CLI success. Code2–6 report process0, stream success/is_error=false and no permission denials. Actual source/test code stays one local Claude writer; parent runs/reviews/records/commits. Comment review accepts2 redundant new header-comment removals, exact byte reversal proves comment-only change,15 ownership/failure contracts remain; no source authorship traces.
+- Seal/preservation: task24a3a-final-manifest.json SHA e8a73af645b1b9cfb946539045e5d32496a85d4cdf2385d10667d82630db1874 binds20source,12evidence references and4708 new artifacts. final-preservation.json checks101278 original+additional artifacts with0 mismatches, protected tracked0, original ledger prefix and main/origin6bb8b2e8/four other worktree heads unchanged. New allocated sum1,136,414,720B exceeds the internal1GiB soft target; free31,280,541,696B exceeds8GiB hard reserve. Raw/failure artifacts are retained; soft excess is not hidden by deleting evidence.
+- Remaining risk: first all-LIVE FPI retention can pin R on cold pages; actual clean-baseline ownership, seeded buffer/NO-STEAL/checkpoint transition, durable seed/bootstrap, reader/reclaim/reuse and full MVCC/locks/SQL writer/totalcost/product remain unfinished. No whole-campaign, power-loss, whole-app memory, performance winner or product quality claim. Initial capture/fullprefix hashing and reconstruction/index/maintenance costs stay in the future matched comparison.
+- AAR: a small passing suite omitted callback boundaries and early error persistence. Add actual failing controls before repair and recheck the last callback before exposing success. Broad default historical campaigns can obscure the changed-path evidence; freeze inputs, record scope before final checks and retain every interrupted/failed result.
+- Next step: separate tracking-only checkpoint after24a3a, then writer-first25/26/27 under the latest user priority. Resume retained24a3b/4–6 after27; all real cleanup/recovery/GC gates remain before30–32. Do not stop the active goal at this successful commit.
+- Commit record: containing task-boundary commit uses subject `feat(repo): 물리 복구 권위와 제한 범위 재실행 추가` and marker `Goal-mode boundary: goal-1 task 24a3a: Capture physical page authority and execute seeded redo`. Verify parent191ccc95, configured identity, owned21-file scope, marker and clean status after commit.
+
+## Additional checkpoint after Task 24a3a
+
+- Status: incomplete
+- Work performed: not started; separate tracking-only review after R1/R2/24a3a.
+- Verification evidence: required — scope, physical-vs-semantic proof, actual bytes/prefix/budget/failure results, preservation and remaining parent24a3/writer/fullcost obligations.
+- Remaining risk: insert any required source repair as ordinary task; checkpoint itself only changes tasks.md.
+- Next step: separate tracking commit then first incomplete unit under continuous override.
+- Commit status: no checkpoint commit attempted.
+
+## Writer-first execution priority — 2026-10-27
+
+사용자는 현재 수리를 완료하고 실제 다중 writer와 COW/WAL 총비용 비교를 빨리 수행하라고 다시 지시했다.24a3a 수리·검증·commit과 별도 checkpoint 뒤25 MVCC,26 조기 소유/충돌,검토,27 실제 같은 process writer 중첩을 먼저 구현한다. 원래25–27 항목과 검토를 이 위치로 옮겼으며 삭제·완료 처리는 하지 않았다. 기존 전체 거래 mutex를 푸는 것만으로 writer라고 보고하지 않는다. 전체 WAL 보존·명시 용량 거절의 격리된 사례에서는 cold seed/실제 회수가 동시 거래 정확성의 논리적 선행 조건이 아니므로 이 순서를 선택한다. 실제 append/group 짧은 임계구간과 거래 수명 직렬화는 구별한다.
+
+27/checkpoint 뒤24a3b/24a3/24a4–6/24a를 재개하고,28 교차process·29 matchedCOW·30 양쪽 안전성·31 사전계획·32 실제 총비용 순서를 유지한다. 정리·회수·재사용·GC·checkpoint·복구를 빼거나 cap 도달 전 결과만으로 steady 비용을 판정하지 않는다. 실제 SQL/ACK 연결·same-leaf 갱신 손실·A가 열린 채 B commit/진전·실제 실패/재시작을 각 완료 기준대로 검증한다. 아직 writer 구현이나 비용 결과는 없다. 읽기 전용 writer_path_how/candidate_writer_how의 source 조사와 transaction.c writer_active, database work.active/file lock, session db->run, candidate_buffer 배타 caller 계약을 대조한 순서 조정이다.
+
+## Task 25 — Implement MVCC visibility and abort recovery
+
+- Status: incomplete
+- Scope: Implement row/transaction version visibility, fixed snapshots, logical abort, index/structural recovery and old-version GC, integrated with candidate WAL/buffering. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Read-own/committed/uncommitted/aborted/restarted versions, index split/allocation abort, long-reader pin/GC/OOM and semantic differential tests.
+- Remaining risk: Logical abort, structural split and reader-visible versions need distinct recovery rules.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Task 26 — Implement early key and range coordination
+
+- Status: incomplete
+- Scope: Implement serializable early key/range/table/schema coordination, short physical latches, bounded waits/deadlock handling and transaction-end release in the candidates. Issues: #238, #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Hot-row versus independent keys, unique/range/predicate/schema conflicts, deadlock/cancel/timeout/fairness and stale SNAPSHOT/result-preservation tests.
+- Remaining risk: Conservative table locks can serialize independent work; no silent retry of observable results.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Additional checkpoint after Task 26
+
+- Status: incomplete
+- Work performed: not started. 최신 사용자 우선순위로25/26 뒤 실제 writer27 전에 수행하는 검토다. 아직 미완료인24a는 writer27의 국소 정확성 뒤 재개하며 after27도 보존한다.
+- Verification evidence: required — 원래 scope·실제 bounded buffering/seeded reuse·MVCC·조기 조정의 구현과 실패/자원·기록을 대조하는 tracking-only 검토.
+- Remaining risk: 실제 writer27을 시작하기 전에 새 결함은 독립 수리 과업으로 남긴다.
+- Next step:25/26이 끝나면 별도 tracking commit으로 검토하고, 연속 실행 지시에 따라27로 진행한다. 실제 정리·회수24a를 통과하기 전 총비용 측정은 금지한다.
+- Commit status: no checkpoint commit attempted.
+
+## Task 27 — Integrate same-process independent writer candidates
+
+- Status: incomplete
+- Scope: Connect SQL/ACK transaction execution and the E4 shared-payload/small-state fixture to WAL/MVCC/buffer/lock candidate modules, using explicit isolated candidate mode. Preserve current backend defaults. Issues: #263, #266.
+- Work performed: not started.
+- Verification evidence: required — Open A while independent B executes/commits, same-leaf different rows, same-row/range/append/cursor conflict and correctness/failure checks with actual overlap traces.
+- Remaining risk: Multiple request entry points are not independent writers; no stale whole-page overwrite.
+- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
+- Commit status: no task commit attempted.
+
+## Checkpoint after Task 27
+
+- Status: incomplete
+- Work performed: not started.
+- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 25–27; tracking-only checkpoint.
+- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
+- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
+- Commit status: no checkpoint commit attempted.
+
+## Task 24a3b — Initialize seeded buffering and connect terminal force authority
+
+- Status: incomplete
+- Scope: actual seeded buffer directory/frame/FPI/recLSN/contributor init and admit/flush/proof use canonical page authority and B-only meaning. Retired structural terminal authority requires exact-started and resident absence plus actual B force; LIVE versions keep real transaction/CSN. Explicit checkpoint/anchor transition must replace whole-prefix proof before parent24a3 completion. Issues: #263,#266.
+- Work performed: not started; source how and architecture explain current fullscan and checkpoint-suffix UNSUPPORTED gaps.
+- Verification evidence: required — all LIVE/FREE directory and dirty frame state, frame-pressure LIMIT, retired structure B force-before-write versus unfinished/missing-version refusal, no-read-before-R through open/pin/admit/flush/checkpoint proof, exact recLSN/redirty/FPI behavior, actual source/new aggregate budget and resource lifetime.
+- Remaining risk: 24a3a all-LIVE FPI retention may pin R on cold pages. Actual durable clean-baseline ownership plus write-before-overwrite FPI must be assessed in24a3b/4/6 under the same COW/WAL fault model; whole cold-data rewrite cannot be hidden or treated as inherent WAL cost. open_seeded alone is insufficient if later operations call fullscan or proof silently falls back. No durable seed/bootstrap/reader/reclaim/MVCC/writer/product activation in this unit.
+- Next step: implement only after24a3a and its checkpoint, preserving full parent scope.
+- Commit status: no task commit attempted.
 
 ## Task 24a3 — Seed page authority and physical redo state
 
 - Status: incomplete
 - Scope: LIVE/FREE page의 generation/pageLSN·allocation 마지막 전이·검증된 clean baseline·필요 dirty/FPI를 streaming seed와 seeded redo/buffer 초기 상태에 연결한다. semantic B와 physical R을 분리한다. Issues: #263, #266.
-- Work performed: not started.
+- Work performed: actual source how and two architectures plus independent judgment complete. The scope is split into24a3a physical authority/seededredo and24a3b actualbuffer/force/checkpoint proof; this parent stays incomplete until both verified. Source and design are not implementation or measurement.
 - Verification evidence: required — suffix에 안 나오는 기존 page, expired request의 LIVE version, FREE→재할당, torn page/delta/FPI, 실제 data/result bytes·ref/LSN/상태 차등, prefix-read 차단, OOM·전체 예산. task24a2-structural-closure-source-note.json의dirty/구조기여자NO-STEAL 근거도명시연결한다. 검증view의exact started집합과resident부재가종결을증명하는경우에도B force와수명·page권위를실제buffer에대조하며임의COMMIT/CSN을만들지않는다.
 - Remaining risk: completing this unit does not complete parent Task24a or actual writers/fullcost/product.
 - Next step: verify and commit this unit, then continue the next incomplete unit in this session under the latest user override.
@@ -591,54 +664,6 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 - Remaining risk: Current transport starts at segment0; existing checkpoint tuples and whole-prefix witnesses cannot safely open pruned history. No required segment may be deleted before complete seed/selection proof.
 - Next step:24a2의 closure/역사 ID·nonce 보존부터 같은 세션에서 순서대로 진행한다. 각 단위는 별도 검증·commit하며 원래24a는 실제 회수/반복 재사용·복구까지 통과하기 전 미완료다. 일반 segment suffix cursor는24a4/6의 transport 전제에 포함한다. 코드 writer의 Bash를 제외하고 parent가 실행한다. 전역 설정·현재DB/default·Vault는 변경하지 않는다.
 - Commit status: no task commit attempted.
-
-## Task 25 — Implement MVCC visibility and abort recovery
-
-- Status: incomplete
-- Scope: Implement row/transaction version visibility, fixed snapshots, logical abort, index/structural recovery and old-version GC, integrated with candidate WAL/buffering. Issues: #263, #266.
-- Work performed: not started.
-- Verification evidence: required — Read-own/committed/uncommitted/aborted/restarted versions, index split/allocation abort, long-reader pin/GC/OOM and semantic differential tests.
-- Remaining risk: Logical abort, structural split and reader-visible versions need distinct recovery rules.
-- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
-- Commit status: no task commit attempted.
-
-## Task 26 — Implement early key and range coordination
-
-- Status: incomplete
-- Scope: Implement serializable early key/range/table/schema coordination, short physical latches, bounded waits/deadlock handling and transaction-end release in the candidates. Issues: #238, #263, #266.
-- Work performed: not started.
-- Verification evidence: required — Hot-row versus independent keys, unique/range/predicate/schema conflicts, deadlock/cancel/timeout/fairness and stale SNAPSHOT/result-preservation tests.
-- Remaining risk: Conservative table locks can serialize independent work; no silent retry of observable results.
-- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
-- Commit status: no task commit attempted.
-
-## Additional checkpoint after Task 26
-
-- Status: incomplete
-- Work performed: not started. Task24a/25/26의 세 경계 뒤 필요한 별도 checkpoint이며 기존 after27은 보존한다.
-- Verification evidence: required — 원래 scope·실제 bounded buffering/seeded reuse·MVCC·조기 조정의 구현과 실패/자원·기록을 대조하는 tracking-only 검토.
-- Remaining risk: 실제 writer27을 시작하기 전에 새 결함은 독립 수리 과업으로 남긴다.
-- Next step:24a/25/26이 끝난 다음 continuation에서만 수행하고 tracking commit 뒤 멈춘다.
-- Commit status: no checkpoint commit attempted.
-
-## Task 27 — Integrate same-process independent writer candidates
-
-- Status: incomplete
-- Scope: Connect SQL/ACK transaction execution and the E4 shared-payload/small-state fixture to WAL/MVCC/buffer/lock candidate modules, using explicit isolated candidate mode. Preserve current backend defaults. Issues: #263, #266.
-- Work performed: not started.
-- Verification evidence: required — Open A while independent B executes/commits, same-leaf different rows, same-row/range/append/cursor conflict and correctness/failure checks with actual overlap traces.
-- Remaining risk: Multiple request entry points are not independent writers; no stale whole-page overwrite.
-- Next step: execute after the preceding task and any required checkpoint; insert prerequisite repairs if evidence demands them.
-- Commit status: no task commit attempted.
-
-## Checkpoint after Task 27
-
-- Status: incomplete
-- Work performed: not started.
-- Verification evidence: required — original-scope coverage, actual source/test/measurement status, safety/data/resource/compatibility and document/issue consistency for Tasks 25–27; tracking-only checkpoint.
-- Remaining risk: defer missing implementation/validation repair explicitly, never mark the full goal complete from this checkpoint.
-- Next step: checkpoint in its own continuation; then execute the first incomplete task or required repair.
-- Commit status: no checkpoint commit attempted.
 
 ## Task 28 — Implement and verify cross-process ownership
 

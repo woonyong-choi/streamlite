@@ -151,7 +151,7 @@ $(BUILD_DIR)/test_candidate_outcome_witness: $(BUILD_DIR)/tests/test_candidate_o
 CANDIDATE_OUTCOME_REPORT ?= $(BUILD_DIR)/fault/test_candidate_outcome_witness.json
 CANDIDATE_RECOVERY_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery.o
 CANDIDATE_RECOVERY_TERMINAL_MODULE ?= $(BUILD_DIR)/storage/candidate_recovery_terminal.o
-CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o $(BUILD_DIR)/storage/candidate_wal_identity.o
+CANDIDATE_RECOVERY_OBJS = $(CANDIDATE_RECOVERY_MODULE) $(CANDIDATE_RECOVERY_TERMINAL_MODULE) $(BUILD_DIR)/storage/candidate_recovery_state.o $(BUILD_DIR)/storage/candidate_recovery_physical.o $(CANDIDATE_OUTCOME_OBJS) $(CANDIDATE_CONTROL_OBJS) $(BUILD_DIR)/storage/candidate_allocation.o $(BUILD_DIR)/storage/candidate_wal_identity.o
 $(BUILD_DIR)/test_candidate_checkpoint_state: $(BUILD_DIR)/tests/test_candidate_checkpoint_state.o $(CANDIDATE_RECOVERY_OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 CANDIDATE_STATE_REPORT ?= $(BUILD_DIR)/fault/test_candidate_checkpoint_state.json
@@ -353,6 +353,22 @@ test-candidate-recovery-closure-callbacks: $(BUILD_DIR)/test_candidate_recovery_
 	@for c in $(CANDIDATE_CLOSURE_CALLBACKS_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_CLOSURE_TRANSPORT_TIMEOUT) \
 		--seed $(FAULT_SEED) --report $(CANDIDATE_CLOSURE_CALLBACKS_REPORT)-$$c.json -- \
 		./$(BUILD_DIR)/test_candidate_recovery_closure_callbacks $$c || exit 1; done
+CANDIDATE_PHYSICAL_OBJS ?= $(BUILD_DIR)/storage/candidate_redo_seeded.o
+CANDIDATE_PHYSICAL_TEST_OBJS ?= $(BUILD_DIR)/tests/test_candidate_recovery_physical.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_physical_fixture.o $(BUILD_DIR)/tests/test_candidate_recovery_closure_dependency.o \
+	$(BUILD_DIR)/tests/test_candidate_recovery_closure_fixture.o $(BUILD_DIR)/tests/test_candidate_recovery_view_fixture.o
+$(BUILD_DIR)/test_candidate_recovery_physical: $(CANDIDATE_PHYSICAL_TEST_OBJS) $(CANDIDATE_PUBLISH_TEST_OBJS) \
+	$(CANDIDATE_PHYSICAL_OBJS) $(CANDIDATE_CLOSURE_OBJS) $(CANDIDATE_RECOVERY_PUBLISH_OBJS) $(CANDIDATE_RECOVERY_OBJS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+CANDIDATE_PHYSICAL_TIMEOUT ?= 900
+CANDIDATE_PHYSICAL_REPORT ?= $(BUILD_DIR)/fault/test_candidate_recovery_physical
+CANDIDATE_PHYSICAL_CASES ?= range authority restore malformed source budget modes failures callback-cut-alloc \
+	callback-cut-restore early-corrupt view-release-open view-release-continue
+.PHONY: test-candidate-recovery-physical
+test-candidate-recovery-physical: $(BUILD_DIR)/test_candidate_recovery_physical
+	@for c in $(CANDIDATE_PHYSICAL_CASES); do $(PYTHON) tests/fault_runner.py --timeout $(CANDIDATE_PHYSICAL_TIMEOUT) \
+		--seed $(FAULT_SEED) --report $(CANDIDATE_PHYSICAL_REPORT)-$$c.json -- \
+		./$(BUILD_DIR)/test_candidate_recovery_physical $$c || exit 1; done
 CANDIDATE_WAL_READ_BOUNDARY_OBJS ?= $(CANDIDATE_WAL_OBJS)
 $(BUILD_DIR)/test_candidate_wal_read_boundary: $(BUILD_DIR)/tests/test_candidate_wal_read_boundary.o \
 	$(CANDIDATE_WAL_READ_BOUNDARY_OBJS) $(BUILD_DIR)/storage/checksum.o
@@ -710,6 +726,7 @@ clean:
 -include $(BUILD_DIR)/storage/candidate_redo.d
 -include $(BUILD_DIR)/storage/candidate_outcome_witness.d
 -include $(BUILD_DIR)/storage/candidate_recovery.d $(BUILD_DIR)/storage/candidate_recovery_state.d
+-include $(BUILD_DIR)/storage/candidate_recovery_physical.d $(CANDIDATE_PHYSICAL_OBJS:.o=.d)
 -include $(BUILD_DIR)/storage/candidate_recovery_terminal.d
 -include $(CANDIDATE_RECOVERY_PUBLISH_OBJS:.o=.d)
 -include $(CANDIDATE_CLOSURE_OBJS:.o=.d) $(BUILD_DIR)/storage/candidate_wal_identity.d

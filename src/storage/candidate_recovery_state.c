@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "candidate_redo_internal.h"
 #include "candidate_wal_internal.h"
 #include "candidate_wal_witness_internal.h"
 
@@ -25,33 +26,52 @@ static bool same_version(candidate_version_ref_t a, candidate_version_ref_t b)
     return same_page(a.page,b.page) && a.slot == b.slot && a.slot_generation == b.slot_generation;
 }
 
-static page_history_t *history_slot(state_t *s, uint64_t id)
+static unsigned slot_of(const state_t *s, uint64_t id)
 {
     uint64_t hash = id * UINT64_C(11400714819323198485);
     unsigned slot = (unsigned)(hash ^ (hash >> 32)) & (HISTORY_SLOTS - 1);
     while (s->pages[slot].ref.id != 0 && s->pages[slot].ref.id != id) slot = (slot + 1) & (HISTORY_SLOTS - 1);
-    return &s->pages[slot];
+    return slot;
+}
+
+static page_history_t *history_slot(state_t *s, uint64_t id) { return &s->pages[slot_of(s,id)]; }
+
+const candidate_recovery_page_t *candidate_recovery_graph_page(const state_t *s, uint64_t id)
+{
+    return &s->pages[slot_of(s,id)];
+}
+
+static bool fail(state_t *s, candidate_wal_status_t status)
+{
+    s->status = status;
+    return false;
+}
+
+static candidate_wal_status_t publish_page(state_t *s, const candidate_recovery_pending_t *page, uint64_t end)
+{
+    if (page->ref.id == 0) return CANDIDATE_WAL_CORRUPT;
+    page_history_t *p = history_slot(s,page->ref.id);
+    if (p->ref.id == 0 && s->count++ == CANDIDATE_ALLOCATION_ENTRIES) return CANDIDATE_WAL_LIMIT;
+    candidate_redo_link_t link = {page->ref.generation,page->previous_lsn,page->is_image};
+    candidate_wal_status_t status = candidate_redo_check_link(p->ref.generation,p->lsn,&link);
+    if (status != CANDIDATE_WAL_OK) return status;
+    *p = (page_history_t){page->ref,end,page->is_image ? s->group_lsn : p->image_lsn};
+    return CANDIDATE_WAL_OK;
 }
 
 static bool observe_pages(void *context, const candidate_wal_record_t *r)
 {
     state_t *s = context;
-    if (r->type == 3) s->pending_count = 0;
+    if (r->type == 3) { s->pending_count = 0; s->group_lsn = r->lsn; }
     if (r->type == 4 || r->type == 5) {
-        if (r->payload_bytes < 32 || s->pending_count == CANDIDATE_WITNESS_PAGES) {
-            s->status = CANDIDATE_WAL_CORRUPT; return false;
-        }
-        s->pending[s->pending_count++] = (candidate_page_ref_t){read_le(r->payload + 8,8),read_le(r->payload + 16,8)};
+        if (r->payload_bytes < 32 || s->pending_count == CANDIDATE_WITNESS_PAGES) return fail(s,CANDIDATE_WAL_CORRUPT);
+        s->pending[s->pending_count++] = (candidate_recovery_pending_t){{read_le(r->payload + 8,8),read_le(r->payload + 16,8)},
+            read_le(r->payload + 24,8),r->type == 4};
     }
     if (r->type != 8) return true;
     for (unsigned i = 0; i < s->pending_count; i++) {
-        candidate_page_ref_t ref = s->pending[i];
-        if (ref.id == 0) { s->status = CANDIDATE_WAL_CORRUPT; return false; }
-        page_history_t *p = history_slot(s,ref.id);
-        if (p->ref.id == 0 && s->count++ == CANDIDATE_ALLOCATION_ENTRIES) {
-            s->status = CANDIDATE_WAL_LIMIT; return false;
-        }
-        *p = (page_history_t){ref,r->lsn + 120};
+        candidate_wal_status_t status = publish_page(s,&s->pending[i],r->lsn + 120);
+        if (status != CANDIDATE_WAL_OK) return fail(s,status);
     }
     s->pending_count = 0;
     return true;
@@ -279,6 +299,7 @@ static void close_state(state_t **out, const candidate_wal_memory_t *memory)
     state_t *s = *out;
     *out = NULL;
     candidate_allocation_close(&s->allocation);
+    candidate_recovery_physical_release(&s->physical,memory);
     memory->release(memory->context,s,sizeof(*s));
 }
 
@@ -290,7 +311,7 @@ candidate_wal_status_t candidate_recovery_graph_clone(const state_t *source, con
     memcpy(s,source,sizeof(*s));
     s->load = (candidate_catalog_load_t){0}; s->allocation = NULL; s->witness = NULL;
     s->info = (candidate_recovery_info_t){.anchor = source->info.anchor}; s->status = CANDIDATE_WAL_OK;
-    s->mark = NULL; s->mark_context = NULL;
+    s->mark = NULL; s->mark_context = NULL; s->physical.groups = NULL; s->physical.group_count = 0;
     *out = s;
     return CANDIDATE_WAL_OK;
 }
@@ -352,7 +373,8 @@ bool candidate_recovery_view_observe(void *context, const candidate_wal_record_t
     candidate_recovery_view_t *v = context;
     /* admission 실패는 graph 상태를 먼저 돌려주던 순서를 지키도록 기록만 하고 page 관측은 계속한다. */
     if (candidate_admissions_status(v->admissions) == CANDIDATE_WAL_OK) (void)candidate_admissions_observe(v->admissions,record);
-    return observe_pages(v->graph,record);
+    candidate_wal_status_t status = candidate_recovery_physical_observe(&v->graph->physical,record);
+    return status == CANDIDATE_WAL_OK ? observe_pages(v->graph,record) : fail(v->graph,status);
 }
 
 candidate_wal_status_t candidate_recovery_view_check_request(const candidate_recovery_view_request_t *r)
@@ -372,6 +394,7 @@ static candidate_wal_status_t observe_anchor(candidate_recovery_view_t *v, candi
     bool is_preview = v->info.mode == CANDIDATE_RECOVERY_VIEW_PREVIEW;
     candidate_wal_status_t status = open_state(&v->memory,&initial,is_preview,&v->graph);
     if (status == CANDIDATE_WAL_OK) status = candidate_admissions_create(&v->memory,NULL,&v->admissions);
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_physical_begin(&v->graph->physical,&v->memory);
     if (status != CANDIDATE_WAL_OK) return status;
     candidate_witness_options_t options = {.memory = &v->memory,.enable_system_groups = true}; memcpy(options.uuid,uuid,16);
     status = candidate_witness_analyze_observed(wal,&options,&v->info.anchor,candidate_recovery_view_observe,v,&v->witness);
@@ -448,6 +471,8 @@ candidate_wal_status_t candidate_recovery_view_open(candidate_wal_t *wal,
     status = observe_anchor(v,wal,saved.load.uuid);
     if (status == CANDIDATE_WAL_OK) status = candidate_recovery_graph_check(v->graph,&v->info.anchor,&saved.load,v->witness);
     if (status == CANDIDATE_WAL_OK) status = candidate_recovery_view_verify(v,wal,&saved.load);
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_view_check_cut(v,wal,saved.load.uuid);
+    if (status == CANDIDATE_WAL_OK) status = candidate_recovery_physical_settle(v);
     if (status == CANDIDATE_WAL_OK) status = candidate_recovery_view_check_cut(v,wal,saved.load.uuid);
     if (status != CANDIDATE_WAL_OK) { candidate_recovery_view_close(&v); return status; }
     candidate_recovery_view_settle(v);
