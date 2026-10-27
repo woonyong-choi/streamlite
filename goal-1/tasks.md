@@ -526,12 +526,14 @@ GitHub's #266 → #263 edge is the comparison-result → product-integration gat
 
 ## Additional checkpoint after Task 24a3a
 
-- Status: incomplete
-- Work performed: not started; separate tracking-only review after R1/R2/24a3a.
-- Verification evidence: required — scope, physical-vs-semantic proof, actual bytes/prefix/budget/failure results, preservation and remaining parent24a3/writer/fullcost obligations.
-- Remaining risk: insert any required source repair as ordinary task; checkpoint itself only changes tasks.md.
-- Next step: separate tracking commit then first incomplete unit under continuous override.
-- Commit status: no checkpoint commit attempted.
+- Status: complete (source/evidence/requirements audit only; whole goal remains active)
+- Work performed: verified818c6374 parent191ccc95, owned21files, configured user identity/marker and clean worktree. Reused final89 source-frozen Werror/fatalUBSan invocations and independent P1=0/P2=0 verdict; no new runtime feature or redundant execution. R1/R2 full records remain in191ccc95 with exact tracking SHA; earlier source/raw/failure history remains.
+- Verification evidence: task24a3a-postcommit.json and final-manifest SHA e8a73af645b1b9cfb946539045e5d32496a85d4cdf2385d10667d82630db1874 bind current20source/12evidence/4708new artifacts. Preservation101278 original+additional mismatch0, protected tracked0, original ledger prefix and main/origin6bb8/four other worktrees unchanged. The initial60s timeout and controlled optional segment SIGTERM15 remain explicit, never passes. Requested allocation1,136,414,720B exceeds1GiB soft; free31,280,541,696B exceeds8GiB hard.
+- Scope/data/security review: B semantic versus R physical authority, actual body restoration, zero output/partial effects, resource/source lifetimes and fail-closed poisoning agree with code and docs. No Vault/other-owner write, upload/push/merge/live conversion or secret/auth changes. First all-LIVE FPI retention and fullprefix costs are implementation limits, not WAL structural cost or measured superiority.
+- Remaining risk: seeded buffer/checkpoint transition, durable seed/bootstrap, reader/reclaim/reuse, complete MVCC/GC/early locks, actual SQL/ACK/multiprocess writers, matched COW/totalcost and product/stream integration remain incomplete. No full historical campaign or whole-product quality claim.
+- AAR: use the final callback boundary before exposing success, preserve source semantic CORRUPT and failures, and bind reused tests to actual unchanged paths rather than repeat every historical campaign.
+- Next step: writer-first25 begins in this same session, split the actual integrated native overlap slice as25a before the rest of25. Preserve26/27/after27 and return to24a3b/4–6 before28–32; cleanup/GC/checkpoint/recovery cannot be omitted from total cost.
+- Commit record: containing tracking-only commit uses subject `docs(repo): 물리 복구 검증 체크포인트 기록 갱신` and marker `Goal-mode boundary: goal-1 checkpoint after task 24a3a: complete`; tasks.md is the only changed file. Verify parent818c6374 and clean status after commit.
 
 ## Writer-first execution priority — 2026-10-27
 
