@@ -149,6 +149,13 @@ database_status_t database_create_ex(const char *path, database_durability_t dur
 database_status_t database_set_durability(database_t *db, database_durability_t durability);
 database_durability_t database_durability(const database_t *db);
 size_t database_table_count(const database_t *db);
+/*
+ * 이 핸들이 마지막으로 읽은 게시 카탈로그에 table의 보조 색인 index가 있는지(#283). 쓰기 잠금도 거래도 열지 않는다.
+ * 문장을 실행한 직후에 부르면 그 문장이 본 게시 상태다. 열린 거래 안의 변경과 그 뒤 다른 핸들이 게시한 변경은 보지
+ * 않으므로 false는 "없음"이 아니라 "이 핸들이 아직 보지 못함"일 수 있다. true는 게시된 색인이 있다는 뜻이다(색인은
+ * 지워도 이 판정 뒤에 지워진 것이다).
+ */
+bool database_has_index(const database_t *db, const char *table, const char *index);
 
 /* 이 핸들이 연 뒤 문장들이 누적한 읽기 비용. 전체 스캔이 얼마나 일어났는지 대조하는 데 쓴다. */
 typedef struct {

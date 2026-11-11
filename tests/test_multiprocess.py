@@ -413,3 +413,30 @@ def test_open_does_not_wait_for_another_process_writing(tmp_path: Path) -> None:
     finally:
         release.set()
         _finish_processes([holder])
+
+
+def test_existing_queue_opens_with_install_while_another_process_writes(tmp_path: Path) -> None:
+    """이미 설치된 큐는 install=True(기본값)여도 쓰기 거래 없이 열린다(#283)."""
+    path = tmp_path / "install.streamlite"
+    _make_queue_file(path)
+    db = Database(path, create=False, busy_timeout_s=1)
+    holder, release = _start_holder(path)
+    try:
+        started = time.monotonic()
+        queue = Queue(db, "jobs")
+        assert time.monotonic() - started < 0.5, "이미 있는 큐의 install 열기가 writer를 기다림"
+        assert queue.stats().ready == 0
+        queue.close()
+        with pytest.raises(BusyError):
+            Queue(db, "other")
+        release.set()
+        holder.join(timeout=60)
+        assert holder.exitcode == 0
+        queue = Queue(db, "jobs")
+        queue.put(b"after")
+        assert queue.stats().ready == 1
+        queue.close()
+    finally:
+        release.set()
+        _finish_processes([holder])
+        db.close()

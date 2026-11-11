@@ -8,11 +8,14 @@
  *   - 살아 있는 큐·트랜잭션 핸들이 있으면 streamlite_close가 BUSY이고 핸들은 그대로다
  *   - 여러 스레드가 실행·인코딩을 번갈아 불러도 결과가 깨지지 않는다(잠금 구간이 결과 소비까지 이어진다)
  *   - 표시가 없는(닫힌) 핸들을 따라가기 전에 거절하고, 트랜잭션 상태를 읽는 호출도 mutex로 직렬화한다(#273)
+ *   - 다른 프로세스가 쓰기 거래를 쥔 동안에도 열기와 이미 있는 큐의 install 열기가 기다리지 않고 성공한다(#283)
  * 합성 데이터만 쓴다.
  */
 #include <pthread.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static long g_realloc_calls, g_realloc_fail_at;
 static size_t g_realloc_largest;   /* 요청한 가장 큰 크기. 선언한 상한을 넘지 않는지 본다 */
@@ -732,6 +735,125 @@ static void test_cancel_busy_wait(void)
     streamlite_close(&db);
 }
 
+/* ── #283 다른 프로세스가 쓰는 동안의 열기 ── */
+
+/*
+ * 자식 프로세스가 파일을 따로 열어 쓰기 거래를 쥐고, 부모가 go에 1바이트를 쓰거나 닫을 때까지 놓지 않는다.
+ * 거래를 잡았으면 ready에 1바이트를 쓴다.
+ */
+static pid_t hold_writer_in_child(const char *path, int *ready_fd, int *go_fd)
+{
+    int ready[2], go[2];
+    if (pipe(ready) != 0 || pipe(go) != 0) return -1;
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(ready[0]);
+        close(go[1]);
+        streamlite_db_t *db = NULL;
+        streamlite_txn_t *txn = NULL;
+        if (streamlite_open(path, 0, &db) != STREAMLITE_OK || streamlite_begin(db, &txn) != STREAMLITE_OK) _exit(3);
+        uint8_t *buf = NULL;
+        size_t size = 0;
+        if (streamlite_exec(db, txn, "INSERT INTO t VALUES (100)", NULL, 0, &buf, &size) != STREAMLITE_OK) _exit(4);
+        streamlite_free(buf);
+        char byte = 1;
+        if (write(ready[1], &byte, 1) != 1) _exit(5);
+        ssize_t got = read(go[0], &byte, 1);
+        (void)got;
+        streamlite_rollback(&txn);
+        streamlite_close(&db);
+        _exit(0);
+    }
+    close(ready[1]);
+    close(go[0]);
+    *ready_fd = ready[0];
+    *go_fd = go[1];
+    return pid;
+}
+
+static void test_open_while_other_process_writes(void)
+{
+    printf("\n[#283 다른 프로세스가 쓰는 동안의 열기]\n");
+    fresh_dir();
+    char path[192];
+    snprintf(path, sizeof(path), "%s/held.streamlite", g_dir);
+    streamlite_db_t *db = NULL;
+    CHECK(streamlite_open(path, 1, &db) == STREAMLITE_OK, "생성");
+    char out[256];
+    CHECK(exec_str(db, NULL, "CREATE TABLE t (id INTEGER PRIMARY KEY)", NULL, 0, out, sizeof(out)) == STREAMLITE_OK, "표");
+    streamlite_queue_t *q = NULL;
+    CHECK(streamlite_queue_open(db, "jobs", 1, NULL, &q) == STREAMLITE_OK, "큐 설치");
+    streamlite_queue_close(&q);
+    streamlite_close(&db);
+
+    int ready_fd = -1, go_fd = -1;
+    pid_t child = hold_writer_in_child(path, &ready_fd, &go_fd);
+    CHECK(child > 0, "writer 자식 프로세스");
+    if (child <= 0) return;
+    char byte = 0;
+    CHECK(read(ready_fd, &byte, 1) == 1, "자식이 쓰기 거래를 쥐었다");
+
+    /* 열기는 writer 잠금을 기다리지 않는다. 수정 전에는 고정 5초 뒤 DB_LOCKED였다 */
+    uint64_t start = now_ms_mono();
+    int opened = streamlite_open(path, 0, &db);
+    uint64_t open_ms = now_ms_mono() - start;
+    CHECK(opened == STREAMLITE_OK && open_ms < 1000, "다른 프로세스의 거래 중에도 곧바로 열린다 (%d, %llu ms)", opened,
+          (unsigned long long)open_ms);
+    streamlite_db_t *waits = NULL;
+    streamlite_open_options_t options = {STREAMLITE_DURABILITY_NORMAL, 300};
+    start = now_ms_mono();
+    opened = streamlite_open_ex(path, 0, &options, &waits);
+    open_ms = now_ms_mono() - start;
+    CHECK(opened == STREAMLITE_OK && open_ms < 1000, "대기 핸들도 곧바로 열린다 (%d, %llu ms)", opened, (unsigned long long)open_ms);
+    if (opened != STREAMLITE_OK || db == NULL) {
+        byte = 1;
+        if (write(go_fd, &byte, 1) != 1) {}
+        waitpid(child, NULL, 0);
+        return;
+    }
+
+    /* 이미 있는 큐는 install이어도 쓰기 거래 없이 열린다. 수정 전에는 곧바로(대기 핸들은 대기 뒤) BUSY였다 */
+    start = now_ms_mono();
+    int queue_status = streamlite_queue_open(db, "jobs", 1, NULL, &q);
+    uint64_t queue_ms = now_ms_mono() - start;
+    CHECK(queue_status == STREAMLITE_OK && queue_ms < 1000, "이미 있는 큐를 install로 연다 (%d, %llu ms)", queue_status,
+          (unsigned long long)queue_ms);
+    streamlite_queue_close(&q);
+    streamlite_queue_t *waited = NULL;
+    start = now_ms_mono();
+    queue_status = streamlite_queue_open(waits, "jobs", 1, NULL, &waited);
+    queue_ms = now_ms_mono() - start;
+    CHECK(queue_status == STREAMLITE_OK && queue_ms < 250, "대기 핸들도 기다리지 않고 연다 (%d, %llu ms)", queue_status,
+          (unsigned long long)queue_ms);
+    uint64_t counts[4] = {0};
+    CHECK(waited != NULL && streamlite_queue_stats(waited, NULL, counts) == STREAMLITE_OK, "연 큐를 읽는다");
+    streamlite_queue_close(&waited);
+
+    /* 쓰기는 여전히 writer를 기다린다: 새 큐 설치와 begin은 BUSY다 */
+    CHECK(streamlite_queue_open(db, "other", 1, NULL, &q) == STREAMLITE_BUSY && q == NULL, "새 큐 설치는 BUSY");
+    streamlite_txn_t *txn = NULL;
+    start = now_ms_mono();
+    int begun = streamlite_begin(waits, &txn);
+    uint64_t begin_ms = now_ms_mono() - start;
+    CHECK(begun == STREAMLITE_BUSY && txn == NULL && begin_ms >= 250, "대기 핸들의 begin은 대기 뒤 BUSY (%d, %llu ms)", begun,
+          (unsigned long long)begin_ms);
+
+    byte = 1;
+    CHECK(write(go_fd, &byte, 1) == 1, "자식에게 거래를 놓게 한다");
+    int child_status = 0;
+    waitpid(child, &child_status, 0);
+    CHECK(WIFEXITED(child_status) && WEXITSTATUS(child_status) == 0, "자식 정상 종료 (%d)", child_status);
+    close(ready_fd);
+    close(go_fd);
+    CHECK(exec_str(db, NULL, "INSERT INTO t VALUES (1)", NULL, 0, out, sizeof(out)) == STREAMLITE_OK && strcmp(out, "CMD INSERT 1") == 0,
+          "거래가 끝난 뒤 쓰기 (%s)", out);
+    CHECK(exec_str(waits, NULL, "SELECT COUNT(*) FROM t", NULL, 0, out, sizeof(out)) == STREAMLITE_OK &&
+              strcmp(out, "ROWS[COUNT:1?] (1)") == 0,
+          "다른 핸들이 새 게시를 읽는다 (%s)", out);
+    streamlite_close(&waits);
+    streamlite_close(&db);
+}
+
 /* ── #260 새 파일 생성의 동기화 단계 ── */
 
 static int g_fsync_calls, g_full_calls;
@@ -802,6 +924,7 @@ int main(void)
     test_open_options();
     test_create_durability();
     test_cancel_busy_wait();
+    test_open_while_other_process_writes();
     printf("\ntest_streamlite: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;

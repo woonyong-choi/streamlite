@@ -609,6 +609,23 @@ static ackq_status_t prepare_indexes(ackq_t *queue, session_t *session)
     return status == ACKQ_POISONED || status == ACKQ_CANCELLED || status == ACKQ_INVALID ? status : ACKQ_OK;
 }
 
+/*
+ * ensure_indexes가 만들 색인이 모두 게시돼 있는지 쓰기 거래 없이 본다(#283). probe_table의 SELECT 직후에 부르므로 그
+ * 문장이 본 게시 카탈로그로 판정한다. false여도 틀린 것은 없다. ensure_indexes가 쓰기 거래로 만들고, 이미 있으면 있는
+ * 것을 쓴다(이 핸들이 아직 보지 못한 다른 핸들의 색인, 호출자 거래 안에서 만든 색인).
+ */
+static bool indexes_present(const ackq_t *queue, session_t *session)
+{
+    const database_t *db = session_db_handle(session_database(session));
+    const char *const *columns = queue->due_column ? DUE_INDEXED : OLD_INDEXED;
+    for (size_t i = 0; i < 2; i++) {
+        char index[sizeof(queue->table) + 16];
+        snprintf(index, sizeof(index), "%s_%s", queue->table, columns[i]);
+        if (!database_has_index(db, queue->table, index)) return false;
+    }
+    return true;
+}
+
 ackq_status_t ackq_install(session_t *session, const ackq_options_t *options, ackq_t **out)
 {
     ackq_t *queue;
@@ -624,7 +641,8 @@ ackq_status_t ackq_install(session_t *session, const ackq_options_t *options, ac
          * 본 것도 이 큐 자신의 key 테이블이므로 INVALID여도 다시 확인한다(겹치는 이름이면 이 큐의 테이블은 여전히 없다).
          */
         if (status != ACKQ_OK && probe_table(queue, session) == ACKQ_OK) status = ensure_indexes(queue, session);
-    } else if (status == ACKQ_OK) {
+    } else if (status == ACKQ_OK && !indexes_present(queue, session)) {
+        /* 이미 있는 큐는 색인이 모두 있으면 쓰기 거래를 열지 않는다. 다른 writer가 쓰는 중에도 열린다(#283) */
         status = ensure_indexes(queue, session);
     }
     if (status == ACKQ_OK) status = prepare_indexes(queue, session);

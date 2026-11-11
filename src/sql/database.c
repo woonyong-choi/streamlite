@@ -409,6 +409,23 @@ size_t database_table_count(const database_t *db)
     return db != NULL ? catalog_table_count(db->catalog) : 0;
 }
 
+bool database_has_index(const database_t *db, const char *table, const char *index)
+{
+    if (db == NULL || table == NULL || index == NULL) return false;
+    catalog_table_id_t id;
+    if (catalog_find(db->catalog, table, strlen(table), &id) != CATALOG_OK) return false;
+    size_t name_bytes = strlen(index);
+    size_t count = catalog_index_count(db->catalog, id);
+    for (size_t i = 0; i < count; i++) {
+        catalog_index_view_t view;
+        if (catalog_index_at(db->catalog, id, i, &view) == CATALOG_OK && view.name_bytes == name_bytes &&
+            memcmp(view.name, index, name_bytes) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ── 상주 메모리 ── */
 
 database_status_t database_attach_ledger(database_t *db, const mem_ledger_t *resident)
