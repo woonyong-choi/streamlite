@@ -348,6 +348,36 @@ size_t secondary_range(database_t *db, const catalog_table_view_t *view, catalog
     return SIZE_MAX;
 }
 
+scan_path_t scan_path_choose(database_t *db, const catalog_table_view_t *view, catalog_table_id_t id,
+                             const heap_t *heap, const where_t *where, bool index_range)
+{
+    scan_path_t path = {SCAN_PATH_FULL, SIZE_MAX, {0}};
+    if ((path.at = key_probe(view, heap, where)) != SIZE_MAX) path.kind = SCAN_PATH_KEY;
+    else if ((path.at = secondary_probe(db, id, where, &path.index)) != SIZE_MAX) path.kind = SCAN_PATH_SECONDARY;
+    else if ((path.at = key_range(view, heap, where)) != SIZE_MAX) path.kind = SCAN_PATH_KEY_RANGE;
+    else if ((path.at = text_key_range(view, heap, where)) != SIZE_MAX) path.kind = SCAN_PATH_TEXT_RANGE;
+    else if (index_range && (path.at = secondary_range(db, view, id, where, &path.index)) != SIZE_MAX) {
+        path.kind = SCAN_PATH_INDEX_RANGE;
+    }
+    return path;
+}
+
+bool scan_path_follows_primary_key(const scan_path_t *path)
+{
+    switch (path->kind) {
+        case SCAN_PATH_KEY:
+        case SCAN_PATH_KEY_RANGE:
+        case SCAN_PATH_TEXT_RANGE: return true;
+        case SCAN_PATH_SECONDARY: return path->index.unique || path->index.ordered;
+        default: return false;
+    }
+}
+
+bool scan_path_follows_index(const scan_path_t *path, size_t column)
+{
+    return path->kind == SCAN_PATH_INDEX_RANGE && path->index.column == column;
+}
+
 database_exec_status_t locate_key(database_t *db, heap_t *heap, const value_view_t *key, bool *is_hit,
                                          heap_locator_t *at)
 {
@@ -403,7 +433,7 @@ static bool scan_range_row(void *context, heap_locator_t locator)
     return scan->status == DATABASE_EXEC_OK && !*scan->sink->stop;
 }
 
-/* 기본 키·보조 색인 탐침이나 기본 키 구간이 있으면 그것으로, 없으면 전체를 훑는다 */
+/* scan_path_choose가 고른 경로로 WHERE에 맞는 행을 sink에 넘긴다 */
 database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *table, catalog_table_id_t id,
                                         heap_t *heap, const where_t *where, const bool *needed, value_t *row,
                                         const row_sink_t *sink)
@@ -411,13 +441,11 @@ database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *tab
     if (*sink->stop || where->never) return DATABASE_EXEC_OK;
     bool matched = false;
     size_t n = table->column_count;
-    size_t by_key = key_probe(table, heap, where);
-    heap_secondary_spec_t secondary;
-    size_t by_secondary = by_key == SIZE_MAX ? secondary_probe(db, id, where, &secondary) : SIZE_MAX;
-    if (by_key != SIZE_MAX) {
+    scan_path_t path = scan_path_choose(db, table, id, heap, where, true);
+    if (path.kind == SCAN_PATH_KEY) {
         bool is_hit;
         heap_locator_t at;
-        database_exec_status_t status = locate_key(db, heap, &where->probes[by_key].literal.view, &is_hit, &at);
+        database_exec_status_t status = locate_key(db, heap, &where->probes[path.at].literal.view, &is_hit, &at);
         if (status != DATABASE_EXEC_OK || !is_hit) return status;
         heap_status_t got = heap_get_projected(heap, at, needed, row);
         if (got != HEAP_OK) return heap_failure(db, got, "lookup");
@@ -426,38 +454,34 @@ database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *tab
         heap_release_row(heap, row);
         return status;
     }
-    if (by_secondary != SIZE_MAX) {
-        secondary_scan_t scan = {db, heap, where, &where->probes[by_secondary], row, needed, sink, DATABASE_EXEC_OK};
-        heap_status_t visited = heap_secondary_visit_equal(heap, secondary, &where->probes[by_secondary].literal.view,
+    if (path.kind == SCAN_PATH_SECONDARY) {
+        secondary_scan_t scan = {db, heap, where, &where->probes[path.at], row, needed, sink, DATABASE_EXEC_OK};
+        heap_status_t visited = heap_secondary_visit_equal(heap, path.index, &where->probes[path.at].literal.view,
                                                            scan_secondary_row, &scan);
         /* LIMIT을 채워 방문을 멈추면 색인은 멈춤을 NOMEM으로 알린다. 오류가 아니다 */
         if (scan.status != DATABASE_EXEC_OK || *sink->stop) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index lookup");
     }
-    size_t by_range = key_range(table, heap, where);
-    if (by_range != SIZE_MAX) {
+    if (path.kind == SCAN_PATH_KEY_RANGE) {
         range_scan_t scan = {db, heap, where, row, needed, sink, DATABASE_EXEC_OK};
         bool stopped = false;
-        heap_status_t visited = heap_visit_key_range(heap, where->ranges[by_range].low, where->ranges[by_range].high,
+        heap_status_t visited = heap_visit_key_range(heap, where->ranges[path.at].low, where->ranges[path.at].high,
                                                      scan_range_row, &scan, &stopped);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");
     }
-    size_t by_text = text_key_range(table, heap, where);
-    if (by_text != SIZE_MAX) {
+    if (path.kind == SCAN_PATH_TEXT_RANGE) {
         range_scan_t scan = {db, heap, where, row, needed, sink, DATABASE_EXEC_OK};
         bool stopped = false;
-        heap_status_t visited = visit_text_range(heap, &where->text_ranges[by_text], scan_range_row, &scan, &stopped);
+        heap_status_t visited = visit_text_range(heap, &where->text_ranges[path.at], scan_range_row, &scan, &stopped);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");
     }
-    heap_secondary_spec_t ranged;
-    size_t by_index_range = secondary_range(db, table, id, where, &ranged);
-    if (by_index_range != SIZE_MAX) {
+    if (path.kind == SCAN_PATH_INDEX_RANGE) {
         range_scan_t scan = {db, heap, where, row, needed, sink, DATABASE_EXEC_OK};
         bool stopped = false;
-        heap_status_t visited = heap_secondary_visit_range(heap, ranged, where->ranges[by_index_range].low,
-                                                           where->ranges[by_index_range].high, scan_range_row, &scan,
+        heap_status_t visited = heap_secondary_visit_range(heap, path.index, where->ranges[path.at].low,
+                                                           where->ranges[path.at].high, scan_range_row, &scan,
                                                            &stopped);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");

@@ -507,6 +507,34 @@ heap_status_t visit_text_range(heap_t *heap, const text_range_t *range,
                                bool (*visit)(void *, heap_locator_t), void *context, bool *stopped);
 size_t secondary_probe(database_t *db, catalog_table_id_t table_id, const where_t *where,
                               heap_secondary_spec_t *spec);
+
+/* 한 테이블을 WHERE로 읽는 접근 경로. 앞의 것일수록 먼저 고른다 */
+typedef enum {
+    SCAN_PATH_KEY,         /* 기본 키 등가: 행 하나 */
+    SCAN_PATH_SECONDARY,   /* 보조 색인 등가: 유일이면 행 하나, ordered면 같은 값 안에서 기본 키 순서 */
+    SCAN_PATH_KEY_RANGE,   /* 정수 기본 키 구간: 키 순서 */
+    SCAN_PATH_TEXT_RANGE,  /* TEXT 기본 키 구간: 키 순서 */
+    SCAN_PATH_INDEX_RANGE, /* 정수 열 보조 색인 구간: 값 순서, 같은 값 안에서는 기본 키 순서 */
+    SCAN_PATH_FULL         /* 전체 스캔: heap 순서 */
+} scan_path_kind_t;
+
+typedef struct {
+    scan_path_kind_t kind;
+    size_t at;                   /* kind에 맞는 where의 probes·ranges·text_ranges 번호. FULL이면 SIZE_MAX */
+    heap_secondary_spec_t index; /* SECONDARY·INDEX_RANGE가 쓰는 색인 */
+} scan_path_t;
+
+/*
+ * WHERE의 탐침·구간으로 접근 경로를 고른다. 기본 키 등가, 보조 색인 등가, 정수 기본 키 구간, TEXT 기본 키 구간,
+ * (index_range면) 정수 열 보조 색인 구간, 전체 스캔 순서다. 경로 선택과 그 경로의 행 순서는 여기와
+ * scan_path_follows_*에서만 정한다. SELECT·JOIN의 scan_rows와 ORDER BY 생략 판단, UPDATE의 수집이 함께 쓴다.
+ */
+scan_path_t scan_path_choose(database_t *db, const catalog_table_view_t *view, catalog_table_id_t id,
+                             const heap_t *heap, const where_t *where, bool index_range);
+/* 이 경로가 행을 기본 키 오름차순으로 내는지 */
+bool scan_path_follows_primary_key(const scan_path_t *path);
+/* 이 경로가 행을 정수 열 column의 보조 색인 순서(값, 같은 값 안에서는 기본 키)로 내는지 */
+bool scan_path_follows_index(const scan_path_t *path, size_t column);
 database_exec_status_t locate_key(database_t *db, heap_t *heap, const value_view_t *key, bool *is_hit,
                                          heap_locator_t *at);
 database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *table, catalog_table_id_t id,
