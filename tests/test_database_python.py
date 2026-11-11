@@ -315,3 +315,55 @@ def test_cancel_stops_waiting_for_another_writer(tmp_path: Path) -> None:
         held.rollback()
         waiter.close()
         holder.close()
+
+
+# #281 정렬·접근 경로 정리 전후의 특성 시험. 동률은 입력(접근 경로) 순서를 지켜야 하므로 결과 순서를 그대로 고정한다.
+# 기본 키 등가·구간, TEXT 키 구간, 보조 색인 등가·구간, 전체 스캔과 ORDER BY 생략(출력 별칭이 기본 키를 가리는 경우 포함),
+# DISTINCT·GROUP BY·집합 연산·JOIN의 정렬과 UPDATE의 수집 순서를 한 데이터로 본다.
+ORDER_TIE_SETUP = [
+    "CREATE TABLE t (id INTEGER PRIMARY KEY, g INTEGER, h TEXT, k INTEGER)",
+    "CREATE INDEX t_k ON t (k)",
+    "CREATE TABLE n (name TEXT PRIMARY KEY, g INTEGER)",
+    "INSERT INTO t VALUES (5, 1, 'b', 2), (2, 2, 'a', 1), (9, 1, 'a', 2), (1, 3, 'c', 3), (7, 2, 'b', 1)",
+    "INSERT INTO t VALUES (3, 1, 'a', 2), (8, 3, 'b', NULL), (4, 2, 'a', 3), (6, NULL, 'c', 2)",
+    "DELETE FROM t WHERE id = 9",
+    "INSERT INTO t VALUES (10, 1, 'b', 2)",
+    "INSERT INTO n VALUES ('d', 1), ('a', 2), ('c', 1), ('b', 2), ('e', 1)",
+]
+ORDER_TIE_CASES = [
+    ('SELECT id, g FROM t ORDER BY g', ((6, None), (5, 1), (3, 1), (10, 1), (2, 2), (7, 2), (4, 2), (1, 3), (8, 3))),
+    ('SELECT id, g FROM t ORDER BY g DESC LIMIT 4 OFFSET 1', ((8, 3), (2, 2), (7, 2), (4, 2))),
+    ('SELECT id, g, h FROM t ORDER BY h, g DESC', ((2, 2, 'a'), (4, 2, 'a'), (3, 1, 'a'), (8, 3, 'b'), (7, 2, 'b'), (5, 1, 'b'), (10, 1, 'b'), (1, 3, 'c'), (6, None, 'c'))),
+    ('SELECT id, g FROM t ORDER BY g NULLS LAST', ((5, 1), (3, 1), (10, 1), (2, 2), (7, 2), (4, 2), (1, 3), (8, 3), (6, None))),
+    ('SELECT DISTINCT g, h FROM t ORDER BY h', ((1, 'a'), (2, 'a'), (1, 'b'), (2, 'b'), (3, 'b'), (None, 'c'), (3, 'c'))),
+    ('SELECT g, COUNT(*) FROM t GROUP BY g ORDER BY 2', ((None, 1), (3, 2), (1, 3), (2, 3))),
+    ('SELECT h, COUNT(DISTINCT g), SUM(k) FROM t GROUP BY h ORDER BY 2 DESC', (('b', 3, 5), ('a', 2, 6), ('c', 1, 5))),
+    ('SELECT id, k FROM t WHERE id > 2 ORDER BY id', ((3, 2), (4, 3), (5, 2), (6, 2), (7, 1), (8, None), (10, 2))),
+    ('SELECT g AS id, id AS x FROM t ORDER BY id', ((None, 6), (1, 5), (1, 3), (1, 10), (2, 2), (2, 7), (2, 4), (3, 1), (3, 8))),
+    ('SELECT g AS id, id AS x FROM t WHERE id >= 3 ORDER BY id LIMIT 4', ((None, 6), (1, 3), (1, 5), (1, 10))),
+    ('SELECT id, k FROM t WHERE k >= 2 ORDER BY k', ((3, 2), (5, 2), (6, 2), (10, 2), (1, 3), (4, 3))),
+    ('SELECT id, k FROM t WHERE k >= 2 ORDER BY k LIMIT 3', ((3, 2), (5, 2), (6, 2))),
+    ('SELECT id, k FROM t WHERE k = 2 ORDER BY id', ((3, 2), (5, 2), (6, 2), (10, 2))),
+    ("SELECT name, g FROM n WHERE name >= 'b' ORDER BY name", (('b', 2), ('c', 1), ('d', 1), ('e', 1))),
+    ('SELECT name, g FROM n ORDER BY g', (('d', 1), ('c', 1), ('e', 1), ('a', 2), ('b', 2))),
+    ('SELECT g FROM t UNION SELECT g FROM n ORDER BY 1', ((None,), (1,), (2,), (3,))),
+    ('SELECT g, h FROM t UNION ALL SELECT g, name FROM n ORDER BY 1', ((None, 'c'), (1, 'b'), (1, 'a'), (1, 'b'), (1, 'd'), (1, 'c'), (1, 'e'), (2, 'a'), (2, 'b'), (2, 'a'), (2, 'a'), (2, 'b'), (3, 'c'), (3, 'b'))),
+    ('SELECT t.id, n.name FROM t JOIN n ON n.g = t.g ORDER BY t.g', ((5, 'd'), (5, 'c'), (5, 'e'), (3, 'd'), (3, 'c'), (3, 'e'), (10, 'd'), (10, 'c'), (10, 'e'), (2, 'a'), (2, 'b'), (7, 'a'), (7, 'b'), (4, 'a'), (4, 'b'))),
+    ('SELECT t.id, n.name FROM t JOIN n ON n.g = t.g WHERE t.id > 3 ORDER BY t.id', ((4, 'a'), (4, 'b'), (5, 'd'), (5, 'c'), (5, 'e'), (7, 'a'), (7, 'b'), (10, 'd'), (10, 'c'), (10, 'e'))),
+    ('SELECT t.id, n.name FROM n JOIN t ON t.g = n.g ORDER BY n.name', ((2, 'a'), (7, 'a'), (4, 'a'), (2, 'b'), (7, 'b'), (4, 'b'), (5, 'c'), (3, 'c'), (10, 'c'), (5, 'd'), (3, 'd'), (10, 'd'), (5, 'e'), (3, 'e'), (10, 'e'))),
+    ('UPDATE t SET h = h WHERE g = 1 RETURNING id', ((5,), (3,), (10,))),
+    ('UPDATE t SET k = k WHERE id >= 4 RETURNING id', ((4,), (5,), (6,), (7,), (8,), (10,))),
+    ('UPDATE t SET g = g WHERE k = 2 RETURNING id', ((3,), (5,), (6,), (10,))),
+    ('UPDATE t SET id = id + 1 WHERE id >= 5 RETURNING id', ((6,), (7,), (8,), (9,), (11,))),
+    ("UPDATE n SET g = g + 1 WHERE name > 'b' RETURNING name, g", (('c', 2), ('d', 2), ('e', 2))),
+    ('SELECT id, g, h, k FROM t ORDER BY id', ((1, 3, 'c', 3), (2, 2, 'a', 1), (3, 1, 'a', 2), (4, 2, 'a', 3), (6, 1, 'b', 2), (7, None, 'c', 2), (8, 2, 'b', 1), (9, 3, 'b', None), (11, 1, 'b', 2))),
+]
+
+
+def test_order_ties_and_access_paths_keep_row_order(tmp_path: Path) -> None:
+    db = Database(tmp_path / "ties.streamlite")
+    for sql in ORDER_TIE_SETUP:
+        db.execute(sql)
+    for sql, expected in ORDER_TIE_CASES:
+        assert db.execute(sql).rows == expected, sql
+    db.close()
