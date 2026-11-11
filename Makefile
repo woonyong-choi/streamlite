@@ -600,7 +600,7 @@ DATABASE_EXEC_FAULT_OBJS = $(addprefix $(BUILD_DIR)/sql/,$(addsuffix _fault.o,$(
 DATABASE_OBJS = $(STORAGE_OBJS) $(BUILD_DIR)/storage/heap_store.o $(BUILD_DIR)/storage/transaction.o \
                 $(DATABASE_EXEC_OBJS) $(BUILD_DIR)/sql/database_txn.o \
                 $(BUILD_DIR)/sql/sql_statement.o $(BUILD_DIR)/sql/sql_eval.o $(BUILD_DIR)/sql/lexer.o $(BUILD_DIR)/sql/result.o
-DATABASE_TESTS = test_sql_statement test_heap_store test_database test_database_sqlite test_database_fault test_database_bounded_open test_primary_index
+DATABASE_TESTS = test_sql_statement test_heap_store test_database test_database_sqlite test_database_fault test_database_bounded_open test_primary_index test_database_recovery
 DATABASE_BINS = $(addprefix $(BUILD_DIR)/,$(DATABASE_TESTS))
 DATABASE_AUDIT_OBJS = $(patsubst $(BUILD_DIR)/%.o,$(BUILD_DIR)/audit/%.o,$(DATABASE_OBJS))
 
@@ -621,6 +621,7 @@ $(BUILD_DIR)/bench_free_space:
 	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 $(BUILD_DIR)/test_database_sqlite: $(BUILD_DIR)/tests/test_database_sqlite.o $(DATABASE_OBJS)
 $(BUILD_DIR)/test_primary_index: $(BUILD_DIR)/tests/test_primary_index.o $(DATABASE_OBJS)
+$(BUILD_DIR)/test_database_recovery: $(BUILD_DIR)/tests/test_database_recovery.o $(DATABASE_OBJS)
 $(BUILD_DIR)/test_database_fault: $(BUILD_DIR)/tests/test_database_fault.o $(filter-out $(DATABASE_EXEC_OBJS) $(BUILD_DIR)/storage/heap_store.o $(BUILD_DIR)/sql/sql_statement.o $(BUILD_DIR)/storage/value.o,$(DATABASE_OBJS)) $(DATABASE_EXEC_FAULT_OBJS) $(BUILD_DIR)/storage/heap_store_fault.o $(BUILD_DIR)/sql/database_statement_fault.o $(BUILD_DIR)/storage/value_database_fault.o
 $(BUILD_DIR)/test_database_bounded_open: $(BUILD_DIR)/tests/test_database_bounded_open.o $(BUILD_DIR)/tests/alloc_audit.o $(DATABASE_AUDIT_OBJS)
 $(BUILD_DIR)/test_database_cache: $(BUILD_DIR)/tests/test_database_cache.o $(BUILD_DIR)/tests/alloc_audit.o $(DATABASE_AUDIT_OBJS)

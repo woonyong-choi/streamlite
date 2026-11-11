@@ -62,7 +62,8 @@ typedef enum {
     DATABASE_EXISTS,       /* create: 파일이 이미 있음 */
     DATABASE_LOCKED,       /* 다른 핸들이 파일 잠금을 쥐고 있음 */
     DATABASE_BUSY,         /* close: 해제하지 않은 트랜잭션이 남아 있다. 핸들은 그대로다 */
-    DATABASE_FORKED        /* 핸들을 연 프로세스가 아님(fork한 자식). 파일을 바꾸지 않았다 */
+    DATABASE_FORKED,       /* 핸들을 연 프로세스가 아님(fork한 자식). 파일을 바꾸지 않았다 */
+    DATABASE_LOST_COMMIT   /* 쓰기 열기: 성공을 돌려준 최신 commit이 손상돼 이전 세대로만 열 수 있다. 파일을 바꾸지 않았다 */
 } database_status_t;
 
 typedef enum {
@@ -75,8 +76,38 @@ typedef struct database database_t;
 
 /* 새 파일을 만들어 빈 카탈로그를 commit하고 게시한다. 목적지가 있으면 DATABASE_EXISTS다. */
 database_status_t database_create(const char *path, database_t **out);
-/* 게시된 파일을 연다. writable이 아니면 SELECT만 실행된다. 열기는 파일을 바꾸지 않는다. */
+/*
+ * 게시된 파일을 연다. writable이 아니면 SELECT만 실행된다. 열기는 파일을 바꾸지 않는다.
+ *
+ * 최신 세대를 읽을 수 없어(제어 페이지 손상, 그 commit이 쓴 페이지·파일 길이 불일치) 이전 세대로 물러난 열기는
+ * database_open_report로 확인한다. 물러난 까닭이 "fsync 전에 전원이 끊긴 commit"인지 "성공을 돌려준 commit의 손상"인지는
+ * 잠금 파일의 내구 확인 기록이 남아 있을 때만 확정된다(page_file.h의 page_file_loss_t).
+ *   - 확정(DATABASE_LOSS_CONFIRMED): 읽기 열기는 이전 세대로 열린다. 쓰기 열기는 DATABASE_LOST_COMMIT으로 거절한다.
+ *     이어 쓰면 손상된 세대를 덮어써 되살릴 수 없기 때문이다. 복구(백업 복원 등)를 포기하고 이전 세대에서 이어
+ *     쓰려면 database_open_accepting_loss로 연다.
+ *   - 미확정(DATABASE_LOSS_POSSIBLE): 쓰기 열기도 성공하고 다음 commit이 끝나지 않은 세대를 덮어쓴다. 전원 차단 뒤의
+ *     정상 복구 경로와 구분할 수 없기 때문이다. 호출자는 열린 뒤 보고를 읽어 알 수 있다.
+ * 이미 열린 쓰기 핸들이 확정된 손실을 만나면 변경 문장과 작업 시작이 손상 오류로 거절된다.
+ */
 database_status_t database_open(const char *path, bool writable, database_t **out);
+/* 쓰기 열기. 확정된 손실(DATABASE_LOST_COMMIT)을 받아들이고 이전 세대에서 이어 쓴다. 그 밖에는 database_open과 같다 */
+database_status_t database_open_accepting_loss(const char *path, database_t **out);
+
+typedef enum {
+    DATABASE_LOSS_NONE,       /* 최신 세대로 열었다 */
+    DATABASE_LOSS_POSSIBLE,   /* 이전 세대로 열었다. 끝나지 않은 commit인지 손상인지 알 수 없다 */
+    DATABASE_LOSS_CONFIRMED   /* 이전 세대로 열었고, 건너뛴 세대는 성공을 돌려준 commit이다 */
+} database_loss_t;
+
+typedef struct {
+    bool fell_back;           /* 이전 세대로 물러났거나 물러났을 수 있다(loss가 NONE이 아니다) */
+    database_loss_t loss;
+    bool rolled_back;         /* 최신 제어 페이지는 온전했지만 그 commit의 페이지나 파일 길이가 맞지 않았다 */
+    uint32_t damaged_slots;   /* 손상으로 쓰지 못한 제어 슬롯 수 */
+} database_open_report_t;
+
+/* 이 핸들을 열 때의 판정. 열린 뒤의 commit으로 바뀌지 않는다. db가 NULL이면 모두 0이다 */
+void database_open_report(const database_t *db, database_open_report_t *out);
 /* 핸들을 닫는다. poison된 핸들도 닫을 수 있다. close(2) 실패는 DATABASE_IO다. */
 database_status_t database_close(database_t *db);
 

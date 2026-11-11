@@ -19,6 +19,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "storage/checksum.h"
@@ -1342,8 +1343,10 @@ static void test_incomplete_commit_falls_back(void)
     assert(page_file_alloc(file, &p1) == PAGE_FILE_OK && page_file_write(file, p1, PAGE_KIND_OVERFLOW, 0, body) == PAGE_FILE_OK);
     assert(page_file_commit(file) == PAGE_FILE_OK && page_file_publish(file) == PAGE_FILE_OK);
     assert(page_file_close(file) == PAGE_FILE_OK);
-    size_t size1;
+    size_t size1, lock_size1;
     uint8_t *gen1 = slurp(DB_PATH, &size1);
+    /* 세대 1까지만 fsync가 끝났다고 적힌 잠금 파일. 세대 2의 fsync 전에 전원이 끊긴 상태를 만들 때 되돌린다 */
+    uint8_t *lock1 = slurp(DB_PATH "-lock", &lock_size1);
 
     assert(page_file_open(DB_PATH, true, &file, NULL) == PAGE_FILE_OK);
     memset(body, 0x62, sizeof(body));
@@ -1361,17 +1364,23 @@ static void test_incomplete_commit_falls_back(void)
     memcpy(mixed, gen1, size1);
     memcpy(mixed, gen2, 2 * PAGE_FILE_PAGE_BYTES);   /* 제어 페이지 두 장은 세대 2의 것 */
     spit(DB_PATH, mixed, size1);
+    spit(DB_PATH "-lock", lock1, lock_size1);
     page_file_open_info_t info;
     CHECK(page_file_open(DB_PATH, false, &file, &info) == PAGE_FILE_OK && page_file_control(file)->generation == 1 &&
-              info.damaged_slots == 1, "짧은 파일: 세대 1로 열고 손상 슬롯 1");
+              info.damaged_slots == 1 && info.rolled_back == 1 && info.loss == PAGE_FILE_LOSS_POSSIBLE,
+          "짧은 파일: 세대 1로 열고 손상 슬롯 1, 물러남을 알림");
     page_file_close(file);
 
-    /* 2. 길이는 늘었지만 새 페이지 내용이 0이다 */
+    /* 2. 길이는 늘었지만 새 페이지 내용이 0이다. fsync 전에 멈춘 commit은 쓰기 열기가 스스로 복구한다 */
     memcpy(mixed, gen2, size2);
     memset(mixed + (size_t)p2 * PAGE_FILE_PAGE_BYTES, 0, PAGE_FILE_PAGE_BYTES);
     spit(DB_PATH, mixed, size2);
-    CHECK(page_file_open(DB_PATH, true, &file, &info) == PAGE_FILE_OK && page_file_control(file)->generation == 1 &&
-              info.damaged_slots == 1, "사라진 데이터 쓰기: 세대 1로 엶");
+    spit(DB_PATH "-lock", lock1, lock_size1);
+    page_file_status_t reopened = page_file_open(DB_PATH, true, &file, &info);
+    CHECK(reopened == PAGE_FILE_OK && page_file_control(file)->generation == 1 && info.damaged_slots == 1 &&
+              info.rolled_back == 1 && info.loss == PAGE_FILE_LOSS_POSSIBLE, "사라진 데이터 쓰기: 세대 1로 엶 (%d)", (int)reopened);
+    assert(reopened == PAGE_FILE_OK);
+    CHECK(page_file_open_info(file).rolled_back == 1, "핸들이 열 때의 판정을 보관");
     CHECK(page_file_read(file, p1, PAGE_KIND_OVERFLOW, 0, got) == PAGE_FILE_OK && got[0] == 0x61, "세대 1의 페이지");
     /* 이어서 commit하면 끝나지 않은 세대의 슬롯을 덮어쓴다 */
     CHECK(page_file_commit(file) == PAGE_FILE_OK && page_file_control(file)->generation == 2, "이어서 commit");
@@ -1395,6 +1404,7 @@ static void test_incomplete_commit_falls_back(void)
     free(mixed);
     free(gen1);
     free(gen2);
+    free(lock1);
     clean_dir();
 }
 
@@ -1563,6 +1573,228 @@ static void test_fresh_releases_one_past_control_reopen(void)
     clean_dir();
 }
 
+/* ── #271 ── */
+
+static double seconds_now(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double)now.tv_sec + (double)now.tv_nsec / 1e9;
+}
+
+static uint8_t lock_mark(void)
+{
+    uint8_t mark = 0xFF;
+    int fd = open(DB_PATH "-lock", O_RDONLY);
+    if (fd >= 0) {
+        if (pread(fd, &mark, 1, 0) != 1) mark = 0xFF;
+        close(fd);
+    }
+    return mark;
+}
+
+/* 페이지 두 장(세대 1의 p1, 세대 2의 p2)을 가진 게시된 파일. 세대 2는 fsync까지 끝나 성공을 돌려준 commit이다 */
+static void build_two_generations(uint32_t *p1, uint32_t *p2)
+{
+    page_file_t *file;
+    uint8_t body[PAGE_BODY_BYTES];
+    assert(page_file_create(DB_PATH, &file) == PAGE_FILE_OK);
+    memset(body, 0x61, sizeof(body));
+    assert(page_file_alloc(file, p1) == PAGE_FILE_OK && page_file_write(file, *p1, PAGE_KIND_OVERFLOW, 0, body) == PAGE_FILE_OK);
+    assert(page_file_commit(file) == PAGE_FILE_OK && page_file_publish(file) == PAGE_FILE_OK);
+    memset(body, 0x62, sizeof(body));
+    assert(page_file_alloc(file, p2) == PAGE_FILE_OK && page_file_write(file, *p2, PAGE_KIND_OVERFLOW, 0, body) == PAGE_FILE_OK);
+    assert(page_file_commit(file) == PAGE_FILE_OK && page_file_control(file)->generation == 2);
+    assert(page_file_last_commit_outcome(file) == PAGE_FILE_COMMIT_APPLIED);
+    assert(page_file_close(file) == PAGE_FILE_OK);
+}
+
+/*
+ * 성공을 돌려준 최신 commit의 페이지가 1비트 손상되면 열기는 이전 세대로 물러난다. 쓰기 열기가 그대로 성공하면 다음
+ * commit이 같은 제어 슬롯과 페이지를 다시 써서 승인됐던 세대를 영구히 덮는다.
+ */
+static void test_acknowledged_commit_damage_is_not_overwritten(void)
+{
+    printf("\n[test_acknowledged_commit_damage_is_not_overwritten]\n");
+    fresh_dir();
+    hooks_reset();
+    uint32_t p1, p2;
+    build_two_generations(&p1, &p2);
+    size_t good_size;
+    uint8_t *good = slurp(DB_PATH, &good_size);
+    flip_slot(DB_PATH, p2, 100);
+    uint64_t damaged = file_hash(DB_PATH);
+
+    /* a) 쓰기 열기는 거절하고 파일을 바꾸지 않는다 */
+    page_file_t *file = NULL;
+    page_file_open_info_t info = {0};
+    page_file_status_t status = page_file_open(DB_PATH, true, &file, &info);
+    CHECK(status != PAGE_FILE_OK, "승인된 최신 commit이 손상된 파일의 쓰기 열기는 거절 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) {
+        uint32_t reused;
+        uint8_t body[PAGE_BODY_BYTES];
+        memset(body, 0x63, sizeof(body));
+        assert(page_file_alloc(file, &reused) == PAGE_FILE_OK);
+        assert(page_file_write(file, reused, PAGE_KIND_OVERFLOW, 0, body) == PAGE_FILE_OK);
+        assert(page_file_commit(file) == PAGE_FILE_OK);
+        printf("  관측: 세대 %llu로 이어 commit, 페이지 %u 재사용(손상된 세대의 페이지 %u)\n",
+               (unsigned long long)page_file_control(file)->generation, reused, p2);
+        page_file_close(file);
+    }
+    CHECK(file_hash(DB_PATH) == damaged, "거절한 열기는 손상된 세대를 덮어쓰지 않음");
+    CHECK(status == PAGE_FILE_LOST_COMMIT && info.rolled_back == 1 && info.loss == PAGE_FILE_LOSS_CONFIRMED,
+          "전용 상태와 판정으로 알림 (%d, loss %d)", (int)status, (int)info.loss);
+
+    /* b) 읽기 열기는 이전 세대로 열리고 그 사실을 조회할 수 있다 */
+    uint8_t got[PAGE_BODY_BYTES];
+    status = page_file_open(DB_PATH, false, &file, &info);
+    CHECK(status == PAGE_FILE_OK && page_file_control(file)->generation == 1 && info.rolled_back == 1 &&
+              info.loss == PAGE_FILE_LOSS_CONFIRMED && page_file_open_info(file).loss == PAGE_FILE_LOSS_CONFIRMED,
+          "읽기 열기는 세대 1, 손실 확정 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) {
+        CHECK(page_file_read(file, p1, PAGE_KIND_OVERFLOW, 0, got) == PAGE_FILE_OK && got[0] == 0x61, "세대 1의 페이지");
+        page_file_close(file);
+    }
+
+    /* c) 거절한 뒤 손상을 고치면(백업에서 그 페이지 복원) 승인된 세대가 그대로 열린다. 덮어썼다면 불가능하다 */
+    spit(DB_PATH, good, good_size);
+    status = page_file_open(DB_PATH, true, &file, &info);
+    CHECK(status == PAGE_FILE_OK && page_file_control(file)->generation == 2 && info.loss == PAGE_FILE_LOSS_NONE &&
+              page_file_read(file, p2, PAGE_KIND_OVERFLOW, 0, got) == PAGE_FILE_OK && got[0] == 0x62,
+          "복원하면 승인된 세대 2 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) page_file_close(file);
+
+    /* d) 이미 열려 있던 쓰기 핸들도 배타 잠금에서 거절한다. 공유 잠금은 물러난 세대를 읽는다 */
+    page_file_t *held, *other;
+    uint32_t p3;
+    assert(page_file_open(DB_PATH, true, &held, NULL) == PAGE_FILE_OK && page_file_unlock(held) == PAGE_FILE_OK);
+    assert(page_file_open(DB_PATH, true, &other, NULL) == PAGE_FILE_OK);
+    memset(got, 0x65, sizeof(got));
+    assert(page_file_alloc(other, &p3) == PAGE_FILE_OK && page_file_write(other, p3, PAGE_KIND_OVERFLOW, 0, got) == PAGE_FILE_OK);
+    assert(page_file_commit(other) == PAGE_FILE_OK && page_file_control(other)->generation == 3);
+    assert(page_file_close(other) == PAGE_FILE_OK);
+    flip_slot(DB_PATH, p3, 100);
+    damaged = file_hash(DB_PATH);
+    status = page_file_lock(held, PAGE_FILE_LOCK_EXCLUSIVE, NULL);
+    CHECK(status == PAGE_FILE_CORRUPT && page_file_lock_mode(held) == PAGE_FILE_LOCK_NONE,
+          "열려 있던 쓰기 핸들의 배타 잠금 거절 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) page_file_unlock(held);
+    status = page_file_lock(held, PAGE_FILE_LOCK_SHARED, NULL);
+    CHECK(status == PAGE_FILE_OK && page_file_control(held)->generation == 2, "공유 잠금은 세대 2를 읽음 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) page_file_unlock(held);
+    page_file_close(held);
+    CHECK(file_hash(DB_PATH) == damaged, "거절한 잠금은 파일을 바꾸지 않음");
+
+    /* e) 손상을 받아들인다고 밝힌 열기만 이어 쓴다. 그 뒤에는 정상 파일이다 */
+    page_file_open_options_t accept = {.writable = true, .accept_lost_commit = true};
+    status = page_file_open_with(DB_PATH, &accept, &file, &info);
+    CHECK(status == PAGE_FILE_OK && page_file_control(file)->generation == 2 && info.loss == PAGE_FILE_LOSS_CONFIRMED,
+          "받아들인 쓰기 열기 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) {
+        CHECK(page_file_commit(file) == PAGE_FILE_OK && page_file_control(file)->generation == 3, "이어서 commit");
+        CHECK(page_file_unlock(file) == PAGE_FILE_OK && page_file_lock(file, PAGE_FILE_LOCK_EXCLUSIVE, NULL) == PAGE_FILE_OK,
+              "commit 뒤 다시 배타 잠금");
+        page_file_close(file);
+    }
+    status = page_file_open(DB_PATH, true, &file, &info);
+    CHECK(status == PAGE_FILE_OK && info.loss == PAGE_FILE_LOSS_NONE && info.damaged_slots == 0 && info.rolled_back == 0,
+          "덮어쓴 뒤에는 물러나지 않음 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) page_file_close(file);
+
+    /* f) 최신 제어 페이지 자체가 손상돼도 기록이 그 세대의 fsync 성공을 말하면 확정이다 */
+    flip_slot(DB_PATH, 1, 60);   /* 세대 3은 슬롯 1 */
+    status = page_file_open(DB_PATH, true, &file, &info);
+    CHECK(status == PAGE_FILE_LOST_COMMIT && info.damaged_slots == 1 && info.rolled_back == 0 &&
+              info.loss == PAGE_FILE_LOSS_CONFIRMED, "최신 제어 페이지 손상도 쓰기 열기 거절 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) page_file_close(file);
+
+    /* g) 한계: 기록이 없으면(잠금 파일 삭제, 전원 차단으로 기록 소실) 끝나지 않은 commit과 구분하지 못해 스스로 복구한다 */
+    unlink(DB_PATH "-lock");
+    status = page_file_open(DB_PATH, true, &file, &info);
+    CHECK(status == PAGE_FILE_OK && page_file_control(file)->generation == 2 && info.damaged_slots == 1 &&
+              info.loss == PAGE_FILE_LOSS_POSSIBLE, "기록이 없으면 물러난 사실만 알리고 엶 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) page_file_close(file);
+    free(good);
+    clean_dir();
+}
+
+static int die_in_fsync(int fd)
+{
+    (void)fd;
+    kill(getpid(), SIGKILL);
+    return 0;
+}
+
+/* 자식이 commit의 마지막 fsync 안에서 SIGKILL된다. 게시 대기 표시가 1인 구간이라 잠금 파일에 표시가 남는다 */
+static void leave_stale_publish_mark(void)
+{
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        page_file_io_t io = HOOKED;
+        io.fsync = die_in_fsync;
+        page_file_set_default_io(&io);
+        page_file_t *writer;
+        uint32_t page;
+        uint8_t body[PAGE_BODY_BYTES];
+        memset(body, 0x64, sizeof(body));
+        if (page_file_open(DB_PATH, true, &writer, NULL) != PAGE_FILE_OK) _exit(2);
+        if (page_file_alloc(writer, &page) != PAGE_FILE_OK) _exit(3);
+        if (page_file_write(writer, page, PAGE_KIND_OVERFLOW, 0, body) != PAGE_FILE_OK) _exit(3);
+        page_file_commit(writer);
+        _exit(4);
+    }
+    int wait_status;
+    waitpid(child, &wait_status, 0);
+    assert(WIFSIGNALED(wait_status) && WTERMSIG(wait_status) == SIGKILL);
+}
+
+/*
+ * 죽은 writer가 남긴 게시 대기 표시. 쓰기 핸들의 공유 잠금과, 다른 writer가 긴 거래를 쥔 동안의 읽기 핸들 공유 잠금이
+ * 게시 대기 상한(여기서는 1500ms)만큼 서지 않아야 한다.
+ */
+static void test_stale_publish_mark_does_not_stall_readers(void)
+{
+    printf("\n[test_stale_publish_mark_does_not_stall_readers]\n");
+    fresh_dir();
+    hooks_reset();
+    uint32_t p1, p2;
+    build_two_generations(&p1, &p2);
+    page_file_set_default_publish_timeout(1500);
+    page_file_t *writer, *reader;
+    assert(page_file_open(DB_PATH, true, &writer, NULL) == PAGE_FILE_OK && page_file_unlock(writer) == PAGE_FILE_OK);
+    assert(page_file_open(DB_PATH, false, &reader, NULL) == PAGE_FILE_OK && page_file_unlock(reader) == PAGE_FILE_OK);
+    page_file_set_default_publish_timeout(PAGE_FILE_PUBLISH_TIMEOUT_MS);
+
+    /* a) 쓰기 핸들의 공유 잠금 */
+    leave_stale_publish_mark();
+    CHECK(lock_mark() == 1, "죽은 writer의 게시 대기 표시가 남음 (%u)", lock_mark());
+    double start = seconds_now();
+    bool changed = false;
+    page_file_status_t status = page_file_lock(writer, PAGE_FILE_LOCK_SHARED, &changed);
+    double waited = seconds_now() - start;
+    printf("  관측: 쓰기 핸들 공유 잠금 %.3f초\n", waited);
+    CHECK(status == PAGE_FILE_OK && changed && page_file_control(writer)->generation == 3, "죽은 writer의 commit을 봄 (%d)", (int)status);
+    CHECK(waited < 0.5, "쓰기 핸들 공유 잠금이 게시 대기 상한만큼 서지 않음 (%.3f초)", waited);
+    CHECK(lock_mark() == 0, "쓰기 핸들이 죽은 writer의 표시를 정리함 (%u)", lock_mark());
+    assert(page_file_unlock(writer) == PAGE_FILE_OK);
+
+    /* b) 다른 writer가 긴 거래를 쥔 동안의 읽기 핸들 */
+    leave_stale_publish_mark();
+    CHECK(lock_mark() == 1, "표시가 다시 남음 (%u)", lock_mark());
+    assert(page_file_lock(writer, PAGE_FILE_LOCK_EXCLUSIVE, NULL) == PAGE_FILE_OK);
+    start = seconds_now();
+    status = page_file_lock(reader, PAGE_FILE_LOCK_SHARED, &changed);
+    waited = seconds_now() - start;
+    printf("  관측: 긴 쓰기 거래 동안 읽기 핸들 공유 잠금 %.3f초\n", waited);
+    CHECK(status == PAGE_FILE_OK && page_file_control(reader)->generation == 4, "읽기 핸들 잠금 (%d)", (int)status);
+    CHECK(waited < 0.5, "살아 있는 writer가 게시하지 않는 동안 낡은 표시로 서지 않음 (%.3f초)", waited);
+    assert(page_file_unlock(reader) == PAGE_FILE_OK && page_file_unlock(writer) == PAGE_FILE_OK);
+    page_file_close(reader);
+    page_file_close(writer);
+    clean_dir();
+}
+
 int main(void)
 {
     /* 잠금 충돌은 기다리지 않고 곧바로 LOCKED로 확인한다 */
@@ -1584,6 +1816,8 @@ int main(void)
     test_incomplete_commit_falls_back();
     test_short_io_and_eintr();
     test_fresh_releases_one_past_control_reopen();
+    test_acknowledged_commit_damage_is_not_overwritten();
+    test_stale_publish_mark_does_not_stall_readers();
     page_file_set_default_io(NULL);
     clean_dir();
     printf("\n%s: %d/%d\n", g_fail == 0 ? "ALL PASSED" : "FAILED", g_run - g_fail, g_run);
