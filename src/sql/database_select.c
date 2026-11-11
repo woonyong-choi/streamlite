@@ -156,8 +156,9 @@ database_exec_status_t select_emit(select_ctx_t *ctx, const value_t *row)
     return DATABASE_EXEC_OK;
 }
 
-static int compare_outputs(const select_ctx_t *ctx, const value_t *a, const value_t *b)
+static int compare_outputs(const void *context, const value_t *a, const value_t *b)
 {
+    const select_ctx_t *ctx = context;
     for (size_t i = 0; i < ctx->out_count; i++) {
         int order = sqleval_compare(&a[i].view, &b[i].view);
         if (order != 0) return order;
@@ -165,8 +166,9 @@ static int compare_outputs(const select_ctx_t *ctx, const value_t *a, const valu
     return 0;
 }
 
-static int compare_keys_of(const select_ctx_t *ctx, const value_t *a, const value_t *b)
+static int compare_keys_of(const void *context, const value_t *a, const value_t *b)
 {
+    const select_ctx_t *ctx = context;
     for (size_t k = 0; k < ctx->key_count; k++) {
         const select_key_t *key = &ctx->keys[k];
         const value_view_t *x = &a[key->slot].view, *y = &b[key->slot].view;
@@ -181,25 +183,6 @@ static int compare_keys_of(const select_ctx_t *ctx, const value_t *a, const valu
     return 0;
 }
 
-/* 안정 병합 정렬. scratch는 count개 자리 */
-static void merge_sort(const select_ctx_t *ctx, value_t **rows, value_t **scratch, size_t count, bool by_keys)
-{
-    for (size_t width = 1; width < count; width *= 2) {
-        for (size_t lo = 0; lo < count; lo += 2 * width) {
-            size_t mid = lo + width < count ? lo + width : count;
-            size_t hi = lo + 2 * width < count ? lo + 2 * width : count;
-            size_t i = lo, j = mid, k = lo;
-            while (i < mid && j < hi) {
-                int order = by_keys ? compare_keys_of(ctx, rows[j], rows[i]) : compare_outputs(ctx, rows[j], rows[i]);
-                scratch[k++] = order < 0 ? rows[j++] : rows[i++];
-            }
-            while (i < mid) scratch[k++] = rows[i++];
-            while (j < hi) scratch[k++] = rows[j++];
-        }
-        memcpy(rows, scratch, count * sizeof(*rows));
-    }
-}
-
 /* 모은 행에 DISTINCT·ORDER BY를 적용한다 */
 static database_exec_status_t select_settle(select_ctx_t *ctx)
 {
@@ -210,7 +193,7 @@ static database_exec_status_t select_settle(select_ctx_t *ctx)
         value_t **scratch = q_malloc(db, scratch_bytes);
         if (scratch == NULL) return DATABASE_EXEC_NOMEM;
         if (ctx->distinct) {
-            merge_sort(ctx, ctx->rows, scratch, count, false);
+            sort_rows(ctx->rows, scratch, count, compare_outputs, ctx);
             size_t kept = 1, width = select_width(ctx);
             for (size_t i = 1; i < count; i++) {
                 if (compare_outputs(ctx, ctx->rows[kept - 1], ctx->rows[i]) == 0) {
@@ -222,7 +205,7 @@ static database_exec_status_t select_settle(select_ctx_t *ctx)
             }
             ctx->row_count = count = kept;
         }
-        if (ctx->key_count > 0) merge_sort(ctx, ctx->rows, scratch, count, true);
+        if (ctx->key_count > 0) sort_rows(ctx->rows, scratch, count, compare_keys_of, ctx);
         q_free(db, scratch, scratch_bytes);
     }
     return DATABASE_EXEC_OK;

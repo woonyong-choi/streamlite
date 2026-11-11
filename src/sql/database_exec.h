@@ -152,6 +152,29 @@ typedef struct cte_scope {
 typedef int (*row_compare_fn)(const void *ctx, const value_t *a, const value_t *b);
 
 /*
+ * SQL 정렬의 유일한 구현인 안정 병합 정렬을 원소 형식별 함수 name으로 정의한다. cmp(ctx, 뒤, 앞)가 음수일 때만 뒤 원소를
+ * 앞에 두므로 동률은 입력 순서를 지킨다(ORDER BY 동률·DISTINCT·GROUP BY의 결과 순서가 여기에 기댄다). scratch는
+ * count개 자리이며 이 함수는 할당하지 않는다.
+ */
+#define DEFINE_STABLE_SORT(name, elem_t, cmp_t)                                                              \
+    void name(elem_t *items, elem_t *scratch, size_t count, cmp_t cmp, const void *ctx)                      \
+    {                                                                                                        \
+        for (size_t width = 1; width < count; width *= 2) {                                                  \
+            for (size_t lo = 0; lo < count; lo += 2 * width) {                                               \
+                size_t mid = lo + width < count ? lo + width : count;                                        \
+                size_t hi = lo + 2 * width < count ? lo + 2 * width : count;                                 \
+                size_t i = lo, j = mid, k = lo;                                                              \
+                while (i < mid && j < hi) {                                                                  \
+                    scratch[k++] = cmp(ctx, items[j], items[i]) < 0 ? items[j++] : items[i++];               \
+                }                                                                                            \
+                while (i < mid) scratch[k++] = items[i++];                                                   \
+                while (j < hi) scratch[k++] = items[j++];                                                    \
+            }                                                                                                \
+            memcpy(items, scratch, count * sizeof(*items));                                                  \
+        }                                                                                                    \
+    }
+
+/*
  * 바깥 질의 범위. 서브쿼리 안의 열 이름이 자기 FROM에 없으면 여기서 찾고, 값은 params[바깥 칸]에서 읽는다.
  * resolver가 NULL이면 바깥 열을 볼 수 없다(그룹 질의의 출력·FROM 서브쿼리·WITH 등).
  */
