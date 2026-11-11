@@ -7,6 +7,7 @@
 ### 추가
 
 - commit 동기화 단계 NORMAL·FULL·OFF 추가: C `streamlite_open_ex`의 `streamlite_open_options_t.durability`, Python `Database(durability="normal"|"full"|"off")`. 어느 단계든 프로세스 종료 뒤에는 commit 전부 또는 전무이고, 단계는 OS 장애·전원 차단 보장만 바꾼다. OFF는 commit에서 동기화하지 않고 정상 close에서 한 번 동기화한다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+- 정수 열 보조 색인의 구간 조회 추가: `WHERE 열 >= ? AND 열 <= ?` 같은 비교를 색인 구간으로 읽고, `ORDER BY 열` 하나면 정렬 없이 LIMIT에서 멈춘다. 결과는 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - C `streamlite_open_options_t.busy_timeout_ms` 추가: `streamlite_begin`, 트랜잭션 없이 부른 큐 변경 연산, 자동 commit 변경 문장의 BUSY를 db mutex 밖에서 그 기간까지 다시 시도한다. 기본 0은 이전처럼 기다리지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 
 ### 변경

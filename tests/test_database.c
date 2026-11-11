@@ -1469,6 +1469,78 @@ static void test_ordered_secondary_index(void)
     clean_dir();
 }
 
+/* 정수 열 보조 색인의 구간 조회(#260): 색인 없는 같은 표와 결과·순서가 같고 전체 스캔 없이 LIMIT에서 멈춘다 */
+static void check_index_ranges(database_t *db)
+{
+    static const char *const cases[][2] = {
+        {"SELECT id, k FROM t WHERE k >= -50 AND k <= 40 ORDER BY k LIMIT 7",
+         "SELECT id, k FROM plain WHERE k >= -50 AND k <= 40 ORDER BY k LIMIT 7"},
+        {"SELECT id FROM t WHERE k > 100 AND k < 300 AND id % 3 = 1 ORDER BY k LIMIT 5 OFFSET 2",
+         "SELECT id FROM plain WHERE k > 100 AND k < 300 AND id % 3 = 1 ORDER BY k LIMIT 5 OFFSET 2"},
+        {"SELECT id, k FROM t WHERE k <= -290 ORDER BY k", "SELECT id, k FROM plain WHERE k <= -290 ORDER BY k"},
+        {"SELECT id, k FROM t WHERE k >= 690 ORDER BY k", "SELECT id, k FROM plain WHERE k >= 690 ORDER BY k"},
+        {"SELECT count(*) FROM t WHERE k BETWEEN 0 AND 99", "SELECT count(*) FROM plain WHERE k BETWEEN 0 AND 99"},
+        {"SELECT id FROM t WHERE k >= 10 AND k <= 5", "SELECT id FROM plain WHERE k >= 10 AND k <= 5"},
+        {"SELECT id, k FROM t WHERE k >= 9223372036854775800 ORDER BY k",
+         "SELECT id, k FROM plain WHERE k >= 9223372036854775800 ORDER BY k"},
+        {"SELECT id, k FROM t WHERE k <= -9223372036854775800 ORDER BY k",
+         "SELECT id, k FROM plain WHERE k <= -9223372036854775800 ORDER BY k"},
+        {"SELECT id FROM t WHERE k >= 0 ORDER BY id LIMIT 4", "SELECT id FROM plain WHERE k >= 0 ORDER BY id LIMIT 4"},
+        {"SELECT id, k FROM t WHERE k >= 0 AND k <= 30 ORDER BY k DESC LIMIT 3",
+         "SELECT id, k FROM plain WHERE k >= 0 AND k <= 30 ORDER BY k DESC LIMIT 3"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) expect_same_order(db, cases[i][0], cases[i][1]);
+    database_scan_stats_t before, after;
+    database_scan_stats(db, &before);
+    char *got = query(db, "SELECT id FROM t WHERE k >= -300 AND k <= 699 ORDER BY k LIMIT 2");
+    free(got);
+    database_scan_stats(db, &after);
+    CHECK(after.rows_scanned == before.rows_scanned && after.index_lookups == before.index_lookups + 1 &&
+              after.index_pages_read - before.index_pages_read <= 4,
+          "정수 색인 구간 LIMIT은(stamp 확인 포함) 전체 스캔과 나머지 색인 페이지 방문 없이 멈춤 (scanned %llu, pages %llu)",
+          (unsigned long long)(after.rows_scanned - before.rows_scanned),
+          (unsigned long long)(after.index_pages_read - before.index_pages_read));
+}
+
+static void test_secondary_index_ranges(void)
+{
+    printf("\n[test_secondary_index_ranges]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER, v TEXT)");
+    exec_ok(db, "CREATE TABLE plain (id INTEGER PRIMARY KEY, k INTEGER, v TEXT)");
+    exec_ok(db, "CREATE INDEX t_k ON t (k)");
+    /* k는 -300..699의 서로 다른 값이고 id 순서와 다르다. NULL과 극단 값도 둔다 */
+    for (int start = 1; start <= 1000; start += 100) {
+        char sql[8192], plain[8192];
+        size_t used = (size_t)snprintf(sql, sizeof(sql), "INSERT INTO t VALUES ");
+        for (int id = start; id < start + 100; id++) {
+            used += (size_t)snprintf(sql + used, sizeof(sql) - used, "%s(%d, %d, 'v%d')", id == start ? "" : ", ", id,
+                                     (id * 7919) % 1000 - 300, id);
+        }
+        exec_ok(db, sql);
+        snprintf(plain, sizeof(plain), "INSERT INTO plain VALUES %s", sql + strlen("INSERT INTO t VALUES "));
+        exec_ok(db, plain);
+    }
+    const char *extra = "VALUES (2001, NULL, 'n1'), (2002, NULL, 'n2'), (2003, 9223372036854775807, 'max'), "
+                        "(2004, -9223372036854775808, 'min'), (2005, 9223372036854775806, 'near')";
+    char sql[512];
+    snprintf(sql, sizeof(sql), "INSERT INTO t %s", extra);
+    exec_ok(db, sql);
+    snprintf(sql, sizeof(sql), "INSERT INTO plain %s", extra);
+    exec_ok(db, sql);
+    check_index_ranges(db);
+    /* 값을 옮기고 지운 뒤, 다시 연 뒤에도 같다 */
+    exec_ok(db, "UPDATE t SET k = k + 1000 WHERE id % 9 = 0");
+    exec_ok(db, "UPDATE plain SET k = k + 1000 WHERE id % 9 = 0");
+    exec_ok(db, "DELETE FROM t WHERE id % 13 = 0");
+    exec_ok(db, "DELETE FROM plain WHERE id % 13 = 0");
+    check_index_ranges(db);
+    db = reopen(db, true);
+    check_index_ranges(db);
+    assert(database_close(db) == DATABASE_OK);
+    clean_dir();
+}
+
 /* #81·#91: 데이터 페이지는 닿거나(카탈로그·heap·overflow·색인) 빈 목록에 정확히 한 번 있다. 고아와 이중 소유가 없다 */
 static void expect_pages_accounted(database_t *db, const char *when)
 {
@@ -1586,6 +1658,7 @@ int main(void)
     test_order_and_distinct_respect_budget();
     test_aggregate_memory_scales_with_groups();
     test_ordered_secondary_index();
+    test_secondary_index_ranges();
     test_page_accounting_with_large_values();
     test_page_list_with_deep_index();
     clean_dir();
