@@ -357,6 +357,16 @@ python3 bench/sqlite_workload.py --output build/bench/sqlite_workload.json
 python3 bench/sqlite_workload.py --output build/bench/sqlite_workload.json --analyze
 ```
 
+[hot_path.c](../bench/hot_path.c)는 C API 경로(자동 commit·거래 INSERT, PK 조회, 큐 put·get·ack 한 건씩과 거래 묶음, LEASED·ACKED backlog, 빈 큐 poller 옆의 put)를 시스템 SQLite C API(prepared 문장 재사용, WAL)와 같은 순서로 잰다(#260). StreamLite 공유 라이브러리를 명령줄로 받아 `dlopen`하므로 같은 바이너리로 다른 commit의 빌드를 비교한다. 결과 대조는 하지 않으며 시간 수치는 판정에 쓰지 않는다.
+
+```sh
+cc -O2 -Iinclude -o build/hot_path bench/hot_path.c -lsqlite3
+SL_DURABILITY=normal build/hot_path sl build/lib/libstreamlite.dylib build/bench-a.streamlite queue_cycle 1000
+build/hot_path sq wal build/bench-a.db backlog 200 4000 20000
+```
+
+DB 경로는 실행 전에 지우지 않으므로 매번 없는 경로를 준다. `SL_DURABILITY`는 `streamlite_open_ex`가 있는 빌드에서만 쓴다.
+
 공식 YCSB 0.17.0은 같은 Java/JNI SQL 바인딩으로 StreamLite와 SQLite에 A~F를 실행한다(2026-10-18 확인). Java 21, Python 3.9 이상, C 컴파일러와 SQLite 개발 헤더가 필요하다. 고정 JAR 다운로드에 네트워크를 사용한다.
 
 ```sh
