@@ -246,16 +246,16 @@ class QueueContentionTest(unittest.TestCase):
             )
             self.assertEqual(sum(row[1] == 0 for row in adapter.rows()), 1)
             adapter.clock += LEASE_MS + 1
-            reclaimed = adapter.claim(retry)
-            self.assertEqual(
-                (reclaimed.id, reclaimed.fence, reclaimed.attempts), (first, 2, 2)
-            )
+            # 만료된 first와 대기 중인 second가 함께 후보다. 순서는 엔진마다 다르므로
+            # (id순 또는 claim 가능해진 시각순) 두 건을 받아 id로 나눈다
+            got = {c.id: c for c in (adapter.claim(retry), adapter.claim(retry))}
+            self.assertEqual(set(got), {first, second})
+            reclaimed, remaining = got[first], got[second]
+            self.assertEqual((reclaimed.fence, reclaimed.attempts), (2, 2))
             with self.assertRaises(StaleError):
                 adapter.ack(claim, retry)
             adapter.ack(reclaimed, retry)
             adapter.ack(reclaimed, retry)
-            remaining = adapter.claim(retry)
-            self.assertEqual(remaining.id, second)
             adapter.ack(remaining, retry)
             self.assertIsNone(adapter.claim(retry))
             adapter.outbox(2, payload(2, 64), retry)
