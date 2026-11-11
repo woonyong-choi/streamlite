@@ -1652,7 +1652,7 @@ static bool parse_create(parser_t *p, sqlstmt_t *statement)
             return fail(p, SQLSTMT_UNSUPPORTED, SQLSTMT_REASON_UNSUPPORTED_CONSTRAINT,
                         here_offset(p));
         }
-        return expect_punct(p, ")");
+        return expect_punct(p, ")") && parse_end(p);
     }
     sqlstmt_create_t *create = &statement->create;
     statement->kind = SQLSTMT_CREATE_TABLE;

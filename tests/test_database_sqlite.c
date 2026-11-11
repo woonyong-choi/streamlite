@@ -631,6 +631,9 @@ static void build_steps(void)
     add_step(STEP_OK, "INSERT INTO z VALUES (NULL, 'c')");
     add_step(STEP_SELECT, "SELECT id, v FROM z");
     add_step(STEP_SELECT, "SELECT id FROM z WHERE id IS NULL");
+    /* #272: 닫는 괄호 뒤에 다른 문장이 붙은 CREATE INDEX는 둘 다 문법 오류다 */
+    add_step(STEP_ERROR, "CREATE UNIQUE INDEX z_v ON z (v) DROP TABLE z");
+    add_step(STEP_ERROR, "CREATE INDEX z_v ON z (v) (id)");
     add_step(STEP_SELECT, "SELECT id, v FROM z");
 
     /* #203: 큰 id를 직접 넣은 뒤 자동 id는 기존 최대 키 + 1이다. 최대 정수 뒤에는 둘 다 오류다 */

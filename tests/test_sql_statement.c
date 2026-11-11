@@ -211,6 +211,12 @@ static void create_index_forms(void)
     assert(statement->kind == SQLSTMT_CREATE_INDEX && statement->index.unique);
     free_clean(statement);
     expect_unsupported("CREATE INDEX pair ON users (a, b)", SQLSTMT_REASON_UNSUPPORTED_CONSTRAINT, 29);
+    /* #272: 닫는 괄호 뒤에 남은 토큰은 다른 문장과 같이 거절한다 */
+    expect_syntax("CREATE INDEX ix ON t (n) WHERE garbage", SQLSTMT_REASON_TRAILING_TOKENS, 25);
+    expect_syntax("CREATE UNIQUE INDEX ux ON t (v) DROP TABLE t", SQLSTMT_REASON_TRAILING_TOKENS, 32);
+    expect_syntax("CREATE INDEX ix ON t (n) x", SQLSTMT_REASON_TRAILING_TOKENS, 25);
+    expect_syntax("CREATE INDEX ix ON t (n) (m)", SQLSTMT_REASON_TRAILING_TOKENS, 25);
+    expect_syntax("CREATE INDEX ix ON t (n", SQLSTMT_REASON_UNEXPECTED_END, 23);
 }
 
 static void create_primary_key_forms(void)

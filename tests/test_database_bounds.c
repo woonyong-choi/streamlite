@@ -415,6 +415,25 @@ static void test_update_cannot_null_primary_key(void)
     assert(database_close(db) == DATABASE_OK);
 }
 
+/* ── CREATE INDEX 뒤의 토큰 ── */
+
+static void test_create_index_rejects_trailing_tokens(void)
+{
+    printf("\n[test_create_index_rejects_trailing_tokens]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (n INTEGER, v TEXT)");
+    exec_ok(db, "INSERT INTO t VALUES (1, 'a'), (1, 'b')");
+    expect_error(db, "CREATE INDEX ix ON t (n) WHERE garbage", RESULT_E_SYNTAX, SQLSTMT_REASON_TRAILING_TOKENS, NULL);
+    expect_error(db, "CREATE UNIQUE INDEX ux ON t (v) DROP TABLE t", RESULT_E_SYNTAX, SQLSTMT_REASON_TRAILING_TOKENS, NULL);
+    expect_error(db, "CREATE INDEX ix ON t (n) (v)", RESULT_E_SYNTAX, SQLSTMT_REASON_TRAILING_TOKENS, NULL);
+    expect_text(db, "SELECT COUNT(*) FROM t", "[1] 2");
+    /* 거절한 문장은 색인을 만들지 않았다: 같은 이름으로 다시 만들 수 있다 */
+    exec_ok(db, "CREATE INDEX ix ON t (n)");
+    exec_ok(db, "CREATE UNIQUE INDEX ux ON t (v)");
+    expect_error(db, "CREATE INDEX ix ON t (n)", RESULT_E_SEMANTIC, 4, NULL);
+    assert(database_close(db) == DATABASE_OK);
+}
+
 /* 인자가 있으면 이름에 그 글자가 든 검사만 돌린다(하나가 죽어도 나머지를 따로 볼 수 있게) */
 int main(int argc, char **argv)
 {
@@ -424,6 +443,7 @@ int main(int argc, char **argv)
     } TESTS[] = {
         {"deep_statements_fit_small_stack", test_deep_statements_fit_small_stack},
         {"update_cannot_null_primary_key", test_update_cannot_null_primary_key},
+        {"create_index_rejects_trailing_tokens", test_create_index_rejects_trailing_tokens},
     };
     for (size_t i = 0; i < sizeof(TESTS) / sizeof(TESTS[0]); i++) {
         if (argc < 2 || strstr(TESTS[i].name, argv[1]) != NULL) TESTS[i].run();

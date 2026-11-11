@@ -15,7 +15,7 @@
  *
  * 문법(키워드는 대소문자를 구분하지 않고 식별자는 바이트 단위로 대소문자를 구분한다):
  *   CREATE TABLE name ( item {, item} )
- *   CREATE [UNIQUE] INDEX name ON table ( column_name )
+ *   CREATE [UNIQUE] INDEX name ON table ( column_name )   (닫는 괄호 뒤에 토큰이 남으면 문법 오류)
  *     item       = column | PRIMARY KEY ( column_name )
  *     column     = column_name type {constraint}
  *     type       = INTEGER | REAL | TEXT | BLOB | VARCHAR ( n )
