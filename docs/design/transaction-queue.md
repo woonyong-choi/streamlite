@@ -104,13 +104,13 @@ lease 판정은 벽시계를 쓴다. 핸들은 자기가 읽은 가장 늦은 �
 
 같은 멱등성 키와 같은 payload의 `put`은 기존 작업 id를 반환하고, payload가 다르면 충돌로 거절한다. ACK는 물리 삭제가 아니며 `purge`가 끝난 행을 지운다. 키를 보존하는 설정이면 purge 뒤에도 정해진 기간 동안 키와 payload 요약을 남긴다. 보존 기간 뒤 재등록은 새 작업이고, 요약 비교를 무기한·무충돌 중복 제거라고 부르지 않는다.
 
-큐 옵션은 이름에 저장하는 전역 정책이 아니라 열린 핸들의 값이다. 여러 워커와 재개방 코드가 같은 시도·payload·보존·시계 정책을 전달할 책임이 있다. 정확한 매개변수와 C·Python의 0 변환 차이는 [streamlite.h](../../include/streamlite.h)와 [queue.py](../../python/streamlite/queue.py), 상태 변경 규칙은 [ack_queue.h](../../include/queue/ack_queue.h)에 있다.
+큐 옵션은 이름에 저장하는 전역 정책이 아니라 열린 핸들의 값이다. 여러 워커와 재개방 코드가 같은 시도·payload·보존·시계 정책을 전달할 책임이 있다. 보존 기간 `idem_retention_ms`의 0은 C와 Python 모두 기본값 7일이고, 키를 남기지 않으려면 C는 `UINT64_MAX`, Python은 `None`을 준다. 정확한 매개변수는 [streamlite.h](../../include/streamlite.h)와 [queue.py](../../python/streamlite/queue.py), 상태 변경 규칙은 [ack_queue.h](../../include/queue/ack_queue.h)에 있다.
 
 ### 실패 뒤 트랜잭션과 자원
 
 STALE·NOT_FOUND·CONFLICT는 변경 없는 거절이므로 호출자 트랜잭션을 실패시키지 않는다. 그 밖의 큐 오류에서는 일부 SQL이 이미 실행됐을 수 있어 호출자 트랜잭션 전체를 rollback한다. 불확정 commit은 성공으로 취급하지 않고 DB를 닫아 재개방한 뒤 업무 상태를 확인한다. 같은 DB의 업무 갱신과 ACK를 묶어도 외부 부작용까지 rollback하지는 않는다.
 
-C `get`의 payload는 `streamlite_queue_item_free`, 목록 payload는 `streamlite_queue_list_free`로 해제하고 목록 배열 자체는 호출자가 소유한다. Python은 payload를 bytes로 복사하고 native 자원을 해제한다. 트랜잭션을 먼저 끝내고 큐·DB를 닫는다. C의 열린 트랜잭션이나 큐는 DB close를 BUSY로 만들 수 있으며, Python DB close는 등록 큐부터 닫는다. 종료와 오류 규칙은 [streamlite.h](../../include/streamlite.h), [database.py](../../python/streamlite/database.py)에 있다.
+C `get`의 payload는 `streamlite_queue_item_free`, 목록 payload는 `streamlite_queue_list_free`로 해제하고 목록 배열 자체는 호출자가 소유한다. Python은 payload를 bytes로 복사하고 native 자원을 해제한다. 트랜잭션을 먼저 끝내고 큐·DB를 닫는다. Python에서 commit·rollback 없이 참조를 잃은 트랜잭션은 수거될 때 rollback되고, close하지 않은 큐·DB도 수거나 인터프리터 종료 때 닫힌다. 수거 시점은 정해져 있지 않으므로 writer를 제때 놓으려면 `with` 블록이나 명시적 호출을 쓴다. 같은 스레드가 트랜잭션을 연 채 `txn=` 없이 큐를 호출하면 그 트랜잭션이 writer를 쥐고 있어 기다려도 풀리지 않으므로 `busy_timeout_s`를 기다리지 않고 바로 `BusyError`다. C의 열린 트랜잭션이나 큐는 DB close를 BUSY로 만들 수 있으며, Python DB close는 등록 큐부터 닫는다. 종료와 오류 규칙은 [streamlite.h](../../include/streamlite.h), [database.py](../../python/streamlite/database.py)에 있다.
 
 ### 요구사항
 

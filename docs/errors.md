@@ -57,7 +57,7 @@ payload나 반환 버퍼의 한도를 넘었다. 크기를 줄이되 쓰기를 �
 
 #### `4` `STREAMLITE_BUSY`
 
-writer가 있거나 close에 자식 자원이 남았다. 경합이면 재시도하고 close면 자원을 먼저 끝낸다.
+writer가 있거나 close에 자식 자원이 남았다. 경합이면 재시도하고 close면 자원을 먼저 끝낸다. Python은 `busy_timeout_s`까지 다시 시도하지만, 호출한 스레드가 같은 `Database`에 연 트랜잭션이 writer를 쥐고 있으면 기다리지 않고 바로 원인을 적은 `BusyError`(자동 commit SQL은 BUSY 분류의 `SqlError`)를 던진다. 그 트랜잭션을 `txn=`으로 넘기거나 먼저 끝낸다.
 
 #### `5` `STREAMLITE_NOT_INSTALLED`
 
@@ -343,7 +343,7 @@ commit 반영 여부를 알 수 없다. 닫고 재개방하여 업무 상태를 
 | 지정 작업이 현재 claim 불가 | `STREAMLITE_STALE`, Python `StaleError` |
 | 목록·정리 대상 0건 | 성공한 빈 목록 또는 처리 수 `0` |
 
-할당 실패는 이 정상 부재 중 어느 것으로도 바꾸지 않는다. `persistqueue_compat`의 `Empty`, blocking과 lease 재개 정책은 native `Queue`와 다른 별도 인터페이스다.
+할당 실패는 이 정상 부재 중 어느 것으로도 바꾸지 않는다. `persistqueue_compat`의 `Empty`, blocking과 lease 재개 정책은 native `Queue`와 다른 별도 인터페이스다. 호환 계층의 `get(id=...)`은 그 작업이 이미 끝났거나 지워졌으면 block이어도 기다리지 않고 `Empty`이고, 열 때의 `auto_resume`은 만료된 lease만 되돌린다.
 
 ## 실패 뒤 상태
 

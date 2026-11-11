@@ -12,6 +12,8 @@
 - `release_leases`가 시도 한도에 닿은 작업을 `FAILED`가 아닌 `READY`로 되돌림: 해제는 작업의 실패로 세지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 새 큐 이름이 `_keys`·`_state`·`_idem`으로 끝나거나 다른 큐의 내부 이름과 겹치면 `INVALID`로 거절: 이미 있는 큐는 그대로 열린다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 큐 핸들이 뒤로 간 시계를 자기가 읽은 가장 늦은 시각으로 읽음: lease를 일찍 만료시키거나 줄여서 연장하지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- Python `Queue`의 `idem_retention_ms=0`이 C와 같이 기본 7일을 뜻하도록 변경: 키를 남기지 않으려면 `None`을 준다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 호출한 스레드가 같은 `Database`에 연 트랜잭션 때문에 막힌 Python 호출은 `busy_timeout_s`를 기다리지 않고 바로 `BusyError`(자동 commit SQL은 `SqlError`)로 변경 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 
 ### 수정
 
@@ -19,6 +21,8 @@
 - free-list 경계 처리 수정
 - 음수이거나 범위를 넘는 시계 값에서 큐 연산이 모두 `LIMIT`이 되던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 보존 기간이 긴 멱등성 키 뒤의 만료된 키가 purge에서 정리되지 않던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- commit·rollback 없이 참조를 잃은 Python `Transaction`이 writer를 쥔 채 남던 문제 수정: 수거나 인터프리터 종료 때 rollback하고 `Database`·`Queue`도 닫는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- Python `Queue.put`·`update`가 `bytearray`·`memoryview`를 받고 `str`은 `TypeError`로 거절하도록 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 끝낸 C 핸들을 표시 검사로 잠그기 전에 `INVALID`로 거절하고 `streamlite_txn_failed`가 mutex 안에서 읽도록 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 
 ### 제거
