@@ -12,8 +12,8 @@
  * 선택형 ACK 큐(#140). 독립 DB 위에 따로 설치하는 라이브러리이며 DB 코어(database·storage)는 이 모듈을 모른다.
  * 큐를 설치하지 않으면 객체·worker·전용 테이블이 생기지 않는다. 큐는 세션(session.h)의 공개 SQL과 트랜잭션 API만 쓰고
  * 큐 하나는 테이블 하나(streamlite_queue_<name>)다. 큐마다 따로 설치하며 DB와 같은 파일에 산다.
- * 큐는 key 보존 테이블(<table>_keys)과 색인(<table>_due, <table>_idem, <table>_keys_idem, 이전 판이 만든 큐는 <table>_state와
- * 열 때 더하는 <table>_lease)도 만든다. 그래서 _keys·_state·_idem·_due·_lease로 끝나는 이름과, 이미 있는 큐의 테이블 이름이
+ * 큐는 key 보존 테이블(<table>_keys)과 색인(<table>_due, <table>_idem, <table>_lease, <table>_keys_idem, 이전 판이 만든 큐는
+ * <table>_state)도 만든다. 그래서 _keys·_state·_idem·_due·_lease로 끝나는 이름과, 이미 있는 큐의 테이블 이름이
  * 자기 내부 이름과 같아지는 이름은 새로 설치하지 않는다(ACKQ_INVALID, 아무것도 만들지 않는다). 이 규칙 전에 만든 큐는 이름과
  * 무관하게 그대로 열린다.
  *
@@ -47,13 +47,15 @@
  * 정한다). 그 밖의 비OK 상태(IO·NOMEM·LIMIT·INTERNAL 등)는 문장이 일부만 실행됐을 수 있으므로 호출자는 그 트랜잭션을
  * rollback해야 한다(commit하면 큐 상태가 일부만 반영될 수 있다).
  *
- * 저장과 조회(#260): 이 판이 설치한 큐는 정수 due 열과 그 색인을 둔다. READY는 ready_at, 시도가 남은 LEASED는
- * lease_until(claim 가능해지는 시각)을, 마지막 시도의 LEASED·ACKED·FAILED는 음수의 상태별 구간에 id를 둔다. claim은 due
- * 색인의 [0, now] 구간을 due 순서로 읽고 k개에서 멈추므로 만료 전 LEASED·지연 READY·ACKED·FAILED 수와 무관하다. recover는
- * 같은 구간의 LEASED와 마지막 시도 구간을, purge는 ACKED·FAILED 구간을 id 순서로 읽는다. key 없는 작업의 idem은 NULL이라
- * idem 색인에 들어가지 않는다. 이전 판이 설치한 큐(due 없음)는 그대로 열리며 READY를 state 색인으로 id 순서로 읽는다. 열 때
- * lease_until 색인을 만들어(자기 트랜잭션. 실패하거나 호출자 트랜잭션 안이면 만들지 않고 이전 경로) 만료 lease를 그 구간으로
- * 찾는다. ack·nack·fail·update는 기본 키 한 행을 읽고 고친다. stats는 상태별 개수라 테이블 전체를 읽는다. 행 단위 잠금은
+ * 저장과 조회(#260): 이 판이 설치한 큐는 정수 due 열과 그 색인, lease_until 색인을 둔다. READY는 ready_at, 시도가 남은
+ * LEASED는 lease_until(claim 가능해지는 시각)을, 마지막 시도의 LEASED·ACKED·FAILED는 음수의 상태별 구간에 id를 둔다. claim은
+ * due 색인의 [0, now] 구간을 due 순서로 읽고 k개에서 멈추므로 만료 전 LEASED·지연 READY·ACKED·FAILED 수와 무관하다. purge는
+ * ACKED·FAILED 구간을 id 순서로 읽는다. recover·release는 lease_until 색인의 [1, 기준 시각] 구간을 만료 순서로 읽고 k개에서
+ * 멈춘다. LEASED만 lease_until이 0보다 크므로 READY·끝난 작업·(recover는) 만료 전 lease 수와 무관하다. key 없는 작업의 idem은
+ * NULL이라 idem 색인에 들어가지 않는다. 이전 판이 설치한 큐(due 없음)는 그대로 열리며 READY를 state 색인으로 id 순서로
+ * 읽는다. 열 때 lease_until 색인이 없으면(이전 판이 설치한 큐, 이 색인을 두기 전의 due 형식 큐) 만든다. 먼저 쓰기 거래 없이
+ * 읽어 색인이 있는지 보고 있으면 writer를 기다리지 않는다. 없을 때만 자기 트랜잭션으로 만들고, 실패하거나 호출자 트랜잭션
+ * 안이면 만들지 않고 이전 경로(state 색인, due 구간)로 찾는다. ack·nack·fail·update는 기본 키 한 행을 읽고 고친다. stats는 상태별 개수라 테이블 전체를 읽는다. 행 단위 잠금은
  * 없고 쓰기 트랜잭션은 하나다. payload는 선택한 작업의 것만 읽는다. 이 판이 설치한 큐는 due가 NOT NULL이라 이전 판
  * 라이브러리로 쓰면 enqueue가 실패한다.
  *
@@ -150,8 +152,8 @@ typedef struct {
  */
 ackq_status_t ackq_install(session_t *session, const ackq_options_t *options, ackq_t **out);
 /*
- * 테이블이 있어야 한다. 없으면 ACKQ_NOT_INSTALLED이고 아무것도 만들지 않는다. 이전 판이 설치한 큐면 lease_until 색인을
- * 만든다(위 저장과 조회). 그 이관이 실패해도 열기는 성공한다.
+ * 테이블이 있어야 한다. 없으면 ACKQ_NOT_INSTALLED이고 아무것도 만들지 않는다. lease_until 색인이 없으면 만든다(위 저장과
+ * 조회. 있으면 읽기만 한다). 그 이관이 실패해도 열기는 성공한다.
  */
 ackq_status_t ackq_open(session_t *session, const ackq_options_t *options, ackq_t **out);
 void ackq_close(ackq_t **queue);

@@ -4,18 +4,18 @@
  * 테이블 streamlite_queue_<name>: id(identity), state(0 READY 1 LEASED 2 ACKED 3 FAILED), ready_at, lease_until(밀리초),
  * fence(claim마다 +1), attempts(claim 횟수), idem(idempotency key), payload(BLOB), note(마지막 이유), created_at, due.
  *
- * 형식 둘(#260). 이 판이 만드는 큐는 due 열(ack_queue_internal.h의 구간)과 그 색인, idem 색인을 둔다. key 없는 작업의 idem은
- * NULL이라 색인에 들어가지 않는다. claim은 due 색인의 [0, now] 구간을 due 순서로 읽어 LIMIT에서 멈추므로 비용이 LEASED·
- * ACKED·지연 READY 수와 무관하다. recover·purge도 due 구간을 읽는다. 이전 판이 만든 큐(due 열 없음, idem은 '')는 그대로
- * 열리고 state·idem 색인으로 READY를 id 순서로 읽는다. 열 때 lease_until 색인을 만들어(이관, 실패하면 이전 경로) 만료
- * lease를 그 색인 구간으로 찾는다.
+ * 형식 둘(#260). 이 판이 만드는 큐는 due 열(ack_queue_internal.h의 구간)과 그 색인, idem·lease_until 색인을 둔다. key
+ * 없는 작업의 idem은 NULL이라 색인에 들어가지 않는다. claim은 due 색인의 [0, now] 구간을 due 순서로 읽어 LIMIT에서
+ * 멈추므로 비용이 LEASED·ACKED·지연 READY 수와 무관하다. purge는 due 구간을, recover·release는 lease_until 색인 구간을
+ * 읽는다(LEASED만 lease_until이 0보다 크다). 이전 판이 만든 큐(due 열 없음, idem은 '')는 그대로 열리고 state·idem 색인으로
+ * READY를 id 순서로 읽는다. 어느 형식이든 lease_until 색인이 없으면 열 때 만든다(이관, 실패하면 이전 경로).
  *
  * key 보존 테이블 streamlite_queue_<name>_keys: seq(identity), idem(유일 색인), job(지운 작업 id), digest(payload 요약),
  * expires_at. purge가 key 있는 작업을 지울 때 넣는다. 보존 기간은 핸들의 옵션이라 넣는 순서(seq)가 만료 순서라는
  * 보장이 없으므로 만료 시각(expires_at)으로 골라 지운다.
  *
- * 내부 이름: 큐 하나가 테이블 둘(<table>, <table>_keys)과 색인(<table>_due, <table>_idem, <table>_keys_idem, 이전 형식은
- * <table>_state, <table>_lease)을 쓴다. 그래서 _keys·_state·_idem·_due·_lease로 끝나는 큐 이름은 다른 큐의 내부 이름과
+ * 내부 이름: 큐 하나가 테이블 둘(<table>, <table>_keys)과 색인(<table>_due, <table>_idem, <table>_lease, <table>_keys_idem,
+ * 이전 형식은 <table>_state)을 쓴다. 그래서 _keys·_state·_idem·_due·_lease로 끝나는 큐 이름은 다른 큐의 내부 이름과
  * 겹칠 수 있어 새로 만들지 않는다.
  */
 #define _POSIX_C_SOURCE 200809L
@@ -34,7 +34,7 @@
 #define NOTE_MAX_ATTEMPTS "max attempts exceeded"
 #define DIGEST_BYTES 20u
 
-/* 보조 색인의 열. 이 판의 형식은 due·idem, 이전 형식은 state·idem과 이관으로 더하는 lease_until이다 */
+/* 보조 색인의 열. 이 판의 형식은 due·idem, 이전 형식은 state·idem이다. 두 형식 모두 lease_until 색인(_lease)을 더한다 */
 static const char *const DUE_INDEXED[] = {"due", "idem"};
 static const char *const OLD_INDEXED[] = {"state", "idem"};
 #define LEASE_INDEX_SUFFIX "_lease"
@@ -492,6 +492,11 @@ static ackq_status_t create_table(ackq_t *queue, session_t *session)
         if (status == ACKQ_OK) result_release(&result);
     }
     if (status == ACKQ_OK) {
+        snprintf(sql, sizeof(sql), "CREATE INDEX %s" LEASE_INDEX_SUFFIX " ON %s (lease_until)", queue->table, queue->table);
+        status = ackq_run(queue, &scope, true, sql, NULL, 0, &result, NULL);
+        if (status == ACKQ_OK) result_release(&result);
+    }
+    if (status == ACKQ_OK) {
         snprintf(sql, sizeof(sql),
                  "CREATE TABLE %s (seq INTEGER PRIMARY KEY AUTOINCREMENT, idem TEXT NOT NULL, job INTEGER NOT NULL, "
                  "digest BLOB NOT NULL, expires_at INTEGER NOT NULL)",
@@ -505,7 +510,7 @@ static ackq_status_t create_table(ackq_t *queue, session_t *session)
         if (status == ACKQ_OK) result_release(&result);
     }
     status = ackq_scope_close(&scope, status);
-    if (status == ACKQ_OK) queue->due_column = true;
+    if (status == ACKQ_OK) queue->due_column = queue->lease_index = true;
     return status;
 }
 
@@ -546,17 +551,58 @@ static ackq_status_t ensure_indexes(ackq_t *queue, session_t *session)
 }
 
 /*
- * 이전 형식 큐의 이관: lease_until 색인을 만들어 만료 lease를 그 색인 구간으로 찾게 한다. 색인 하나를 만드는 자기
- * 트랜잭션이라 실패하면 아무것도 바뀌지 않고 이전 경로(state 색인)를 쓴다. 호출자 트랜잭션 안에서는 그 거래를 실패로
- * 만들지 않도록 시도하지 않는다. 그래서 이관 실패는 열기 실패가 아니다.
+ * lease_until 색인이 있는지 쓰기 거래 없이 본다. 색인 목록을 읽는 SQL이 없으므로 그 색인으로만 좁힐 수 있는 조회(맞는 행이
+ * 없는 lease_until 구간)를 한 번 실행하고, 전체 스캔 없이 색인 페이지만 읽었으면 있다고 본다. 색인이 없으면 이 조회가
+ * 테이블을 한 번 훑는다(곧바로 색인을 만드는 비용과 같은 차수다). 판정은 같은 database 핸들의 읽기 계수라 다른 세션이 같은
+ * 순간 색인을 읽으면 없는 색인을 있다고 볼 수 있다. lease_index는 같은 뜻의 SQL 가운데 하나를 고르는 데만 쓰므로 그때도
+ * 결과는 같고 recover·release가 전체 스캔이 될 뿐이다.
+ */
+static ackq_status_t lease_index_present(ackq_t *queue, session_t *session, bool *present)
+{
+    char sql[ACKQ_SQL_MAX];
+    result_t *result = NULL;
+    ackq_scope_t scope;
+    *present = false;
+    ackq_status_t status = ackq_scope_open(queue, session, false, &scope);
+    if (status != ACKQ_OK) return status;
+    database_t *db = session_db_handle(queue->db);
+    database_scan_stats_t before, after;
+    database_scan_stats(db, &before);
+    snprintf(sql, sizeof(sql), "SELECT id FROM %s WHERE lease_until >= -1 AND lease_until <= -1", queue->table);
+    status = ackq_run(queue, &scope, false, sql, NULL, 0, &result, NULL);
+    if (status == ACKQ_OK) {
+        result_row_t row;
+        result_next_t next;
+        while ((next = result_next(result, &row)) == RESULT_NEXT_ROW) {}
+        status = ackq_finish_rows(next, result);
+        result_release(&result);
+    }
+    database_scan_stats(db, &after);
+    *present = status == ACKQ_OK && after.rows_scanned == before.rows_scanned &&
+               after.index_pages_read > before.index_pages_read;
+    return ackq_scope_close(&scope, status);
+}
+
+/*
+ * lease_until 색인을 준비한다. 이전 형식 큐(이관)와 이 색인 없이 만든 due 형식 큐가 대상이다. 먼저 읽기로 색인이 있는지 보고
+ * 있으면 쓰기 거래를 열지 않는다. 없을 때만 색인 하나를 만드는 자기 트랜잭션을 연다. 실패하면(BUSY 등) 아무것도 바뀌지
+ * 않으며, 그 사이 다른 핸들이 만들었을 수 있으므로 한 번 더 읽어 본다. 호출자 트랜잭션 안에서는 그 거래를 실패로 만들지
+ * 않도록 만들지 않는다. 색인이 없으면 이전 경로(state 색인 또는 due 구간)를 쓰므로 이관 실패는 열기 실패가 아니다.
  */
 static ackq_status_t prepare_indexes(ackq_t *queue, session_t *session)
 {
-    queue->lease_index = false;
-    if (queue->due_column || session_txn_active(session)) return ACKQ_OK;
-    bool exists = false;
-    ackq_status_t status = create_index(queue, session, LEASE_INDEX_SUFFIX, "lease_until", &exists);
-    queue->lease_index = status == ACKQ_OK;
+    if (queue->lease_index) return ACKQ_OK;   /* 방금 설치하며 만들었다 */
+    bool present = false;
+    ackq_status_t status = lease_index_present(queue, session, &present);
+    if (status == ACKQ_OK && !present && !session_txn_active(session)) {
+        bool exists = false;
+        status = create_index(queue, session, LEASE_INDEX_SUFFIX, "lease_until", &exists);
+        present = status == ACKQ_OK;
+        if (!present && status != ACKQ_POISONED && status != ACKQ_CANCELLED && status != ACKQ_INVALID) {
+            status = lease_index_present(queue, session, &present);
+        }
+    }
+    queue->lease_index = present;
     return status == ACKQ_POISONED || status == ACKQ_CANCELLED || status == ACKQ_INVALID ? status : ACKQ_OK;
 }
 
@@ -1146,13 +1192,20 @@ static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t
 }
 
 /*
- * lease_until이 until 이하인 LEASED를 id 순서로 top->cap개까지 고른다. due 형식은 due 구간 둘(시도가 남은 것은 [0, until],
- * 마지막 시도는 ACKQ_DUE_LAST 구간 전체)을 읽는다. 앞 구간에는 때가 된 READY도 있어 그 수만큼 더 방문한다. 이전 형식은
- * lease_until 색인이 있으면 그 구간, 없으면 state 색인을 읽는다.
+ * lease_until이 until 이하인 LEASED를 id 순서로 top->cap개까지 고른다. lease_until 색인이 있으면(새로 설치한 큐와 열 때
+ * 색인을 더한 큐) 그 [1, until] 구간을 만료 순서로 읽고 k개에서 멈춘다. LEASED만 lease_until이 0보다 크므로 READY·끝난 작업과
+ * 만료 전 lease 수와 무관하다. 색인이 없으면 due 형식은 due 구간 둘(시도가 남은 것은 [0, until], 마지막 시도는 ACKQ_DUE_LAST
+ * 구간 전체. 앞 구간의 때가 된 READY도 방문한다)을, 이전 형식은 state 색인을 읽는다.
  */
 static ackq_status_t scan_leases(ackq_t *queue, ackq_scope_t *scope, int64_t until, topk_t *top)
 {
     int64_t limit = (int64_t)top->cap;
+    if (queue->lease_index) {
+        value_view_t params[2] = {ackq_int(until), ackq_int(limit)};
+        return scan_meta(queue, scope,
+                         " WHERE lease_until >= 1 AND lease_until <= ? AND state = 1 ORDER BY lease_until LIMIT ?", params,
+                         2, top);
+    }
     if (queue->due_column) {
         value_view_t live[2] = {ackq_int(until), ackq_int(limit)};
         ackq_status_t status = scan_meta(queue, scope, " WHERE due >= 0 AND due <= ? AND state = 1 ORDER BY due LIMIT ?",
@@ -1163,11 +1216,6 @@ static ackq_status_t scan_leases(ackq_t *queue, ackq_scope_t *scope, int64_t unt
         return scan_meta(queue, scope,
                          " WHERE due >= ? AND due <= ? AND state = 1 AND lease_until <= ? ORDER BY due LIMIT ?", last, 4,
                          top);
-    }
-    if (queue->lease_index) {
-        value_view_t params[2] = {ackq_int(until), ackq_int(limit)};
-        return scan_meta(queue, scope, " WHERE lease_until >= 1 AND lease_until <= ? ORDER BY lease_until LIMIT ?",
-                         params, 2, top);
     }
     value_view_t params[3] = {ackq_int(ACKQ_STATE_LEASED), ackq_int(until), ackq_int(limit)};
     return scan_meta(queue, scope, " WHERE state = ? AND lease_until <= ? ORDER BY id LIMIT ?", params, 3, top);

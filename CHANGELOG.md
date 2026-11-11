@@ -12,8 +12,8 @@
 
 ### 변경
 
-- 새로 설치하는 큐에 `due` 열과 색인을 두고 claim·recover·purge가 그 색인 구간을 읽도록 변경: claim 비용이 만료 전 LEASED·지연 READY·ACKED·FAILED 수와 무관하다. claim 순서는 작은 id 대신 claim 가능해진 시각(READY는 `ready_at`, 만료 LEASED는 `lease_until`)이 이른 것부터, 같으면 작은 id부터다. 그래서 nack한 작업이 큐 머리를 막지 않는다. key 없는 작업의 `idem`은 `''` 대신 NULL이라 `idem` 색인에 들어가지 않는다. 이 형식의 큐는 이전 판 라이브러리로 쓰지 못한다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
-- 이전 판이 설치한 큐는 그대로 열고, 열 때 `lease_until` 색인을 하나 더 만들어 만료 lease를 그 색인으로 찾도록 변경: 만들지 못하면(BUSY 등, 호출자 트랜잭션 안) 이전 경로를 쓰며 열기는 실패하지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+- 새로 설치하는 큐에 `due` 열과 색인을 두고 claim·purge가 그 색인 구간을 읽도록 변경: claim 비용이 만료 전 LEASED·지연 READY·ACKED·FAILED 수와 무관하다. claim 순서는 작은 id 대신 claim 가능해진 시각(READY는 `ready_at`, 만료 LEASED는 `lease_until`)이 이른 것부터, 같으면 작은 id부터다. 그래서 nack한 작업이 큐 머리를 막지 않는다. key 없는 작업의 `idem`은 `''` 대신 NULL이라 `idem` 색인에 들어가지 않는다. 이 형식의 큐는 이전 판 라이브러리로 쓰지 못한다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+- `recover`·`release_leases`가 `lease_until` 색인 구간으로 lease를 찾도록 변경: 새로 설치하는 큐는 이 색인을 함께 만들고, 이전 판이 설치한 큐와 이 색인 없이 만든 `due` 형식 큐는 열 때 만든다. 비용이 READY·끝난 작업 수와 무관하다(READY 4만 건에서 호출당 약 110ms → 1ms 이하). 열기는 먼저 읽기로 색인이 있는지 보고 있으면 쓰기 거래를 열지 않는다. 만들지 못하면(BUSY 등, 호출자 트랜잭션 안) 이전 경로를 쓰며 열기는 실패하지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 같은 핸들의 바로 앞 claim이 빈 결과였으면 다음 claim(`get`)이 writer 없이 후보를 먼저 읽어 보고, 없으면 쓰기 트랜잭션을 열지 않도록 변경: 쉬지 않고 묻는 빈 큐 소비자가 writer 잠금을 붙잡지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 새 큐 이름이 `_due`·`_lease`로 끝나도 `INVALID`로 거절: 큐의 새 내부 색인 이름과 겹치기 때문이다. 이미 있는 큐는 그대로 열린다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 자동 commit `SELECT`가 쓰기 거래와 writer 잠금 없이 게시 상태를 공유 잠금으로 읽도록 변경: 쉬지 않고 조회하는 연결이 다른 연결·프로세스의 `begin`·변경 문장을 BUSY로 만들지 않는다. 결과는 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))

@@ -46,7 +46,7 @@ struct ackq {
     uint64_t clock_seen, clock_seen_mono;   /* 마지막으로 읽은 유효한 벽시계 값과 그때의 단조 시각 */
     uint64_t clock_prior, clock_prior_mono; /* 앞으로 뛰기 직전의 예상 시각과 그때의 단조 시각 */
     bool due_column;                 /* due 열과 색인이 있는 형식(이 판이 만든 큐). 아니면 이전 형식 */
-    bool lease_index;                /* 이전 형식에 lease_until 색인이 있다(열 때 만들었거나 이미 있었다) */
+    bool lease_index;                /* lease_until 색인이 있다(설치·열 때 만들었거나 이미 있었다). recover·release가 쓴다 */
     _Atomic bool last_claim_empty;   /* 이 핸들의 마지막 claim이 빈 결과였다. 다음 claim은 먼저 읽기로 확인한다 */
 };
 

@@ -5,6 +5,7 @@
  * 빌드(저장소 루트): make test-ack-queue
  */
 #include <pthread.h>
+#include <time.h>
 
 #include "ack_queue_test_util.h"
 
@@ -1427,6 +1428,188 @@ static void test_empty_claim_without_writer(void)
     close_db(db);
 }
 
+/* 자기 거래 하나로 READY n건을 넣는다 */
+static void enqueue_ready(ackq_t *q, session_t *db, size_t n)
+{
+    session_t *txn = begin_txn(db);
+    assert(txn != NULL);
+    for (size_t i = 0; i < n; i++) {
+        uint64_t id;
+        assert(enq(q, txn, "r", NULL, &id, NULL) == ACKQ_OK);
+    }
+    assert(commit_txn(&txn) == TXN_OK);
+}
+
+typedef struct {
+    uint64_t lookups;
+    uint64_t pages;
+    uint64_t scanned;
+} read_cost_t;
+
+/* 연산 하나가 읽은 색인 조회·색인 페이지·전체 스캔 행 수 */
+static read_cost_t read_cost(session_t *db, database_scan_stats_t *before)
+{
+    database_scan_stats_t after;
+    database_scan_stats(raw_db(db), &after);
+    read_cost_t cost = {after.index_lookups - before->index_lookups, after.index_pages_read - before->index_pages_read,
+                        after.rows_scanned - before->rows_scanned};
+    *before = after;
+    return cost;
+}
+
+static void test_recover_cost_independent_of_ready(void)
+{
+    printf("\n[#260 recover·release 비용은 READY 수와 무관]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 2);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    /* 만료 전 마지막 시도 LEASED 400건과 시도가 남은 LEASED 1건 */
+    enqueue_ready(q, db, 400);
+    CHECK(claim_n(q, db, 400, 10) == 400, "400건 claim");
+    ackq_claims_release(g_items, 400);
+    g_now += 20;
+    CHECK(claim_n(q, db, 400, 3600000) == 400, "400건은 두 번째(마지막) 시도");
+    ackq_claims_release(g_items, 400);
+    uint64_t fresh;
+    assert(enq(q, db, "x", NULL, &fresh, NULL) == ACKQ_OK && claim_one_id(q, db, 3600000, NULL) == fresh);
+    /* 때가 된 READY 4000건. 돌려놓을 것이 없는 호출의 읽기는 색인 몇 쪽이어야 한다(READY를 방문하면 수십 쪽이다) */
+    enqueue_ready(q, db, 4000);
+    database_scan_stats_t mark;
+    database_scan_stats(raw_db(db), &mark);
+    size_t n = 9;
+    CHECK(ackq_recover(q, db, 10, &n) == ACKQ_OK && n == 0, "만료된 lease가 없으면 recover 0건");
+    read_cost_t recover = read_cost(db, &mark);
+    CHECK(recover.scanned == 0 && recover.lookups <= 2 && recover.pages <= 8,
+          "recover는 READY·만료 전 lease를 방문하지 않는다 (lookups %llu, pages %llu, scanned %llu)",
+          (unsigned long long)recover.lookups, (unsigned long long)recover.pages, (unsigned long long)recover.scanned);
+    CHECK(ackq_release_leases(q, db, 1024, &n) == ACKQ_OK && n == 401, "release 401건 (%zu)", n);
+    read_cost(db, &mark);
+    CHECK(ackq_release_leases(q, db, 1024, &n) == ACKQ_OK && n == 0, "남은 lease가 없으면 release 0건");
+    read_cost_t release = read_cost(db, &mark);
+    CHECK(release.scanned == 0 && release.lookups <= 2 && release.pages <= 8,
+          "release는 READY를 방문하지 않는다 (lookups %llu, pages %llu, scanned %llu)", (unsigned long long)release.lookups,
+          (unsigned long long)release.pages, (unsigned long long)release.scanned);
+    ackq_stats_t stats;
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.leased == 0 && stats.ready == 4401, "모두 READY (ready %llu)",
+          (unsigned long long)stats.ready);
+    ackq_close(&q);
+    close_db(db);
+}
+
+#define DUE_TABLE "CREATE TABLE streamlite_queue_due (id INTEGER PRIMARY KEY AUTOINCREMENT, state INTEGER NOT NULL, " \
+                  "ready_at INTEGER NOT NULL, lease_until INTEGER NOT NULL, fence INTEGER NOT NULL, " \
+                  "attempts INTEGER NOT NULL, idem TEXT, payload BLOB NOT NULL, note TEXT NOT NULL, " \
+                  "created_at INTEGER NOT NULL, due INTEGER NOT NULL)"
+
+/* lease_until 색인 없이 만든 due 형식 큐(이 판의 이전 빌드가 만든 것) */
+static void make_due_queue_without_lease_index(session_t *db)
+{
+    CHECK(exec_ok(db, DUE_TABLE) && exec_ok(db, "CREATE INDEX streamlite_queue_due_due ON streamlite_queue_due (due)") &&
+              exec_ok(db, "CREATE INDEX streamlite_queue_due_idem ON streamlite_queue_due (idem)") &&
+              exec_ok(db, "CREATE TABLE streamlite_queue_due_keys (seq INTEGER PRIMARY KEY AUTOINCREMENT, idem TEXT NOT NULL, "
+                          "job INTEGER NOT NULL, digest BLOB NOT NULL, expires_at INTEGER NOT NULL)") &&
+              exec_ok(db, "CREATE UNIQUE INDEX streamlite_queue_due_keys_idem ON streamlite_queue_due_keys (idem)"),
+          "lease 색인 없는 due 형식 큐");
+}
+
+static void test_due_queue_gains_lease_index(void)
+{
+    printf("\n[#260 lease 색인 없는 due 형식 큐는 열 때 색인을 더한다]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_t *q;
+    ackq_options_t fresh = qopts("jobs", 0);
+    assert(ackq_install(db, &fresh, &q) == ACKQ_OK);
+    CHECK(!exec_ok(db, "CREATE INDEX streamlite_queue_jobs_lease ON streamlite_queue_jobs (lease_until)"),
+          "새로 설치한 큐는 lease_until 색인이 있다");
+    ackq_close(&q);
+    make_due_queue_without_lease_index(db);
+    /* 호출자 거래 안에서는 만들지 않고 그 거래를 실패로 만들지 않는다 */
+    session_t *txn = begin_txn(db);
+    ackq_options_t o = qopts("due", 0);
+    CHECK(txn != NULL && ackq_open(txn, &o, &q) == ACKQ_OK && !session_txn_failed(txn), "거래 안 열기");
+    ackq_close(&q);
+    rollback_txn(&txn);
+    CHECK(exec_ok(db, "SELECT 1 FROM streamlite_queue_due WHERE 1 = 0"), "표는 그대로");
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "자동 commit 열기");
+    CHECK(!exec_ok(db, "CREATE INDEX streamlite_queue_due_lease ON streamlite_queue_due (lease_until)"),
+          "열 때 lease_until 색인을 만들었다");
+    g_now = 1000;
+    enqueue_ready(q, db, 4000);
+    database_scan_stats_t mark;
+    database_scan_stats(raw_db(db), &mark);
+    size_t n = 9;
+    CHECK(ackq_recover(q, db, 10, &n) == ACKQ_OK && n == 0, "recover 0건");
+    read_cost_t cost = read_cost(db, &mark);
+    CHECK(cost.scanned == 0 && cost.lookups <= 2 && cost.pages <= 8, "READY를 방문하지 않는다 (lookups %llu, pages %llu)",
+          (unsigned long long)cost.lookups, (unsigned long long)cost.pages);
+    ackq_close(&q);
+    close_db(db);
+}
+
+static uint64_t elapsed_ms(const struct timespec *start)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)(now.tv_sec - start->tv_sec) * 1000u + (uint64_t)((now.tv_nsec - start->tv_nsec) / 1000000);
+}
+
+static void test_open_reads_lease_index_first(void)
+{
+    printf("\n[#260 열기는 lease 색인이 있으면 쓰기 거래를 열지 않는다]\n");
+    make_db();
+    session_t *db = open_db();
+    CHECK(exec_ok(db, LEGACY_TABLE) && exec_ok(db, "CREATE INDEX streamlite_queue_old_state ON streamlite_queue_old (state)") &&
+              exec_ok(db, "CREATE INDEX streamlite_queue_old_idem ON streamlite_queue_old (idem)") &&
+              exec_ok(db, "CREATE TABLE streamlite_queue_old_keys (seq INTEGER PRIMARY KEY AUTOINCREMENT, idem TEXT NOT NULL, "
+                          "job INTEGER NOT NULL, digest BLOB NOT NULL, expires_at INTEGER NOT NULL)") &&
+              exec_ok(db, "CREATE UNIQUE INDEX streamlite_queue_old_keys_idem ON streamlite_queue_old_keys (idem)"),
+          "이전 형식 큐");
+    ackq_options_t o = qopts("old", 0);
+    o.begin_timeout_ms = 1500;
+    ackq_t *q = NULL;
+    /* 색인이 없고 다른 거래가 writer를 쥐면 기다린 뒤 이전 경로로 열린다 */
+    session_t *writer = begin_txn(db);
+    assert(writer != NULL);
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "색인을 만들지 못해도 열린다");
+    ackq_close(&q);
+    rollback_txn(&writer);
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "writer가 없으면 색인을 만든다");
+    ackq_close(&q);
+    CHECK(!exec_ok(db, "CREATE INDEX streamlite_queue_old_lease ON streamlite_queue_old (lease_until)"), "색인이 있다");
+    /* 색인이 이미 있으면 다른 writer가 있어도 기다리지 않고, 그 색인을 쓴다 */
+    g_now = 1000;
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "다시 열기");
+    for (int i = 0; i < 300; i++) {
+        uint64_t id;
+        assert(enq(q, db, "leased", NULL, &id, NULL) == ACKQ_OK);
+    }
+    CHECK(claim_n(q, db, 300, 3600000) == 300, "만료 전 LEASED 300건");
+    ackq_claims_release(g_items, 300);
+    ackq_close(&q);
+    writer = begin_txn(db);
+    assert(writer != NULL);
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "writer가 있는 동안 열기");
+    uint64_t waited = elapsed_ms(&start);
+    CHECK(waited < 500, "begin_timeout_ms(1500)를 기다리지 않는다 (%llu ms)", (unsigned long long)waited);
+    rollback_txn(&writer);
+    database_scan_stats_t mark;
+    database_scan_stats(raw_db(db), &mark);
+    size_t n = 9;
+    CHECK(ackq_recover(q, db, 10, &n) == ACKQ_OK && n == 0, "recover 0건");
+    read_cost_t cost = read_cost(db, &mark);
+    CHECK(cost.scanned == 0 && cost.lookups <= 2 && cost.pages <= 8,
+          "그 핸들은 lease 색인으로 찾는다 (lookups %llu, pages %llu)", (unsigned long long)cost.lookups,
+          (unsigned long long)cost.pages);
+    ackq_close(&q);
+    close_db(db);
+}
+
 int main(void)
 {
     set_dir(DIR);
@@ -1454,6 +1637,9 @@ int main(void)
     test_last_attempt_band();
     test_previous_format_queue();
     test_empty_claim_without_writer();
+    test_recover_cost_independent_of_ready();
+    test_due_queue_gains_lease_index();
+    test_open_reads_lease_index_first();
     printf("\ntest_ack_queue: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;

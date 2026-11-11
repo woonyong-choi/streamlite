@@ -102,9 +102,9 @@ lease 판정은 벽시계를 쓴다. 핸들은 자기가 돌려준 시각의 하
 
 ### 저장과 조회 비용
 
-이 판이 설치한 큐는 정수 `due` 열과 그 색인을 둔다. 상태마다 겹치지 않는 구간에 값을 두므로(READY·시도가 남은 LEASED는 claim 가능 시각, 마지막 시도의 LEASED·ACKED·FAILED는 음수 구간에 id) claim은 `due` 색인의 `[0, 지금]` 구간을 앞에서부터 읽고 필요한 수에서 멈춘다. 만료 전 LEASED, 지연 READY, ACKED·FAILED는 그 구간 밖이라 claim 비용이 이들의 수와 무관하다. recover는 같은 구간의 LEASED와 마지막 시도 구간을, purge는 ACKED·FAILED 구간을 id 순서로 읽는다. 키 없는 작업의 `idem`은 NULL이라 `idem` 색인에 들어가지 않는다. 빈 결과 다음의 `get`은 쓰기 트랜잭션 전에 writer 없이 후보가 있는지 읽어 보고, 없으면 writer 잠금을 잡지 않고 빈 결과를 돌려준다. `stats`는 여전히 테이블 전체를 읽는다.
+이 판이 설치한 큐는 정수 `due` 열과 그 색인, `lease_until` 색인을 둔다. 상태마다 겹치지 않는 구간에 값을 두므로(READY·시도가 남은 LEASED는 claim 가능 시각, 마지막 시도의 LEASED·ACKED·FAILED는 음수 구간에 id) claim은 `due` 색인의 `[0, 지금]` 구간을 앞에서부터 읽고 필요한 수에서 멈춘다. 만료 전 LEASED, 지연 READY, ACKED·FAILED는 그 구간 밖이라 claim 비용이 이들의 수와 무관하다. purge는 ACKED·FAILED 구간을 id 순서로 읽는다. recover·release는 `lease_until` 색인의 `[1, 기준 시각]` 구간을 만료 순서로 읽고 필요한 수에서 멈춘다. LEASED만 `lease_until`이 0보다 크므로 READY와 끝난 작업의 수와 무관하다(READY 4만 건에서 호출당 약 0.1~1ms, 이 색인 전에는 약 110ms). 키 없는 작업의 `idem`은 NULL이라 `idem` 색인에 들어가지 않는다. 빈 결과 다음의 `get`은 쓰기 트랜잭션 전에 writer 없이 후보가 있는지 읽어 보고, 없으면 writer 잠금을 잡지 않고 빈 결과를 돌려준다. `stats`는 여전히 테이블 전체를 읽는다.
 
-이전 판이 설치한 큐는 파일을 그대로 읽는다. 열 때 `lease_until` 색인을 하나 만들어(자기 트랜잭션, 실패하면 이전 경로) 만료 lease를 그 색인 구간으로 찾는다. READY는 이전처럼 `state` 색인을 id 순서로 읽으므로 지연 READY가 많으면 그만큼 방문한다. 이 판이 설치한 큐는 `due` 열이 필수라 이전 판 라이브러리로 쓰면 INSERT가 실패한다.
+이전 판이 설치한 큐는 파일을 그대로 읽는다. 이 큐와 `lease_until` 색인을 두기 전에 만든 `due` 형식 큐는 열 때 그 색인을 하나 만들어 만료 lease를 그 색인 구간으로 찾는다. 열기는 먼저 쓰기 거래 없이 읽어 색인이 있는지 보고, 있으면 writer를 기다리지 않는다. 없을 때만 자기 트랜잭션으로 만들며 실패하면(BUSY, 호출자 트랜잭션 안) 이전 경로로 찾는다. READY는 이전처럼 `state` 색인을 id 순서로 읽으므로 지연 READY가 많으면 그만큼 방문한다. 이 판이 설치한 큐는 `due` 열이 필수라 이전 판 라이브러리로 쓰면 INSERT가 실패한다.
 
 ### 중복 등록과 정리
 
