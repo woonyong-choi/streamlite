@@ -1850,8 +1850,21 @@ int main(void)
     test_due_queue_gains_lease_index();
     test_wrong_due_is_not_claimed();
     test_open_reads_lease_index_first();
+    /* 두 시험은 63MiB 행을 여러 번 쓰는 단일 스레드 크기 경계 시험이다. 스레드 검사기 빌드에서는 얻는 것 없이
+     * 실행 시간 제한(60초)을 넘으므로 그 빌드에서만 건너뛴다. 다른 빌드(UBSan·ASan 포함)는 그대로 돈다. */
+#if defined(__SANITIZE_THREAD__)
+#define ACKQ_TEST_SKIP_LARGE_ROWS 1
+#elif defined(__has_feature)
+#if __has_feature(thread_sanitizer)
+#define ACKQ_TEST_SKIP_LARGE_ROWS 1
+#endif
+#endif
+#ifdef ACKQ_TEST_SKIP_LARGE_ROWS
+    printf("[행 한도 근처 큐 시험 2개: 스레드 검사기 빌드라 건너뜀]\n");
+#else
     test_payload_row_room();
     test_note_fallback_near_row_limit();
+#endif
     printf("\ntest_ack_queue: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;
