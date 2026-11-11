@@ -13,6 +13,9 @@
 - 새 큐 이름이 `_keys`·`_state`·`_idem`으로 끝나거나 다른 큐의 내부 이름과 겹치면 `INVALID`로 거절: 이미 있는 큐는 그대로 열린다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 큐 핸들이 뒤로 간 시계를 자기가 읽은 가장 늦은 시각으로 읽음: lease를 일찍 만료시키거나 줄여서 연장하지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - Python `Queue`의 `idem_retention_ms=0`이 C와 같이 기본 7일을 뜻하도록 변경: 키를 남기지 않으려면 `None`을 준다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- `persistqueue_compat.SQLiteAckQueue`의 `auto_resume`이 만료된 lease만 되돌리도록 변경: 다른 프로세스가 처리 중인 작업을 풀지 않는다. 재시작 때 모두 되돌리려면 `resume_live_leases=True`를 준다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- `persistqueue_compat`의 `get(id=...)`이 이미 끝났거나 지워진 작업이면 block이어도 바로 `Empty`로 변경 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- `persistqueue_compat`이 ack를 기다리며 기억하는 claim을 10000개로 제한: 넘으면 만료된 것부터 잊고 그 claim의 ack는 `UnknownClaimError`다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 호출한 스레드가 같은 `Database`에 연 트랜잭션 때문에 막힌 Python 호출은 `busy_timeout_s`를 기다리지 않고 바로 `BusyError`(자동 commit SQL은 `SqlError`)로 변경 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 
 ### 수정
@@ -23,6 +26,7 @@
 - 보존 기간이 긴 멱등성 키 뒤의 만료된 키가 purge에서 정리되지 않던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - commit·rollback 없이 참조를 잃은 Python `Transaction`이 writer를 쥔 채 남던 문제 수정: 수거나 인터프리터 종료 때 rollback하고 `Database`·`Queue`도 닫는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - Python `Queue.put`·`update`가 `bytearray`·`memoryview`를 받고 `str`은 `TypeError`로 거절하도록 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- `persistqueue_compat`의 `clear_acked_data`가 `clear_ack_failed`일 때 `keep_latest`를 무시하고 1024를 넘는 `max_delete`에서 실패하던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 끝낸 C 핸들을 표시 검사로 잠그기 전에 `INVALID`로 거절하고 `streamlite_txn_failed`가 mutex 안에서 읽도록 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 
 ### 제거

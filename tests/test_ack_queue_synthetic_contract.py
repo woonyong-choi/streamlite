@@ -30,7 +30,10 @@ def request(index: int, **extra: object) -> dict[str, Any]:
 def open_ours(path: Path) -> SQLiteAckQueue:
     from persistqueue_json import json_serializer  # noqa: PLC0415 - 아래 fixture가 모듈을 제공한다
 
-    return SQLiteAckQueue(path, multithreading=True, auto_resume=True, serializer=json_serializer)
+    # persist-queue의 재시작 의미(처리 중이던 작업을 모두 되돌림)와 비교하므로 단일 프로세스 옵션을 켠다
+    return SQLiteAckQueue(
+        path, multithreading=True, auto_resume=True, serializer=json_serializer, resume_live_leases=True
+    )
 
 
 def open_reference(path: Path) -> Any:
