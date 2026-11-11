@@ -558,6 +558,135 @@ static void test_expression_intermediates_are_charged(void)
     assert(database_close(db) == DATABASE_OK);
 }
 
+/* ── 기본 키를 옮기는 UPDATE ── */
+
+static void fill_keys(database_t *db, const char *table, int count)
+{
+    for (int from = 1; from <= count; from += 1000) {
+        buffer_t sql = {NULL, 0, 0};
+        put(&sql, "INSERT INTO %s VALUES ", table);
+        for (int i = from; i < from + 1000 && i <= count; i++) put(&sql, "%s(%d, 'v%d')", i > from ? ", " : "", i, i);
+        exec_ok(db, sql.text);
+        free(sql.text);
+    }
+}
+
+static void expect_pages_clean(database_t *db, const char *when)
+{
+    database_page_check_t check;
+    database_status_t status = database_check_pages(db, &check);
+    CHECK(status == DATABASE_OK && check.orphaned == 0 && check.conflicts == 0, "%s: 상태 %d, 고아 %llu, 충돌 %llu", when,
+          (int)status, (unsigned long long)check.orphaned, (unsigned long long)check.conflicts);
+}
+
+static void test_primary_key_update_plan_matches_apply(void)
+{
+    printf("\n[test_primary_key_update_plan_matches_apply]\n");
+    database_t *db = fresh_db();
+    int n = 6000;
+    char expected[128];
+    exec_ok(db, "CREATE TABLE k (id INTEGER PRIMARY KEY, v TEXT)");
+    fill_keys(db, "k", n);
+    /* 모든 행의 키를 옆 행의 옛 키로 옮긴다. 끝난 결과가 유일하면 허용이고, 허용한 것은 실제로 적용된다 */
+    snprintf(expected, sizeof(expected), "CMD UPDATE %d", n);
+    expect_text(db, "UPDATE k SET id = id + 1", expected);
+    snprintf(expected, sizeof(expected), "[1] %d|2|%d|%lld", n, n + 1, (long long)n * (n + 3) / 2);
+    expect_text(db, "SELECT COUNT(*), MIN(id), MAX(id), SUM(id) FROM k", expected);
+    expect_text(db, "SELECT v FROM k WHERE id = 2", "[1] 'v1'");
+    snprintf(expected, sizeof(expected), "[1] 'v%d'", n);
+    char probe[96];
+    snprintf(probe, sizeof(probe), "SELECT v FROM k WHERE id = %d", n + 1);
+    expect_text(db, probe, expected);
+    expect_text(db, "SELECT id FROM k WHERE id = 1", "[0]");
+    snprintf(expected, sizeof(expected), "CMD UPDATE %d", n);
+    expect_text(db, "UPDATE k SET id = id - 1", expected);
+    snprintf(expected, sizeof(expected), "[1] %d|1|%d|%lld", n, n, (long long)n * (n + 1) / 2);
+    expect_text(db, "SELECT COUNT(*), MIN(id), MAX(id), SUM(id) FROM k", expected);
+    expect_pages_clean(db, "전체 이동 뒤");
+
+    /* 두 행 맞바꾸기와 세 행 돌리기 */
+    expect_text(db, "UPDATE k SET id = 3 - id WHERE id <= 2", "CMD UPDATE 2");
+    expect_text(db, "SELECT id, v FROM k WHERE id <= 2 ORDER BY id", "[2] 1|'v2'/ 2|'v1'");
+    expect_text(db, "UPDATE k SET id = CASE id WHEN 10 THEN 11 WHEN 11 THEN 12 ELSE 10 END WHERE id BETWEEN 10 AND 12",
+                "CMD UPDATE 3");
+    expect_text(db, "SELECT id, v FROM k WHERE id BETWEEN 10 AND 12 ORDER BY id", "[3] 10|'v12'/ 11|'v10'/ 12|'v11'");
+    /* 일부만 옮기되 비운 자리로 들어가는 경우와 멀리 옮기는 경우 */
+    expect_text(db, "UPDATE k SET id = id + 1 WHERE id >= 5990", "CMD UPDATE 11");
+    expect_text(db, "SELECT MIN(id), MAX(id), COUNT(*) FROM k WHERE id >= 5990", "[1] 5991|6001|11");
+    expect_text(db, "UPDATE k SET id = id + 100000 WHERE id BETWEEN 100 AND 199", "CMD UPDATE 100");
+    expect_text(db, "SELECT COUNT(*), MIN(id) FROM k WHERE id > 100000", "[1] 100|100100");
+    expect_text(db, "UPDATE k SET id = id - 100000 WHERE id > 100000", "CMD UPDATE 100");
+    /* RETURNING은 바뀐 뒤의 행이다(행 순서는 약속하지 않으므로 한 행씩 본다) */
+    expect_text(db, "UPDATE k SET id = 41 - id WHERE id BETWEEN 20 AND 21 RETURNING id, v", "[2] 21|'v20'/ 20|'v21'");
+    expect_text(db, "SELECT id, v FROM k WHERE id BETWEEN 20 AND 21 ORDER BY id", "[2] 20|'v21'/ 21|'v20'");
+    expect_text(db, "UPDATE k SET id = 41 - id WHERE id = 20 OR id = 21", "CMD UPDATE 2");
+    expect_text(db, "SELECT id, v FROM k WHERE id BETWEEN 20 AND 21 ORDER BY id", "[2] 20|'v20'/ 21|'v21'");
+
+    /* 거절할 것은 적용 전에 거절하고 표는 그대로다 */
+    expect_error(db, "UPDATE k SET id = id + 1 WHERE id = 500", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_error(db, "UPDATE k SET id = id + 1 WHERE id BETWEEN 500 AND 600 AND id <> 550", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_error(db, "UPDATE k SET id = 7 WHERE id IN (20, 21)", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_error(db, "UPDATE k SET id = 30 WHERE id IN (30, 31)", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_error(db, "UPDATE k SET id = id / 2 WHERE id BETWEEN 40 AND 41", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_text(db, "SELECT id, v FROM k WHERE id IN (20, 21, 30, 31, 500, 501, 550) ORDER BY id",
+                "[7] 20|'v20'/ 21|'v21'/ 30|'v30'/ 31|'v31'/ 500|'v500'/ 501|'v501'/ 550|'v550'");
+    snprintf(expected, sizeof(expected), "[1] %d", n);
+    expect_text(db, "SELECT COUNT(*) FROM k", expected);
+    expect_pages_clean(db, "거절 뒤");
+
+    /* 유일 보조 색인이 있어도 같다 */
+    exec_ok(db, "CREATE UNIQUE INDEX k_v ON k (v)");
+    exec_ok(db, "CREATE TABLE names (k TEXT PRIMARY KEY, n INTEGER)");
+    exec_ok(db, "INSERT INTO names VALUES ('a', 1), ('b', 2), ('c', 3)");
+    expect_error(db, "UPDATE k SET id = id + 1 WHERE id BETWEEN 1000 AND 1999", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_text(db, "UPDATE k SET id = id + 1 WHERE id >= 1000", "CMD UPDATE 5001");
+    expect_text(db, "SELECT id FROM k WHERE v = 'v1000'", "[1] 1001");
+    expect_text(db, "SELECT v FROM k WHERE id = 1001", "[1] 'v1000'");
+    expect_text(db, "UPDATE names SET k = CASE k WHEN 'a' THEN 'b' WHEN 'b' THEN 'c' ELSE 'a' END", "CMD UPDATE 3");
+    expect_text(db, "SELECT k, n FROM names ORDER BY k", "[3] 'a'|3/ 'b'|1/ 'c'|2");
+    expect_error(db, "UPDATE names SET k = 'b' WHERE k = 'a'", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_text(db, "UPDATE names SET k = k || 'x'", "CMD UPDATE 3");
+    expect_text(db, "SELECT k, n FROM names ORDER BY k", "[3] 'ax'|3/ 'bx'|1/ 'cx'|2");
+    expect_pages_clean(db, "색인 있는 이동 뒤");
+    assert(database_close(db) == DATABASE_OK);
+    assert(database_open(DB_PATH, true, &db) == DATABASE_OK);
+    snprintf(expected, sizeof(expected), "[1] %d|1|%d", n, n + 2);
+    expect_text(db, "SELECT COUNT(*), MIN(id), MAX(id) FROM k", expected);
+    expect_text(db, "SELECT id FROM k WHERE v = 'v1000'", "[1] 1001");
+    expect_text(db, "SELECT k, n FROM names ORDER BY k", "[3] 'ax'|3/ 'bx'|1/ 'cx'|2");
+    expect_pages_clean(db, "재열기 뒤");
+    assert(database_close(db) == DATABASE_OK);
+}
+
+/* ── 유일 색인 위반과 기본 키 중복의 문구 ── */
+
+static void test_unique_index_error_names_the_index(void)
+{
+    printf("\n[test_unique_index_error_names_the_index]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE u (id INTEGER PRIMARY KEY, email TEXT)");
+    exec_ok(db, "INSERT INTO u VALUES (1, 'a@x'), (2, 'b@x')");
+    exec_ok(db, "CREATE UNIQUE INDEX u_email ON u (email)");
+    char *got = query_ex(db, NULL, "INSERT INTO u VALUES (3, 'a@x')");
+    CHECK(strncmp(got, "ERR 3 11 ", 9) == 0 && strstr(got, "유일 색인") != NULL && strstr(got, "기본 키") == NULL,
+          "유일 색인 위반(INSERT): %s", got);
+    free(got);
+    got = query_ex(db, NULL, "UPDATE u SET email = 'a@x' WHERE id = 2");
+    CHECK(strncmp(got, "ERR 3 11 ", 9) == 0 && strstr(got, "유일 색인") != NULL && strstr(got, "기본 키") == NULL,
+          "유일 색인 위반(UPDATE): %s", got);
+    free(got);
+    got = query_ex(db, NULL, "INSERT INTO u VALUES (3, 'c@x'), (4, 'c@x')");
+    CHECK(strncmp(got, "ERR 3 11 ", 9) == 0 && strstr(got, "유일 색인") != NULL && strstr(got, "기본 키") == NULL,
+          "유일 색인 위반(한 문장의 두 행): %s", got);
+    free(got);
+    /* 기본 키 중복은 기본 키라고 말한다 */
+    expect_error(db, "INSERT INTO u VALUES (1, 'z@x')", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_error(db, "INSERT INTO u VALUES (5, 'e@x'), (5, 'f@x')", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_error(db, "UPDATE u SET id = 1 WHERE id = 2", RESULT_E_CONSTRAINT, 11, "기본 키");
+    expect_text(db, "SELECT * FROM u ORDER BY id", "[2] 1|'a@x'/ 2|'b@x'");
+    assert(database_close(db) == DATABASE_OK);
+}
+
 /* ── SUBSTR 경계(SQLite와 같은 의미. 격자 대조는 test_database_sqlite에 있다) ── */
 
 static void test_substr_bounds(void)
@@ -590,6 +719,8 @@ int main(int argc, char **argv)
         {"create_index_rejects_trailing_tokens", test_create_index_rejects_trailing_tokens},
         {"substr_bounds", test_substr_bounds},
         {"expression_intermediates_are_charged", test_expression_intermediates_are_charged},
+        {"primary_key_update_plan_matches_apply", test_primary_key_update_plan_matches_apply},
+        {"unique_index_error_names_the_index", test_unique_index_error_names_the_index},
     };
     for (size_t i = 0; i < sizeof(TESTS) / sizeof(TESTS[0]); i++) {
         if (argc < 2 || strstr(TESTS[i].name, argv[1]) != NULL) TESTS[i].run();

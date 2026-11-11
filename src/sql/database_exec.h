@@ -394,6 +394,7 @@ database_exec_status_t fail_result(database_t *db, result_error_class_t error_cl
                                           const char *format, ...);
 int name_len(size_t size);
 database_exec_status_t heap_failure(database_t *db, heap_status_t status, const char *where);
+database_exec_status_t index_failure(database_t *db, heap_status_t status, const char *where);
 database_exec_status_t cancelled_result(database_t *db);
 void clear_cells(value_t *cells, size_t count);
 bool lookup_table(database_t *db, const sqlstmt_name_t *name, catalog_table_id_t *id,

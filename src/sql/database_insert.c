@@ -329,8 +329,11 @@ static database_exec_status_t conflict_update(database_t *db, conflict_t *c, hea
         for (size_t i = 0; i < count; i++) c->views[c->columns[i]] = fresh[i].view;
         heap_locator_t placed = at;
         if (changed == HEAP_OK) changed = heap_batch_update(batch, at, c->views, n, &placed);
-        if (changed == HEAP_OK) changed = heap_batch_secondary_insert(batch, c->views, n, placed);
         if (changed != HEAP_OK) status = heap_failure(db, changed, "conflict update");
+        if (changed == HEAP_OK) {
+            changed = heap_batch_secondary_insert(batch, c->views, n, placed);
+            if (changed != HEAP_OK) status = index_failure(db, changed, "conflict update");
+        }
         if (status == DATABASE_EXEC_OK) status = locator_add(db, &c->touched, at);
         if (status == DATABASE_EXEC_OK) status = locator_add(db, &c->touched, placed);
         if (status == DATABASE_EXEC_OK && ret != NULL) {
@@ -531,9 +534,13 @@ database_exec_status_t exec_insert(database_t *db, const sqlstmt_insert_t *inser
         for (size_t i = 0; i < n; i++) views[i] = cells[i].view;
         heap_locator_t placed;
         heap_status_t inserted = heap_batch_insert(batch, views, n, &placed);
-        if (inserted == HEAP_OK) inserted = heap_batch_secondary_insert(batch, views, n, placed);
         if (inserted != HEAP_OK) {
             status = heap_failure(db, inserted, "insert");
+            goto done;
+        }
+        inserted = heap_batch_secondary_insert(batch, views, n, placed);
+        if (inserted != HEAP_OK) {
+            status = index_failure(db, inserted, "insert");
             goto done;
         }
         status = returning_row(ret, cells);
