@@ -115,27 +115,43 @@ static bool mul_ok(size_t a, size_t b, size_t *out)
 }
 
 /*
- * list가 쥔 용량(cap * 4바이트)을 ledger에 계상한다. 늘릴 때는 새 용량을 먼저 reserve하고 realloc 뒤
- * 옛 용량을 release하므로 순간 최대치는 old+new다. 실패하면 list와 계상은 그대로다.
+ * 원소 elem바이트짜리 목록의 용량을 ledger에 계상하며 늘린다. 늘릴 때는 새 용량을 먼저 reserve하고 realloc 뒤
+ * 옛 용량을 release하므로 순간 최대치는 old+new다. 실패하면 목록과 계상은 그대로다.
  */
-static bool list_reserve(u32_list_t *list, size_t extra, const mem_ledger_t *ledger)
+static bool items_reserve(void **items, size_t *cap_io, size_t len, size_t extra, size_t elem,
+                          const mem_ledger_t *ledger)
 {
-    if (list->len + extra <= list->cap) return true;
-    size_t cap = list->cap == 0 ? 16 : list->cap;
-    while (cap < list->len + extra) {
-        if (cap > SIZE_MAX / 2 / sizeof(uint32_t)) return false;
+    if (len + extra <= *cap_io) return true;
+    size_t cap = *cap_io == 0 ? 16 : *cap_io;
+    while (cap < len + extra) {
+        if (cap > SIZE_MAX / 2 / elem) return false;
         cap *= 2;
     }
-    if (!acct_reserve(ledger, cap * sizeof(uint32_t))) return false;
-    uint32_t *grown = realloc(list->items, cap * sizeof(uint32_t));
+    if (!acct_reserve(ledger, cap * elem)) return false;
+    void *grown = realloc(*items, cap * elem);
     if (grown == NULL) {
-        acct_release(ledger, cap * sizeof(uint32_t));
+        acct_release(ledger, cap * elem);
         return false;
     }
-    acct_release(ledger, list->cap * sizeof(uint32_t));
-    list->items = grown;
-    list->cap = cap;
+    acct_release(ledger, *cap_io * elem);
+    *items = grown;
+    *cap_io = cap;
     return true;
+}
+
+/* 목록 버퍼를 해제한 뒤에 계상한 몫을 돌려준다. */
+static void items_free(void *items, size_t cap, size_t elem, const mem_ledger_t *ledger)
+{
+    free(items);
+    acct_release(ledger, cap * elem);
+}
+
+static bool list_reserve(u32_list_t *list, size_t extra, const mem_ledger_t *ledger)
+{
+    void *items = list->items;
+    bool ok = items_reserve(&items, &list->cap, list->len, extra, sizeof(uint32_t), ledger);
+    list->items = items;
+    return ok;
 }
 
 static bool list_push(u32_list_t *list, uint32_t value, const mem_ledger_t *ledger)
@@ -147,38 +163,22 @@ static bool list_push(u32_list_t *list, uint32_t value, const mem_ledger_t *ledg
 
 static void list_free(u32_list_t *list, const mem_ledger_t *ledger)
 {
-    size_t bytes = list->cap * sizeof(uint32_t);
-    free(list->items);
+    items_free(list->items, list->cap, sizeof(uint32_t), ledger);
     *list = (u32_list_t){NULL, 0, 0};
-    acct_release(ledger, bytes);  /* 해제한 뒤에 몫을 돌려준다 */
 }
 
 static bool list_reserve16(u16_list_t *list, size_t extra, const mem_ledger_t *ledger)
 {
-    if (list->len + extra <= list->cap) return true;
-    size_t cap = list->cap == 0 ? 16 : list->cap;
-    while (cap < list->len + extra) {
-        if (cap > SIZE_MAX / 2 / sizeof(uint16_t)) return false;
-        cap *= 2;
-    }
-    if (!acct_reserve(ledger, cap * sizeof(uint16_t))) return false;
-    uint16_t *grown = realloc(list->items, cap * sizeof(uint16_t));
-    if (grown == NULL) {
-        acct_release(ledger, cap * sizeof(uint16_t));
-        return false;
-    }
-    acct_release(ledger, list->cap * sizeof(uint16_t));
-    list->items = grown;
-    list->cap = cap;
-    return true;
+    void *items = list->items;
+    bool ok = items_reserve(&items, &list->cap, list->len, extra, sizeof(uint16_t), ledger);
+    list->items = items;
+    return ok;
 }
 
 static void list_free16(u16_list_t *list, const mem_ledger_t *ledger)
 {
-    size_t bytes = list->cap * sizeof(uint16_t);
-    free(list->items);
+    items_free(list->items, list->cap, sizeof(uint16_t), ledger);
     *list = (u16_list_t){NULL, 0, 0};
-    acct_release(ledger, bytes);
 }
 
 static bool list_remove(u32_list_t *list, uint32_t value)
@@ -282,6 +282,26 @@ static heap_status_t parse_fields(const heap_t *heap, record_slice_t slice, reco
     if (status == RECORD_NOMEM) return HEAP_NOMEM;
     if (status != RECORD_OK) return HEAP_CORRUPT;
     return check_fields(heap, fields, count);
+}
+
+/*
+ * 행 하나의 record 필드 배열을 ledger에 먼저 계상한 뒤 할당한다. 계상이나 할당이 실패하면 NULL이며 계상은 남지
+ * 않는다. 성공하면 *bytes만큼을 fields_free가 돌려준다.
+ */
+static record_value_t *fields_alloc(const heap_t *heap, const mem_ledger_t *ledger, size_t *bytes)
+{
+    if (!mul_ok(ROW_FIELDS(heap->column_count), sizeof(record_value_t), bytes) || !acct_reserve(ledger, *bytes)) {
+        return NULL;
+    }
+    record_value_t *fields = malloc(*bytes);
+    if (fields == NULL) acct_release(ledger, *bytes);
+    return fields;
+}
+
+static void fields_free(record_value_t *fields, size_t bytes, const mem_ledger_t *ledger)
+{
+    free(fields);
+    acct_release(ledger, bytes);
 }
 
 static overflow_ref_t ref_from(const record_value_t *payload)
@@ -639,6 +659,28 @@ static pk_tree_io_t index_read_io(heap_t *heap)
     return io;
 }
 
+/*
+ * 기본 키 색인의 키 종류별 연산 중 키를 받지 않는 것. INTEGER는 pk_tree, TEXT는 text_tree다. 키를 받는 find·put·remove는
+ * 키 표현이 달라 호출처에서 나눈다.
+ */
+typedef struct {
+    pk_status_t (*create)(const pk_tree_io_t *io, uint32_t table_id, uint32_t *root);
+    pk_status_t (*stamp)(const pk_tree_io_t *io, uint32_t table_id, uint32_t root, uint32_t *stamp);
+    pk_status_t (*restamp)(const pk_tree_io_t *io, uint32_t table_id, uint32_t *root, uint32_t stamp);
+    pk_status_t (*visit_pages)(const pk_tree_io_t *io, uint32_t table_id, uint32_t root,
+                               bool (*visit)(void *context, uint32_t page_id), void *context);
+} primary_tree_ops_t;
+
+static const primary_tree_ops_t INTEGER_TREE = {pk_tree_create, pk_tree_stamp, pk_tree_restamp, pk_tree_visit_pages};
+static const primary_tree_ops_t TEXT_TREE = {text_tree_create, text_tree_stamp, text_tree_restamp,
+                                             text_tree_visit_pages};
+
+/* 색인을 쓰는 heap의 키는 INTEGER나 TEXT다. 그 밖의 종류는 색인 페이지 회수에서만 묻고 pk_tree로 읽는다. */
+static const primary_tree_ops_t *primary_tree(value_type_t key_type)
+{
+    return key_type == VALUE_TEXT ? &TEXT_TREE : &INTEGER_TREE;
+}
+
 static heap_status_t setup_index(heap_t *heap, const heap_index_spec_t *spec)
 {
     heap->index_root = spec->index_root;
@@ -654,9 +696,7 @@ static heap_status_t setup_index(heap_t *heap, const heap_index_spec_t *spec)
     }
     pk_tree_io_t io = index_read_io(heap);
     uint32_t stamp = 0;
-    pk_status_t checked = type == VALUE_INTEGER
-                              ? pk_tree_stamp(&io, heap->table_id, spec->index_root, &stamp)
-                              : text_tree_stamp(&io, heap->table_id, spec->index_root, &stamp);
+    pk_status_t checked = primary_tree(type)->stamp(&io, heap->table_id, spec->index_root, &stamp);
     heap_status_t status = heap_from_pk(heap, checked);
     if (status == HEAP_OK) heap->indexed = heap->root != PAGE_FILE_NO_PAGE && stamp == heap->root;
     return status;
@@ -752,19 +792,11 @@ static heap_status_t row_from_slot(heap_t *heap, const uint8_t *page, uint16_t s
     if (got == RECORD_PAGE_NOT_FOUND) return HEAP_NOT_FOUND;
     if (got != RECORD_PAGE_OK) return HEAP_CORRUPT;
     size_t field_bytes;
-    if (!mul_ok(ROW_FIELDS(heap->column_count), sizeof(record_value_t), &field_bytes) ||
-        !acct_reserve(&heap->ledger, field_bytes)) {
-        return HEAP_NOMEM;
-    }
-    record_value_t *fields = malloc(field_bytes);
-    if (fields == NULL) {
-        acct_release(&heap->ledger, field_bytes);
-        return HEAP_NOMEM;
-    }
+    record_value_t *fields = fields_alloc(heap, &heap->ledger, &field_bytes);
+    if (fields == NULL) return HEAP_NOMEM;
     heap_status_t status = parse_fields(heap, slice, fields, ROW_FIELDS(heap->column_count));
     if (status == HEAP_OK) status = decode_row(heap, fields, selected, row, charged);
-    free(fields);
-    acct_release(&heap->ledger, field_bytes);
+    fields_free(fields, field_bytes, &heap->ledger);
     return status;
 }
 
@@ -822,15 +854,8 @@ typedef struct {
 static heap_status_t slice_key(const heap_t *heap, record_slice_t slice, row_key_t *out)
 {
     size_t field_bytes;
-    if (!mul_ok(ROW_FIELDS(heap->column_count), sizeof(record_value_t), &field_bytes) ||
-        !acct_reserve(&heap->ledger, field_bytes)) {
-        return HEAP_NOMEM;
-    }
-    record_value_t *fields = malloc(field_bytes);
-    if (fields == NULL) {
-        acct_release(&heap->ledger, field_bytes);
-        return HEAP_NOMEM;
-    }
+    record_value_t *fields = fields_alloc(heap, &heap->ledger, &field_bytes);
+    if (fields == NULL) return HEAP_NOMEM;
     heap_status_t status = parse_fields(heap, slice, fields, ROW_FIELDS(heap->column_count));
     if (status == HEAP_OK) {
         out->present = fields[1 + 2 * heap->key_column].integer != KIND_NULL;
@@ -862,8 +887,7 @@ static heap_status_t slice_key(const heap_t *heap, record_slice_t slice, row_key
             }
         }
     }
-    free(fields);
-    acct_release(&heap->ledger, field_bytes);
+    fields_free(fields, field_bytes, &heap->ledger);
     return status;
 }
 
@@ -1145,11 +1169,8 @@ static heap_status_t collect_index_pages(heap_t *heap, u32_list_t *list)
 {
     pk_tree_io_t io = index_read_io(heap);
     index_collect_t collect = {list, &heap->ledger};
-    pk_status_t visited = heap->key_type == VALUE_TEXT
-                              ? text_tree_visit_pages(&io, heap->table_id, heap->index_root,
-                                                      collect_index_page, &collect)
-                              : pk_tree_visit_pages(&io, heap->table_id, heap->index_root,
-                                                    collect_index_page, &collect);
+    pk_status_t visited = primary_tree(heap->key_type)->visit_pages(&io, heap->table_id, heap->index_root,
+                                                                     collect_index_page, &collect);
     return heap_from_pk(heap, visited);
 }
 
@@ -1233,8 +1254,7 @@ heap_status_t heap_collect_pages_with_indexes(heap_t *heap, const uint32_t *root
             }
         }
     }
-    free(fields);
-    acct_release(ledger, field_bytes);
+    fields_free(fields, field_bytes, ledger);
     free(page);
     if (page_reserved) acct_release(ledger, RECORD_PAGE_BYTES);
     if (result != HEAP_OK) {
@@ -1807,20 +1827,23 @@ static heap_status_t index_ensure_root(heap_batch_t *batch)
 {
     if (batch->index_root != PAGE_FILE_NO_PAGE) return HEAP_OK;
     pk_tree_io_t io = batch_index_io(batch);
-    pk_status_t created = batch->heap->key_type == VALUE_INTEGER
-                              ? pk_tree_create(&io, batch->heap->table_id, &batch->index_root)
-                              : text_tree_create(&io, batch->heap->table_id, &batch->index_root);
+    pk_status_t created = primary_tree(batch->heap->key_type)->create(&io, batch->heap->table_id, &batch->index_root);
     return heap_from_pk(batch->heap, created);
+}
+
+/* 키 종류에 맞는 트리에 키를 넣는다. INTEGER면 integer를, TEXT면 bytes·size를 쓴다. */
+static pk_status_t index_tree_put(heap_batch_t *batch, int64_t integer, const uint8_t *bytes, size_t size,
+                                  heap_locator_t at, bool replace, heap_locator_t *previous)
+{
+    pk_tree_io_t io = batch_index_io(batch);
+    return batch->heap->key_type == VALUE_INTEGER
+               ? pk_tree_put(&io, batch->heap->table_id, &batch->index_root, integer, at, replace, previous)
+               : text_tree_put(&io, batch->heap->table_id, &batch->index_root, bytes, size, at, replace, previous);
 }
 
 static heap_status_t index_put(heap_batch_t *batch, const value_view_t *key, heap_locator_t at)
 {
-    pk_tree_io_t io = batch_index_io(batch);
-    pk_status_t inserted = batch->heap->key_type == VALUE_INTEGER
-                               ? pk_tree_put(&io, batch->heap->table_id, &batch->index_root,
-                                             key->integer, at, false, NULL)
-                               : text_tree_put(&io, batch->heap->table_id, &batch->index_root,
-                                               key->bytes, key->size_bytes, at, false, NULL);
+    pk_status_t inserted = index_tree_put(batch, key->integer, key->bytes, key->size_bytes, at, false, NULL);
     return heap_from_pk(batch->heap, inserted);
 }
 
@@ -1863,13 +1886,8 @@ static heap_status_t index_update_row(heap_batch_t *batch, row_key_t old, const 
     bool present = cell->type != VALUE_NULL;
     if (same_key(batch->heap, &old, cell)) {
         if (same_locator(old_at, new_at)) return HEAP_OK;
-        pk_tree_io_t io = batch_index_io(batch);
         heap_locator_t previous;
-        pk_status_t status = batch->heap->key_type == VALUE_INTEGER
-                                 ? pk_tree_put(&io, batch->heap->table_id, &batch->index_root,
-                                               old.integer, new_at, true, &previous)
-                                 : text_tree_put(&io, batch->heap->table_id, &batch->index_root,
-                                                 old.bytes, old.size_bytes, new_at, true, &previous);
+        pk_status_t status = index_tree_put(batch, old.integer, old.bytes, old.size_bytes, new_at, true, &previous);
         if (status == PK_OK && !same_locator(previous, old_at)) return HEAP_CORRUPT;
         return heap_from_pk(batch->heap, status);
     }
@@ -1884,9 +1902,8 @@ static heap_status_t index_update_row(heap_batch_t *batch, row_key_t old, const 
 static heap_status_t index_restamp(heap_batch_t *batch, uint32_t heap_root_page)
 {
     pk_tree_io_t io = batch_index_io(batch);
-    pk_status_t stamped = batch->heap->key_type == VALUE_INTEGER
-                              ? pk_tree_restamp(&io, batch->heap->table_id, &batch->index_root, heap_root_page)
-                              : text_tree_restamp(&io, batch->heap->table_id, &batch->index_root, heap_root_page);
+    pk_status_t stamped = primary_tree(batch->heap->key_type)->restamp(&io, batch->heap->table_id, &batch->index_root,
+                                                                       heap_root_page);
     return heap_from_pk(batch->heap, stamped);
 }
 
@@ -2185,15 +2202,8 @@ static heap_status_t release_row_chains(heap_batch_t *batch, record_slice_t slic
 {
     heap_t *heap = batch->heap;
     size_t field_bytes;
-    if (!mul_ok(ROW_FIELDS(heap->column_count), sizeof(record_value_t), &field_bytes) ||
-        !acct_reserve(&batch->ledger, field_bytes)) {
-        return HEAP_NOMEM;
-    }
-    record_value_t *fields = malloc(field_bytes);
-    if (fields == NULL) {
-        acct_release(&batch->ledger, field_bytes);
-        return HEAP_NOMEM;
-    }
+    record_value_t *fields = fields_alloc(heap, &batch->ledger, &field_bytes);
+    if (fields == NULL) return HEAP_NOMEM;
     heap_status_t status = parse_fields(heap, slice, fields, ROW_FIELDS(heap->column_count));
     batch_io_ctx_t ctx;
     overflow_io_t io = batch_io(&ctx, batch);
@@ -2213,8 +2223,7 @@ static heap_status_t release_row_chains(heap_batch_t *batch, record_slice_t slic
         acct_release(&batch->ledger, transient);
         if (freed != OVERFLOW_OK) status = map_overflow(heap, freed, &ctx.inner);
     }
-    free(fields);
-    acct_release(&batch->ledger, field_bytes);
+    fields_free(fields, field_bytes, &batch->ledger);
     return status;
 }
 
