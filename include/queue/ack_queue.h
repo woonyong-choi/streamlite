@@ -55,9 +55,14 @@
  * NULL이라 idem 색인에 들어가지 않는다. 이전 판이 설치한 큐(due 없음)는 그대로 열리며 READY를 state 색인으로 id 순서로
  * 읽는다. 열 때 lease_until 색인이 없으면(이전 판이 설치한 큐, 이 색인을 두기 전의 due 형식 큐) 만든다. 먼저 쓰기 거래 없이
  * 읽어 색인이 있는지 보고 있으면 writer를 기다리지 않는다. 없을 때만 자기 트랜잭션으로 만들고, 실패하거나 호출자 트랜잭션
- * 안이면 만들지 않고 이전 경로(state 색인, due 구간)로 찾는다. ack·nack·fail·update는 기본 키 한 행을 읽고 고친다. stats는 상태별 개수라 테이블 전체를 읽는다. 행 단위 잠금은
- * 없고 쓰기 트랜잭션은 하나다. payload는 선택한 작업의 것만 읽는다. 이 판이 설치한 큐는 due가 NOT NULL이라 이전 판
- * 라이브러리로 쓰면 enqueue가 실패한다.
+ * 안이면 만들지 않고 이전 경로(state 색인, due 구간)로 찾는다. ack·nack·fail·update는 기본 키 한 행을 읽고 고친다. stats는
+ * 상태별 개수라 테이블 전체를 읽는다. 행 단위 잠금은 없고 쓰기 트랜잭션은 하나다. payload는 선택한 작업의 것만 읽는다.
+ * 이전 판 라이브러리와 혼용 금지: 이 판이 설치한 큐를 이전 판 라이브러리가 쓰면 enqueue만 실패하고(due가 NOT NULL) claim·
+ * ack·nack·fail·recover·release·purge는 성공하지만 due를 고치지 않는다. 그 행의 due는 상태와 어긋난다. claim은 후보 조회와
+ * 갱신에서 상태(때가 된 READY, 만료된 LEASED)를 함께 확인하므로 어긋난 due 때문에 살아 있는 lease나 ACKED·FAILED를 주거나
+ * 지연 READY를 일찍 주지 않는다. 막지 못하는 것: 어긋난 행이 [0, now] 구간에 남아 claim이 매번 방문하고, 이전 판이 끝낸
+ * ACKED·FAILED는 due가 끝난 상태 구간 밖이라 purge가 지우지 않으며, 이전 판이 nack·release한 작업은 due가 늦으면 그만큼 늦게
+ * claim된다. 혼용한 뒤에는 이 판으로 due를 상태에 맞게 다시 쓴다(docs/design/transaction-queue.md의 고침 문장).
  *
  * 스레드: 한 세션은 한 번에 한 스레드만 쓴다(session 계약). ackq_t의 설정은 바뀌지 않고 아래의 시각 하한과 관측만 짧은 잠금
  * 안에서 갱신하므로 여러 스레드가 각자 세션으로 같은 큐를 써도 된다. 쓰기 트랜잭션은 데이터베이스마다 하나이므로 다른 세션이

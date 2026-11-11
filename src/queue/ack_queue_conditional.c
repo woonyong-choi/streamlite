@@ -63,6 +63,7 @@ static int claim_sql(const ackq_t *queue, bool by_id, char sql[CONDITIONAL_SQL_M
         return snprintf(sql, CONDITIONAL_SQL_MAX,
                         "UPDATE %s" CLAIM_SET_DUE
                         "(SELECT COALESCE(MIN(id), -1) FROM (SELECT id FROM %s WHERE due >= 0 AND due <= ? "
+                        "AND ((state = 0 AND ready_at <= ?) OR (state = 1 AND lease_until <= ?)) "
                         "AND (state = 0 OR ? = 0 OR attempts < ?) ORDER BY due LIMIT 1) candidates) AND "
                         ELIGIBLE CLAIM_LIMITS CLAIM_RETURN,
                         queue->table, queue->table);
@@ -102,6 +103,9 @@ ackq_status_t ackq_conditional_claim(ackq_t *queue, ackq_scope_t *scope, const a
     }
     if (request->id != 0) params[count++] = ackq_int(id);
     else if (queue->due_column) {
+        /* due가 상태와 어긋난 행(이전 판 라이브러리의 쓰기)은 후보에서 뺀다. 아니면 그 행이 머리를 막는다 */
+        params[count++] = ackq_int(request->now);
+        params[count++] = ackq_int(request->now);
         params[count++] = ackq_int(request->now);
         params[count++] = ackq_int(queue->max_attempts);
         params[count++] = ackq_int(queue->max_attempts);

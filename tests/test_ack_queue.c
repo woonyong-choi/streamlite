@@ -1550,6 +1550,67 @@ static void test_due_queue_gains_lease_index(void)
     close_db(db);
 }
 
+/* 이전 판 라이브러리처럼 due를 고치지 않고 상태만 바꾼다 */
+static bool old_library_update(session_t *db, const char *set, uint64_t id)
+{
+    char sql[256];
+    snprintf(sql, sizeof(sql), "UPDATE streamlite_queue_jobs SET %s WHERE id = %llu", set, (unsigned long long)id);
+    return exec_ok(db, sql);
+}
+
+/* 혼용 뒤 due를 상태에 맞게 다시 맞추는 문장(docs/design/transaction-queue.md) */
+#define REPAIR_DUE "UPDATE streamlite_queue_jobs SET due = CASE WHEN state = 0 THEN ready_at WHEN state = 1 THEN lease_until " \
+                   "WHEN state = 2 THEN -4611686018427387904 + id ELSE -3458764513820540928 + id END"
+
+static void test_wrong_due_is_not_claimed(void)
+{
+    printf("\n[#260 due가 상태와 어긋난 행(이전 판 라이브러리 혼용)]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 3);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    uint64_t live, acked, failed, delayed, ready, fence;
+    assert(enq(q, db, "live", NULL, &live, NULL) == ACKQ_OK && enq(q, db, "acked", NULL, &acked, NULL) == ACKQ_OK &&
+           enq(q, db, "failed", NULL, &failed, NULL) == ACKQ_OK && enq(q, db, "delayed", NULL, &delayed, NULL) == ACKQ_OK &&
+           enq(q, db, "ready", NULL, &ready, NULL) == ACKQ_OK);
+    /* 이전 판의 claim·ack·fail·nack: due는 enqueue 때의 ready_at(1000)에 남는다 */
+    CHECK(old_library_update(db, "state = 1, lease_until = 61000, fence = 1, attempts = 1", live) &&
+              old_library_update(db, "state = 2, lease_until = 0, fence = 1, attempts = 1", acked) &&
+              old_library_update(db, "state = 3, lease_until = 0, fence = 1, attempts = 1", failed) &&
+              old_library_update(db, "state = 0, ready_at = 900000, lease_until = 0, fence = 1, attempts = 1", delayed),
+          "이전 판 동작 흉내");
+    g_now = 2000;
+    CHECK(claim_n(q, db, 10, 60000) == 1 && g_items[0].id == ready, "때가 된 READY 하나만 받는다");
+    ackq_claims_release(g_items, 1);
+    CHECK(claim_n(q, db, 10, 60000) == 0, "살아 있는 lease·ACKED·FAILED·지연 READY는 받지 않는다");
+    ackq_claim_t item;
+    CHECK(ackq_claim_id(q, db, live, 60000, &item) == ACKQ_STALE && ackq_claim_id(q, db, acked, 60000, &item) == ACKQ_STALE,
+          "id 지정 claim도 STALE");
+    ackq_stats_t stats;
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.acked == 1 && stats.failed == 1 && stats.leased == 2 &&
+              stats.ready == 1,
+          "상태는 그대로");
+    /* lease가 만료되면 이전 판이 잡은 작업도 다시 받는다(fence는 1 오른다) */
+    g_now = 62000;
+    CHECK(claim_n(q, db, 1, 60000) == 1 && g_items[0].id == live && g_items[0].fence == 2, "만료된 lease는 다시 받는다");
+    fence = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    CHECK(ackq_ack(q, db, live, fence) == ACKQ_OK, "새 판 ack");
+    /* due가 ACKED 구간 밖이면 purge가 찾지 못한다. 고침 문장 뒤에는 지운다 */
+    size_t purged = 9;
+    CHECK(ackq_purge(q, db, true, 10, &purged) == ACKQ_OK && purged == 1, "새 판이 끝낸 작업만 purge (%zu)", purged);
+    CHECK(exec_ok(db, REPAIR_DUE), "due 고침 문장");
+    CHECK(ackq_purge(q, db, true, 10, &purged) == ACKQ_OK && purged == 2, "고친 뒤 ACKED·FAILED purge (%zu)", purged);
+    g_now = 900000;
+    CHECK(claim_n(q, db, 10, 60000) == 2 && g_items[0].id == ready && g_items[1].id == delayed,
+          "지연 READY는 제 시각에 받는다");
+    ackq_claims_release(g_items, 2);
+    ackq_close(&q);
+    close_db(db);
+}
+
 static uint64_t elapsed_ms(const struct timespec *start)
 {
     struct timespec now;
@@ -1639,6 +1700,7 @@ int main(void)
     test_empty_claim_without_writer();
     test_recover_cost_independent_of_ready();
     test_due_queue_gains_lease_index();
+    test_wrong_due_is_not_claimed();
     test_open_reads_lease_index_first();
     printf("\ntest_ack_queue: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();

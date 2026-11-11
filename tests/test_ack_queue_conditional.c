@@ -181,6 +181,31 @@ static void test_minimum_and_terminal(unsigned condition, bool candidate)
     CHECK(close_db(db), "close after terminal checks");
 }
 
+/* 이전 판 라이브러리처럼 due를 고치지 않고 상태만 바꾼 행은 due가 claim 구간에 남아도 받지 않고 머리를 막지 않는다 */
+static void test_wrong_due(unsigned condition, bool candidate)
+{
+    session_t *db;
+    ackq_t *queue = setup(&db, condition, candidate);
+    g_now = 1000;
+    uint64_t id;
+    for (int i = 0; i < 5; i++) assert(enq(queue, db, "payload", NULL, &id, NULL) == ACKQ_OK);
+    update(db, queue, "SET state = 1, lease_until = 61000, fence = 1, attempts = 1 WHERE id = 1");
+    update(db, queue, "SET state = 2, fence = 1, attempts = 1 WHERE id = 2");
+    update(db, queue, "SET state = 3, fence = 1, attempts = 1 WHERE id = 3");
+    update(db, queue, "SET ready_at = 900000, fence = 1, attempts = 1 WHERE id = 4");
+    g_now = 2000;
+    ackq_claim_t items[4] = {0};
+    size_t count = 0;
+    CHECK(ackq_claim(queue, db, 4, 1000, items, &count) == ACKQ_OK && count == 1 && items[0].id == 5,
+          "wrong due: only the due READY item");
+    ackq_claims_release(items, count);
+    CHECK(ackq_claim(queue, db, 4, 1000, items, &count) == ACKQ_OK && count == 0, "wrong due: live lease and finished jobs stay");
+    CHECK(ackq_claim_id(queue, db, 1, 1000, &items[0]) == ACKQ_STALE && ackq_claim_id(queue, db, 2, 1000, &items[0]) == ACKQ_STALE,
+          "wrong due: claim by ID stays stale");
+    ackq_close(&queue);
+    CHECK(close_db(db), "close after wrong due checks");
+}
+
 static void test_limits_and_result_lifetime(unsigned condition, bool candidate)
 {
     session_t *db;
@@ -350,6 +375,8 @@ int main(void)
         for (unsigned candidate = 0; candidate < 2; candidate++) {
             printf("condition=%u candidate=%u\n", condition, candidate);
             test_minimum_and_terminal(condition, candidate != 0);
+            if (g_fail != 0) return 1;
+            test_wrong_due(condition, candidate != 0);
             if (g_fail != 0) return 1;
             test_limits_and_result_lifetime(condition, candidate != 0);
             if (g_fail != 0) return 1;

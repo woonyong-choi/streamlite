@@ -8,7 +8,8 @@
  * 없는 작업의 idem은 NULL이라 색인에 들어가지 않는다. claim은 due 색인의 [0, now] 구간을 due 순서로 읽어 LIMIT에서
  * 멈추므로 비용이 LEASED·ACKED·지연 READY 수와 무관하다. purge는 due 구간을, recover·release는 lease_until 색인 구간을
  * 읽는다(LEASED만 lease_until이 0보다 크다). 이전 판이 만든 큐(due 열 없음, idem은 '')는 그대로 열리고 state·idem 색인으로
- * READY를 id 순서로 읽는다. 어느 형식이든 lease_until 색인이 없으면 열 때 만든다(이관, 실패하면 이전 경로).
+ * READY를 id 순서로 읽는다. 어느 형식이든 lease_until 색인이 없으면 열 때 만든다(이관, 실패하면 이전 경로). due는 상태에서
+ * 정해지는 색인 값일 뿐이라 claim은 상태 조건도 함께 확인한다(이전 판 라이브러리가 due를 고치지 않은 행 방어).
  *
  * key 보존 테이블 streamlite_queue_<name>_keys: seq(identity), idem(유일 색인), job(지운 작업 id), digest(payload 요약),
  * expires_at. purge가 key 있는 작업을 지울 때 넣는다. 보존 기간은 핸들의 옵션이라 넣는 순서(seq)가 만료 순서라는
@@ -819,7 +820,14 @@ static bool lease_expired(const meta_t *meta, const claim_filter_t *filter)
     return meta->lease_until <= filter->now && attempts_left;
 }
 
-static ackq_status_t claim_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, int64_t lease_until,
+/*
+ * claim할 수 있는 상태의 조건. due 형식의 후보 구간에는 claim 가능한 행만 있어야 하지만 due는 상태에서 정해지는 색인 값이라
+ * 이전 판 라이브러리처럼 due를 고치지 않는 쓰기가 섞이면 어긋날 수 있다. 그래서 후보 조회와 claim 갱신 모두 상태를 다시 본다.
+ * 매개변수는 now 둘이다.
+ */
+#define CLAIMABLE "((state = 0 AND ready_at <= ?) OR (state = 1 AND lease_until <= ?))"
+
+static ackq_status_t claim_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, int64_t now, int64_t lease_until,
                                ackq_claim_t *item)
 {
     char sql[ACKQ_SQL_MAX];
@@ -827,14 +835,20 @@ static ackq_status_t claim_one(ackq_t *queue, ackq_scope_t *scope, const meta_t 
     int64_t fence = meta->fence + 1;
     int64_t attempts = meta->attempts + 1;
     snprintf(sql, sizeof(sql),
-             "UPDATE %s SET state = 1, lease_until = ?, fence = ?, attempts = ?%s WHERE id = ? RETURNING payload",
+             "UPDATE %s SET state = 1, lease_until = ?, fence = ?, attempts = ?%s WHERE id = ? AND " CLAIMABLE
+             " RETURNING payload",
              queue->table, queue->due_column ? ", due = ?" : "");
-    value_view_t params[5] = {ackq_int(lease_until), ackq_int(fence), ackq_int(attempts),
-                              ackq_int(leased_due(queue, attempts, meta->id, lease_until)), ackq_int((int64_t)meta->id)};
-    if (!queue->due_column) params[3] = params[4];
+    value_view_t params[7] = {ackq_int(lease_until), ackq_int(fence), ackq_int(attempts),
+                              ackq_int(leased_due(queue, attempts, meta->id, lease_until)), ackq_int((int64_t)meta->id),
+                              ackq_int(now), ackq_int(now)};
+    size_t count = 7;
+    if (!queue->due_column) {
+        memmove(&params[3], &params[4], 3 * sizeof(params[0]));
+        count = 6;
+    }
     uint8_t *payload = NULL;
     size_t size = 0;
-    ackq_status_t status = run_returning_bytes(queue, scope, sql, params, queue->due_column ? 5 : 4, &payload, &size);
+    ackq_status_t status = run_returning_bytes(queue, scope, sql, params, count, &payload, &size);
     if (status != ACKQ_OK) return status;
     *item = (ackq_claim_t){meta->id, (uint64_t)fence, (uint32_t)attempts, (uint64_t)lease_until, payload, size};
     return ACKQ_OK;
@@ -842,7 +856,7 @@ static ackq_status_t claim_one(ackq_t *queue, ackq_scope_t *scope, const meta_t 
 
 /*
  * claim할 작업 후보를 top에 넣는다. due 형식은 due 색인의 [0, now] 구간을 due 순서로 읽고 k개에서 멈춘다(READY와 시도가
- * 남은 만료 LEASED만 그 구간에 있다). 이전 형식은 때가 된 READY(state 색인, id 순서)와 시도가 남은 만료 LEASED(lease_until
+ * 남은 만료 LEASED만 그 구간에 있어야 하며, due가 어긋난 행은 CLAIMABLE 조건이 걸러 낸다). 이전 형식은 때가 된 READY(state 색인, id 순서)와 시도가 남은 만료 LEASED(lease_until
  * 색인이 있으면 그 구간, 없으면 state 색인)에서 각각 k개를 읽어 id 순서로 합친다.
  */
 static ackq_status_t scan_claims(ackq_t *queue, ackq_scope_t *scope, int64_t now, topk_t *top)
@@ -850,11 +864,12 @@ static ackq_status_t scan_claims(ackq_t *queue, ackq_scope_t *scope, int64_t now
     size_t max_items = top->cap;
     if (queue->due_column) {
         top->by_due = true;
-        value_view_t due[4] = {ackq_int(now), ackq_int(queue->max_attempts), ackq_int(queue->max_attempts),
-                               ackq_int((int64_t)max_items)};
+        value_view_t due[6] = {ackq_int(now), ackq_int(now), ackq_int(now), ackq_int(queue->max_attempts),
+                               ackq_int(queue->max_attempts), ackq_int((int64_t)max_items)};
         return scan_meta(queue, scope,
-                         " WHERE due >= 0 AND due <= ? AND (state = 0 OR ? = 0 OR attempts < ?) ORDER BY due LIMIT ?",
-                         due, 4, top);
+                         " WHERE due >= 0 AND due <= ? AND " CLAIMABLE " AND (state = 0 OR ? = 0 OR attempts < ?) "
+                         "ORDER BY due LIMIT ?",
+                         due, 6, top);
     }
     value_view_t ready[3] = {ackq_int(ACKQ_STATE_READY), ackq_int(now), ackq_int((int64_t)max_items)};
     ackq_status_t status = scan_meta(queue, scope, " WHERE state = ? AND ready_at <= ? ORDER BY id LIMIT ?", ready, 3, top);
@@ -882,7 +897,7 @@ static ackq_status_t claim_in(ackq_t *queue, ackq_scope_t *scope, size_t max_ite
     if (top.items == NULL) return ACKQ_NOMEM;
     ackq_status_t status = scan_claims(queue, scope, now, &top);
     for (size_t i = 0; status == ACKQ_OK && i < top.count; i++) {
-        status = claim_one(queue, scope, &top.items[i], lease_until, &items[i]);
+        status = claim_one(queue, scope, &top.items[i], now, lease_until, &items[i]);
         if (status == ACKQ_OK) *count = i + 1;
     }
     free(top.items);
@@ -988,7 +1003,7 @@ ackq_status_t ackq_claim_id(ackq_t *queue, session_t *session, uint64_t id, uint
         bool due = meta.state == ACKQ_STATE_READY ? ready_due(&meta, &filter)
                                                   : meta.state == ACKQ_STATE_LEASED && lease_expired(&meta, &filter);
         if (!due) status = ACKQ_STALE;
-        else if (!queue->conditional_enabled) status = claim_one(queue, &scope, &meta, lease_until, item);
+        else if (!queue->conditional_enabled) status = claim_one(queue, &scope, &meta, now_value, lease_until, item);
         else status = meta.fence == INT64_MAX || meta.attempts == INT64_MAX ? ACKQ_LIMIT : ACKQ_INTERNAL;
     }
     status = ackq_scope_close(&scope, status);

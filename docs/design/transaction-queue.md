@@ -104,7 +104,13 @@ lease 판정은 벽시계를 쓴다. 핸들은 자기가 돌려준 시각의 하
 
 이 판이 설치한 큐는 정수 `due` 열과 그 색인, `lease_until` 색인을 둔다. 상태마다 겹치지 않는 구간에 값을 두므로(READY·시도가 남은 LEASED는 claim 가능 시각, 마지막 시도의 LEASED·ACKED·FAILED는 음수 구간에 id) claim은 `due` 색인의 `[0, 지금]` 구간을 앞에서부터 읽고 필요한 수에서 멈춘다. 만료 전 LEASED, 지연 READY, ACKED·FAILED는 그 구간 밖이라 claim 비용이 이들의 수와 무관하다. purge는 ACKED·FAILED 구간을 id 순서로 읽는다. recover·release는 `lease_until` 색인의 `[1, 기준 시각]` 구간을 만료 순서로 읽고 필요한 수에서 멈춘다. LEASED만 `lease_until`이 0보다 크므로 READY와 끝난 작업의 수와 무관하다(READY 4만 건에서 호출당 약 0.1~1ms, 이 색인 전에는 약 110ms). 키 없는 작업의 `idem`은 NULL이라 `idem` 색인에 들어가지 않는다. 빈 결과 다음의 `get`은 쓰기 트랜잭션 전에 writer 없이 후보가 있는지 읽어 보고, 없으면 writer 잠금을 잡지 않고 빈 결과를 돌려준다. `stats`는 여전히 테이블 전체를 읽는다.
 
-이전 판이 설치한 큐는 파일을 그대로 읽는다. 이 큐와 `lease_until` 색인을 두기 전에 만든 `due` 형식 큐는 열 때 그 색인을 하나 만들어 만료 lease를 그 색인 구간으로 찾는다. 열기는 먼저 쓰기 거래 없이 읽어 색인이 있는지 보고, 있으면 writer를 기다리지 않는다. 없을 때만 자기 트랜잭션으로 만들며 실패하면(BUSY, 호출자 트랜잭션 안) 이전 경로로 찾는다. READY는 이전처럼 `state` 색인을 id 순서로 읽으므로 지연 READY가 많으면 그만큼 방문한다. 이 판이 설치한 큐는 `due` 열이 필수라 이전 판 라이브러리로 쓰면 INSERT가 실패한다.
+이전 판이 설치한 큐는 파일을 그대로 읽는다. 이 큐와 `lease_until` 색인을 두기 전에 만든 `due` 형식 큐는 열 때 그 색인을 하나 만들어 만료 lease를 그 색인 구간으로 찾는다. 열기는 먼저 쓰기 거래 없이 읽어 색인이 있는지 보고, 있으면 writer를 기다리지 않는다. 없을 때만 자기 트랜잭션으로 만들며 실패하면(BUSY, 호출자 트랜잭션 안) 이전 경로로 찾는다. READY는 이전처럼 `state` 색인을 id 순서로 읽으므로 지연 READY가 많으면 그만큼 방문한다.
+
+이 판이 설치한 큐를 이전 판 라이브러리와 함께 쓰지 않는다. 이전 판 라이브러리의 `put`은 `due` 열이 필수라 INSERT가 실패한다. `get`·`ack`·`nack`·`fail`·`recover`·`release_leases`·`purge`는 성공하지만 `due`를 고치지 않아 그 행의 `due`가 상태와 어긋난다. 이 판의 `get`은 후보를 고를 때와 갱신할 때 상태(실행 시각이 된 READY, 만료된 LEASED)를 함께 확인하므로, 어긋난 `due` 때문에 살아 있는 lease를 다시 주거나 ACKED·FAILED 작업을 LEASED로 되살리거나 지연 READY를 일찍 주지 않는다. 이 방어로도 남는 결과는 세 가지다. 어긋난 행이 claim 구간에 남아 `get`이 매번 방문하고, 이전 판이 끝낸 ACKED·FAILED는 `purge`가 찾지 못해 남으며, 이전 판이 반납한 작업은 `due`가 늦으면 그만큼 늦게 다시 전달된다. `purge`가 상태로도 찾게 하면 `due` 형식에는 `state` 색인이 없어 매번 테이블 전체를 읽으므로 그렇게 하지 않았다. 혼용했다면 모든 프로세스를 이 판으로 바꾼 뒤 이 판으로 아래 문장을 한 번 실행해 `due`를 상태에 맞게 다시 쓴다. `jobs`는 큐 이름이고 음수는 [ack_queue_internal.h](../../src/queue/ack_queue_internal.h)의 ACKED·FAILED 구간 시작값이다.
+
+```sql
+UPDATE streamlite_queue_jobs SET due = CASE WHEN state = 0 THEN ready_at WHEN state = 1 THEN lease_until WHEN state = 2 THEN -4611686018427387904 + id ELSE -3458764513820540928 + id END
+```
 
 ### 중복 등록과 정리
 
