@@ -24,7 +24,8 @@
 - free-list 경계 처리 수정
 - 음수이거나 범위를 넘는 시계 값에서 큐 연산이 모두 `LIMIT`이 되던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 보존 기간이 긴 멱등성 키 뒤의 만료된 키가 purge에서 정리되지 않던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
-- commit·rollback 없이 참조를 잃은 Python `Transaction`이 writer를 쥔 채 남던 문제 수정: 수거나 인터프리터 종료 때 rollback하고 `Database`·`Queue`도 닫는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- commit·rollback 없이 참조를 잃은 Python `Transaction`이 writer를 쥔 채 남던 문제 수정: 수거 때 rollback하고 `Database`·`Queue`는 수거나 인터프리터 종료 때 닫는다. 인터프리터 종료 때는 다른 스레드가 쓰고 있을 수 있어 트랜잭션을 rollback하지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 종료자가 끝낸 Python `Transaction`의 다음 `execute`·큐 호출이 자동 commit으로 실행되던 문제 수정: 값이 NULL인 트랜잭션·DB·큐 핸들을 끝난 상태로 보고 `InvalidArgumentError`(큐는 `ValueError`)로 거절한다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - Python `Queue.put`·`update`가 `bytearray`·`memoryview`를 받고 `str`은 `TypeError`로 거절하도록 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - `persistqueue_compat`의 `clear_acked_data`가 `clear_ack_failed`일 때 `keep_latest`를 무시하고 1024를 넘는 `max_delete`에서 실패하던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 끝낸 C 핸들을 표시 검사로 잠그기 전에 `INVALID`로 거절하고 `streamlite_txn_failed`가 mutex 안에서 읽도록 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))

@@ -262,6 +262,55 @@ def test_dropped_database_queue_and_transaction_close_native_handles(tmp_path: P
         assert queue.put(b"after").id == 1
 
 
+def test_finalized_transaction_rejects_statements_instead_of_autocommit(tmp_path: Path) -> None:
+    """#273: 종료자가 rollback한 트랜잭션의 다음 문장·큐 호출은 자동 commit되지 않고 오류다."""
+    db = Database(tmp_path / "finalized.streamlite", busy_timeout_s=0.05)
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    queue = Queue(db, "jobs")
+    txn = db.begin()
+    txn.execute("INSERT INTO t VALUES (1)")
+    txn._finalizer()  # 수거·종료 때 종료자가 부르는 것과 같은 호출
+
+    with pytest.raises(InvalidArgumentError, match="finished"):
+        txn.execute("INSERT INTO t VALUES (2)")
+    with pytest.raises(InvalidArgumentError, match="finished"):
+        queue.put(b"partial", txn=txn)
+    with pytest.raises(InvalidArgumentError, match="finished"):
+        txn.commit()
+    assert not txn.is_failed
+    assert db.execute("SELECT id FROM t").rows == ()
+    assert queue.stats().ready == 0
+    db.close()
+
+
+def test_transaction_finalizer_does_not_run_at_interpreter_exit(tmp_path: Path) -> None:
+    """#273: 인터프리터 종료 때 다른 스레드가 쓰는 트랜잭션을 rollback하지 않는다. 참조를 잃은 경우의 rollback은 남는다."""
+    db = Database(tmp_path / "atexit.streamlite")
+    queue = Queue(db, "jobs")
+    txn = db.begin()
+
+    assert txn._finalizer.atexit is False
+    assert queue._finalizer.atexit is True
+    assert db._finalizer.atexit is True
+    txn.rollback()
+    db.close()
+
+
+def test_finalized_database_and_queue_reject_null_handles(tmp_path: Path) -> None:
+    """#273: 종료자가 닫아 값이 NULL이 된 핸들을 C에 넘기지 않고 닫힌 상태로 거절한다."""
+    db = Database(tmp_path / "null.streamlite")
+    queue = Queue(db, "jobs")
+    queue._finalizer()
+
+    with pytest.raises(ValueError, match="closed"):
+        queue.put(b"x")
+    queue.close()
+    db._finalizer()
+    with pytest.raises(InvalidArgumentError, match="closed"):
+        db.execute("SELECT 1")
+    db.close()
+
+
 def test_interpreter_exit_with_open_transaction_is_clean(tmp_path: Path) -> None:
     """#273: 트랜잭션·큐·DB를 연 채 인터프리터가 끝나도 종료자가 예외 없이 정리한다."""
     path = tmp_path / "exit.streamlite"

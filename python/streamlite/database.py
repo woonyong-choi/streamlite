@@ -266,8 +266,8 @@ class Database:
 
     @property
     def handle(self) -> ctypes.c_void_p:
-        """C 핸들. 닫힌 DB면 오류다."""
-        if self._handle is None:
+        """C 핸들. 닫힌 DB면 오류다. 종료자가 닫아 값이 NULL이 된 핸들도 닫힌 것으로 본다."""
+        if not self._handle:
             raise InvalidArgumentError("database is closed")
         return self._handle
 
@@ -345,7 +345,9 @@ class Database:
 
     def close(self) -> None:
         """등록된 큐를 닫고 DB를 닫는다. 열린 트랜잭션이 있으면 BusyError이며 DB는 열려 있고 큐만 닫혀 있다."""
-        if self._handle is None:
+        if not self._handle:  # 종료자가 이미 닫았으면 NULL이다
+            self._handle = None
+            self._finalizer.detach()
             return
         queues = getattr(self, "_queues", None)
         if queues is not None:
@@ -368,8 +370,9 @@ class Database:
 class Transaction:
     """여러 문장을 하나로 확정하거나 모두 버린다. with 블록은 예외가 없으면 commit, 있으면 rollback한다.
 
-    commit·rollback 없이 참조를 잃으면(또는 인터프리터가 끝나면) rollback된다. 수거 시점은 정해져 있지 않으므로
-    writer를 제때 놓으려면 with 블록이나 명시적 commit·rollback을 쓴다.
+    commit·rollback 없이 참조를 잃으면 수거될 때 rollback된다. 수거 시점은 정해져 있지 않으므로 writer를 제때 놓으려면
+    with 블록이나 명시적 commit·rollback을 쓴다. 인터프리터 종료 때는 rollback하지 않는다. 그때 다른 스레드가 아직 쓰고
+    있을 수 있고, commit하지 않은 변경은 프로세스가 끝나면 게시되지 않는다.
     """
 
     def __init__(self, db: Database, handle: ctypes.c_void_p) -> None:
@@ -378,18 +381,22 @@ class Transaction:
         self._native = db.native
         self._native.txn_threads[id(handle)] = threading.get_ident()
         self._finalizer = weakref.finalize(self, self._native.finalize, handle, _lib.streamlite_rollback)
+        self._finalizer.atexit = False
 
     @property
     def handle(self) -> ctypes.c_void_p:
-        """C 핸들. commit·rollback한 뒤에는 오류다."""
-        if self._handle is None:
+        """C 핸들. commit·rollback한 뒤와 종료자가 rollback해 값이 NULL이 된 뒤에는 오류다.
+
+        NULL 핸들을 C에 넘기면 트랜잭션 없는 자동 commit으로 실행되므로 넘기지 않는다.
+        """
+        if not self._handle:
             raise InvalidArgumentError("transaction is finished")
         return self._handle
 
     @property
     def is_failed(self) -> bool:
         """문장 오류로 실패 상태이면 commit할 수 없고 rollback만 된다."""
-        return self._handle is not None and bool(_lib.streamlite_txn_failed(self._handle))
+        return bool(self._handle) and bool(_lib.streamlite_txn_failed(self._handle))
 
     def execute(self, sql: str, params: Sequence[SqlValue] = ()) -> Result:
         """이 트랜잭션 안에서 문장 하나를 실행한다."""
@@ -418,8 +425,8 @@ class Transaction:
     def __exit__(
         self, exc_type: type[BaseException] | None, exc: BaseException | None, traceback: TracebackType | None
     ) -> None:
-        if self._handle is None:
-            return
+        if self._handle is None or (not self._handle and exc_type is not None):
+            return  # 종료자가 이미 rollback했으면 원래 예외를 가리지 않는다
         if exc_type is None and not self.is_failed:
             self.commit()
         else:

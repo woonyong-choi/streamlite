@@ -171,8 +171,8 @@ class Queue:
 
     @property
     def handle(self) -> ctypes.c_void_p:
-        """C 핸들. 닫은 큐면 오류다."""
-        if self._handle is None:
+        """C 핸들. 닫은 큐면 오류다. 종료자가 닫아 값이 NULL이 된 핸들도 닫힌 것으로 본다."""
+        if not self._handle:
             raise ValueError("queue is closed")
         return self._handle
 
@@ -347,7 +347,8 @@ class Queue:
     def close(self) -> None:
         """큐 핸들을 닫는다. DB를 닫기 전에 먼저 닫는다."""
         if self._handle is not None:
-            _lib.streamlite_queue_close(ctypes.byref(self._handle))
+            if self._handle:  # 종료자가 이미 닫았으면 NULL이다
+                _lib.streamlite_queue_close(ctypes.byref(self._handle))
             self._handle = None
             self._finalizer.detach()
             self.db.unregister_queue(self)
