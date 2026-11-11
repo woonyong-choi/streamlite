@@ -20,7 +20,7 @@ StreamLite 0.3.0의 `streamlite_exec`는 같은 프로세스의 C 호출자에�
 2. 호출자가 출력 포인터를 NULL, 길이를 0으로 초기화하고 `streamlite_exec`를 부른다.
 3. 호출자가 C status를 검사한다. `STREAMLITE_OK`일 때만 버퍼 kind를 읽는다.
 4. 호출자가 결과를 소비하고 `streamlite_free(out)`으로 한 번 해제한다.
-5. 호출자가 큐와 트랜잭션 핸들을 끝내고 `streamlite_close`로 DB를 닫는다.
+5. 호출자가 큐와 트랜잭션 핸들을 끝내고 `streamlite_close`로 DB를 닫는다. 핸들을 끝내는 호출은 그 핸들을 쓰는 다른 호출이 모두 돌아온 뒤에 부른다.
 
 성공한 반환 버퍼는 호출자 소유이며 다음 실행, rollback, DB close 뒤에도 해제 전까지 유효하다. CAPI는 내부 `result_t`를 인코딩 직후 해제한다. DB mutex는 실행·인코딩·내부 결과 해제 구간을 보호하며 호출자가 반환 버퍼를 읽고 해제하는 동안 보유하는 잠금이 아니다. Python은 바이트를 복사해 decode하고 `finally`에서 native 버퍼를 해제한다.
 
