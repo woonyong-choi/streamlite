@@ -568,6 +568,81 @@ static void test_benchmark_request_boundaries(void)
 }
 #endif
 
+
+/* ── #260 열기 옵션: 동기화 단계와 BUSY 재시도 ── */
+
+typedef struct {
+    streamlite_txn_t *txn;
+    unsigned hold_ms;
+} release_t;
+
+static void *release_later(void *arg)
+{
+    release_t *r = arg;
+    struct timespec pause = {0, (long)r->hold_ms * 1000000L};
+    nanosleep(&pause, NULL);
+    streamlite_rollback(&r->txn);
+    return NULL;
+}
+
+static void test_open_options(void)
+{
+    printf("\n[#260 열기 옵션]\n");
+    fresh_dir();
+    char path[192];
+    snprintf(path, sizeof(path), "%s/options.streamlite", g_dir);
+    streamlite_db_t *db = NULL, *other = NULL;
+    streamlite_open_options_t bad = {3, 0};
+    CHECK(streamlite_open_ex(path, 1, &bad, &db) == STREAMLITE_DB_INVALID && db == NULL, "알 수 없는 동기화 단계는 DB_INVALID");
+    streamlite_open_options_t off = {STREAMLITE_DURABILITY_OFF, 0};
+    CHECK(streamlite_open_ex(path, 1, &off, &db) == STREAMLITE_OK, "OFF로 열기");
+    CHECK(database_durability(session_db_handle(db->db)) == DATABASE_DURABILITY_OFF, "OFF가 database에 전달된다");
+    char out[256];
+    CHECK(exec_str(db, NULL, "CREATE TABLE t (id INTEGER PRIMARY KEY)", NULL, 0, out, sizeof(out)) == STREAMLITE_OK, "생성");
+    streamlite_close(&db);
+    streamlite_open_options_t waits = {STREAMLITE_DURABILITY_FULL, 3000};
+    CHECK(streamlite_open_ex(path, 0, &waits, &db) == STREAMLITE_OK && streamlite_open(path, 0, &other) == STREAMLITE_OK,
+          "FULL·대기 3초로 열기와 기본 열기");
+    CHECK(database_durability(session_db_handle(db->db)) == DATABASE_DURABILITY_FULL, "FULL이 database에 전달된다");
+    CHECK(exec_str(db, NULL, "SELECT COUNT(*) FROM t", NULL, 0, out, sizeof(out)) == STREAMLITE_OK && strcmp(out, "ROWS[COUNT:1?] (0)") == 0,
+          "OFF로 쓴 표가 close 뒤에 남는다 (%s)", out);
+
+    /* 다른 핸들의 거래가 writer를 쥔 동안: 기본 핸들은 곧바로 BUSY, 대기 핸들은 풀릴 때까지 다시 시도한다 */
+    streamlite_txn_t *txn = NULL;
+    streamlite_db_t *plain = NULL;
+    CHECK(streamlite_open(path, 0, &plain) == STREAMLITE_OK, "대기 없는 핸들");
+    release_t holder = {NULL, 300};
+    CHECK(streamlite_begin(other, &holder.txn) == STREAMLITE_OK, "다른 핸들의 거래");
+    CHECK(streamlite_begin(plain, &txn) == STREAMLITE_BUSY && txn == NULL, "busy_timeout_ms 0은 기다리지 않는다");
+    CHECK(exec_str(plain, NULL, "INSERT INTO t VALUES (1)", NULL, 0, out, sizeof(out)) == STREAMLITE_OK && strncmp(out, "ERR 7", 5) == 0,
+          "대기 없는 자동 commit 변경은 BUSY 오류 결과 (%s)", out);
+    pthread_t thread;
+    pthread_create(&thread, NULL, release_later, &holder);
+    CHECK(exec_str(db, NULL, "INSERT INTO t VALUES (2)", NULL, 0, out, sizeof(out)) == STREAMLITE_OK &&
+              strcmp(out, "CMD INSERT 1") == 0,
+          "대기 핸들의 자동 commit 변경은 writer가 풀린 뒤 반영 (%s)", out);
+    pthread_join(thread, NULL);
+    holder = (release_t){NULL, 200};
+    CHECK(streamlite_begin(other, &holder.txn) == STREAMLITE_OK, "다시 거래");
+    pthread_create(&thread, NULL, release_later, &holder);
+    CHECK(streamlite_begin(db, &txn) == STREAMLITE_OK, "대기 핸들의 begin은 writer가 풀린 뒤 시작");
+    pthread_join(thread, NULL);
+    streamlite_rollback(&txn);
+    streamlite_queue_t *q = NULL;
+    CHECK(streamlite_queue_open(db, "jobs", 1, NULL, &q) == STREAMLITE_OK, "큐 설치");
+    holder = (release_t){NULL, 200};
+    CHECK(streamlite_begin(other, &holder.txn) == STREAMLITE_OK, "다시 거래");
+    pthread_create(&thread, NULL, release_later, &holder);
+    uint64_t id = 0;
+    CHECK(streamlite_queue_put(q, NULL, (const uint8_t *)"x", 1, NULL, &id, NULL) == STREAMLITE_OK && id == 1,
+          "대기 핸들의 자기 거래 큐 연산도 다시 시도");
+    pthread_join(thread, NULL);
+    streamlite_queue_close(&q);
+    streamlite_close(&plain);
+    streamlite_close(&other);
+    streamlite_close(&db);
+}
+
 int main(void)
 {
     set_dir(DIR);
@@ -582,6 +657,7 @@ int main(void)
     test_handle_guard();
     test_threads();
     test_queue_round_trip();
+    test_open_options();
     printf("\ntest_streamlite: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;
