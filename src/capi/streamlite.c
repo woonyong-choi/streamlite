@@ -7,6 +7,9 @@
  * 세션: 트랜잭션 밖의 호출은 연결의 자동 commit 세션을, 트랜잭션 안의 호출은 그 트랜잭션의 세션을 쓴다. 그래서 한
  * 스레드가 트랜잭션을 연 동안 다른 스레드의 자동 commit 문장이 그 트랜잭션에 섞이지 않는다. 지금 실행 중인 세션은
  * cancel_lock 아래 running에 둔다. 세션을 닫기 전에 running을 지우므로 streamlite_cancel이 닫힌 세션을 건드리지 않는다.
+ * 핸들 수명(#273): 핸들을 끝내는 호출(close·queue_close·commit·rollback)은 그 핸들을 쓰는 다른 호출과 겹치지 않는다는
+ * 것이 헤더의 계약이다. 그래서 잠그기 전에 읽는 것은 핸들이 살아 있는 동안 바뀌지 않는 필드(magic, db, owner)뿐이다.
+ * 끝내는 호출은 mutex 안에서 magic을 지운 뒤 해제하고, 모든 진입점은 magic이 맞지 않는 포인터를 따라가기 전에 거절한다.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -23,7 +26,13 @@
 #include "sql/session.h"
 #include "../benchmark.h"
 
+/* 살아 있는 핸들의 표시. 닫으면서 0으로 지운다 */
+#define DB_MAGIC 0x42444c53u      /* "SLDB" */
+#define QUEUE_MAGIC 0x51444c53u   /* "SLDQ" */
+#define TXN_MAGIC 0x54444c53u     /* "SLDT" */
+
 struct streamlite_db {
+    uint32_t magic;
     session_pool_t *pool;
     session_db_t *db;
     session_t *autocommit;        /* 트랜잭션 밖의 문장과 큐 연산 */
@@ -46,14 +55,24 @@ _Static_assert(STREAMLITE_INVALID == ACKQ_INVALID && STREAMLITE_NOMEM == ACKQ_NO
 static bool forked(const streamlite_db_t *db) { return db->owner != getpid(); }
 
 struct streamlite_queue {
+    uint32_t magic;
     streamlite_db_t *db;
     ackq_t *queue;
 };
 
 struct streamlite_txn {
+    uint32_t magic;
     streamlite_db_t *db;
     session_t *session;           /* 이 트랜잭션만 쓰는 세션 */
 };
+
+/*
+ * 표시가 맞는 핸들인지. 닫힌 핸들은 해제된 메모리라 이 검사도 보장이 아니고(메모리가 다시 쓰이기 전까지만 잡힌다),
+ * 닫은 뒤의 사용과 핸들이 아닌 포인터를 잠그거나 따라가기 전에 걸러 내는 방어다.
+ */
+static bool live_db(const streamlite_db_t *db) { return db != NULL && db->magic == DB_MAGIC; }
+static bool live_queue(const streamlite_queue_t *q) { return q != NULL && q->magic == QUEUE_MAGIC && live_db(q->db); }
+static bool live_txn(const streamlite_txn_t *txn) { return txn != NULL && txn->magic == TXN_MAGIC && live_db(txn->db); }
 
 static _Atomic size_t g_max_result_bytes = STREAMLITE_DEFAULT_MAX_RESULT_BYTES;
 
@@ -154,6 +173,7 @@ int streamlite_open(const char *path, int create, streamlite_db_t **out)
     pthread_mutex_init(&handle->mutex, NULL);
     pthread_mutex_init(&handle->cancel_lock, NULL);
     handle->owner = getpid();
+    handle->magic = DB_MAGIC;
     *out = handle;
     return STREAMLITE_OK;
 }
@@ -162,6 +182,7 @@ int streamlite_close(streamlite_db_t **db)
 {
     if (db == NULL || *db == NULL) return STREAMLITE_OK;
     streamlite_db_t *handle = *db;
+    if (!live_db(handle)) return STREAMLITE_DB_INVALID;   /* 이미 닫혔거나 핸들이 아니다. 건드리지 않는다 */
     if (forked(handle)) return STREAMLITE_DB_FORKED;
     pthread_mutex_lock(&handle->mutex);
     if (handle->live_queues > 0 || handle->live_txns > 0) {
@@ -173,7 +194,9 @@ int streamlite_close(streamlite_db_t **db)
     database_status_t closed = DATABASE_OK;
     session_status_t status = session_pool_close_database(handle->db, &closed);
     session_pool_close(handle->pool);
+    handle->magic = 0;
     pthread_mutex_unlock(&handle->mutex);
+    /* 이 순간 같은 핸들로 mutex를 기다리는 호출이 있으면 안 된다(헤더의 수명 계약). 여기서 막을 방법은 없다 */
     pthread_mutex_destroy(&handle->mutex);
     pthread_mutex_destroy(&handle->cancel_lock);
     free(handle);
@@ -183,7 +206,7 @@ int streamlite_close(streamlite_db_t **db)
 
 void streamlite_cancel(streamlite_db_t *db)
 {
-    if (db == NULL || forked(db)) return;
+    if (!live_db(db) || forked(db)) return;
     pthread_mutex_lock(&db->cancel_lock);
     if (db->running != NULL) session_cancel(db->running);
     pthread_mutex_unlock(&db->cancel_lock);
@@ -371,12 +394,13 @@ int streamlite_exec(streamlite_db_t *db, streamlite_txn_t *txn, const char *sql,
                uint8_t **out, size_t *out_size)
 {
     TB_REQUEST_SCOPE(bench_request);
-    if (db == NULL || sql == NULL || out == NULL || out_size == NULL || (param_count > 0 && params == NULL)) {
+    if (out != NULL) *out = NULL;
+    if (out_size != NULL) *out_size = 0;
+    if (!live_db(db) || sql == NULL || out == NULL || out_size == NULL || (param_count > 0 && params == NULL)) {
         return ACKQ_INVALID;
     }
-    *out = NULL;
-    *out_size = 0;
-    if (txn != NULL && txn->db != db) return ACKQ_INVALID;   /* 다른 database의 트랜잭션은 실행 전에 거절 */
+    /* 끝난 트랜잭션과 다른 database의 트랜잭션은 실행 전에 거절 */
+    if (txn != NULL && (!live_txn(txn) || txn->db != db)) return ACKQ_INVALID;
     if (forked(db)) return STREAMLITE_DB_FORKED;
     value_view_t *views;
     int status = build_views(params, param_count, &views);
@@ -431,8 +455,9 @@ static int map_txn(txn_status_t status)
 int streamlite_begin(streamlite_db_t *db, streamlite_txn_t **out)
 {
     TB_REQUEST_SCOPE(bench_request);
-    if (db == NULL || out == NULL) return ACKQ_INVALID;
+    if (out == NULL) return ACKQ_INVALID;
     *out = NULL;
+    if (!live_db(db)) return ACKQ_INVALID;
     if (forked(db)) return STREAMLITE_DB_FORKED;
     streamlite_txn_t *handle = calloc(1, sizeof(*handle));
     if (handle == NULL) return ACKQ_NOMEM;
@@ -453,6 +478,7 @@ int streamlite_begin(streamlite_db_t *db, streamlite_txn_t **out)
         return status;
     }
     handle->db = db;
+    handle->magic = TXN_MAGIC;
     *out = handle;
     return STREAMLITE_OK;
 }
@@ -463,6 +489,7 @@ static void forget_txn(streamlite_txn_t **txn)
     streamlite_txn_t *handle = *txn;
     session_close(handle->session);
     handle->db->live_txns--;
+    handle->magic = 0;
     free(handle);
     *txn = NULL;
 }
@@ -470,7 +497,7 @@ static void forget_txn(streamlite_txn_t **txn)
 int streamlite_commit(streamlite_txn_t **txn)
 {
     TB_REQUEST_SCOPE(bench_request);
-    if (txn == NULL || *txn == NULL) return ACKQ_INVALID;
+    if (txn == NULL || !live_txn(*txn)) return ACKQ_INVALID;
     streamlite_db_t *db = (*txn)->db;
     if (forked(db)) return STREAMLITE_DB_FORKED;
     TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
@@ -489,7 +516,7 @@ int streamlite_commit(streamlite_txn_t **txn)
 int streamlite_rollback(streamlite_txn_t **txn)
 {
     TB_REQUEST_SCOPE(bench_request);
-    if (txn == NULL || *txn == NULL) return ACKQ_INVALID;
+    if (txn == NULL || !live_txn(*txn)) return ACKQ_INVALID;
     streamlite_db_t *db = (*txn)->db;
     if (forked(db)) return STREAMLITE_DB_FORKED;
     TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
@@ -503,7 +530,12 @@ int streamlite_rollback(streamlite_txn_t **txn)
 
 int streamlite_txn_failed(const streamlite_txn_t *txn)
 {
-    return txn != NULL && session_txn_failed(txn->session) ? 1 : 0;
+    if (!live_txn(txn) || forked(txn->db)) return 0;
+    /* 다른 스레드가 이 트랜잭션의 세션으로 실행 중일 수 있으므로 다른 호출처럼 mutex 안에서 읽는다 */
+    pthread_mutex_lock(&txn->db->mutex);
+    int failed = session_txn_failed(txn->session) ? 1 : 0;
+    pthread_mutex_unlock(&txn->db->mutex);
+    return failed;
 }
 
 /* ── 큐 ── */
@@ -511,8 +543,9 @@ int streamlite_txn_failed(const streamlite_txn_t *txn)
 int streamlite_queue_open(streamlite_db_t *db, const char *name, int install, const streamlite_queue_options_t *options,
                     streamlite_queue_t **out)
 {
-    if (db == NULL || out == NULL) return ACKQ_INVALID;
+    if (out == NULL) return ACKQ_INVALID;
     *out = NULL;
+    if (!live_db(db)) return ACKQ_INVALID;
     if (forked(db)) return STREAMLITE_DB_FORKED;
     static const streamlite_queue_options_t defaults = {0};
     const streamlite_queue_options_t *given = options != NULL ? options : &defaults;
@@ -536,17 +569,19 @@ int streamlite_queue_open(streamlite_db_t *db, const char *name, int install, co
         return status;
     }
     handle->db = db;
+    handle->magic = QUEUE_MAGIC;
     *out = handle;
     return STREAMLITE_OK;
 }
 
 void streamlite_queue_close(streamlite_queue_t **queue)
 {
-    if (queue == NULL || *queue == NULL) return;
+    if (queue == NULL || !live_queue(*queue)) return;
     streamlite_db_t *db = (*queue)->db;
     if (forked(db)) return;
     pthread_mutex_lock(&db->mutex);
     ackq_close(&(*queue)->queue);
+    (*queue)->magic = 0;
     db->live_queues--;
     pthread_mutex_unlock(&db->mutex);
     free(*queue);
@@ -554,12 +589,13 @@ void streamlite_queue_close(streamlite_queue_t **queue)
 }
 
 /*
- * 큐 연산 공통: txn이 이 큐의 database 것이 아니면 잠그기 전에 거절하고, 아니면 mutex 안에서 call을 실행한다.
- * call 안의 session은 트랜잭션의 세션이거나 연결의 자동 commit 세션이다.
+ * 큐 연산 공통: 닫힌 큐·끝난 트랜잭션이거나 txn이 이 큐의 database 것이 아니면 잠그기 전에 거절하고, 아니면 mutex 안에서
+ * call을 실행한다. call 안의 session은 트랜잭션의 세션이거나 연결의 자동 commit 세션이다. 잠그기 전에 읽는 q->db는 큐
+ * 핸들이 살아 있는 동안 바뀌지 않고, 살아 있는 큐가 있으면 streamlite_close가 BUSY라 그 db도 살아 있다.
  */
 #define QUEUE_CALL(q, txn, call)                                              \
     do {                                                                      \
-        if ((q) == NULL || ((txn) != NULL && (txn)->db != (q)->db)) return ACKQ_INVALID; \
+        if (!live_queue(q) || ((txn) != NULL && (!live_txn(txn) || (txn)->db != (q)->db))) return ACKQ_INVALID; \
         if (forked((q)->db)) return STREAMLITE_DB_FORKED;                           \
         TB_BEGIN(bench_lock, TB_HANDLE_LOCK);                                 \
         pthread_mutex_lock(&(q)->db->mutex);                                  \
@@ -682,6 +718,15 @@ int streamlite_queue_stats(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_
     return status;
 }
 
+/* QUEUE_CALL은 거절할 때 바로 return하므로, 호출자가 잡은 배열을 놓치지 않게 따로 감싼다 */
+static int list_locked(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t after_id, size_t limit, int with_payload,
+                       ackq_item_t *raw_items, size_t *n)
+{
+    int status;
+    QUEUE_CALL(q, txn, ackq_list(q->queue, session, after_id, limit, with_payload != 0, raw_items, n));
+    return status;
+}
+
 int streamlite_queue_list(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t after_id, size_t limit, int with_payload, streamlite_queue_list_item_t *items,
               size_t *count)
 {
@@ -691,11 +736,7 @@ int streamlite_queue_list(streamlite_queue_t *q, streamlite_txn_t *txn, uint64_t
     ackq_item_t *raw_items = calloc(limit, sizeof(*raw_items));
     if (raw_items == NULL) return ACKQ_NOMEM;
     size_t n = 0;
-    if (q == NULL || (txn != NULL && txn->db != q->db)) {
-        free(raw_items);
-        return ACKQ_INVALID;
-    }
-    QUEUE_CALL(q, txn, ackq_list(q->queue, session, after_id, limit, with_payload != 0, raw_items, &n));
+    status = list_locked(q, txn, after_id, limit, with_payload, raw_items, &n);
     if (status == ACKQ_OK) {
         for (size_t i = 0; i < n; i++) {
             const ackq_item_t *src = &raw_items[i];

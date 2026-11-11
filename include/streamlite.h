@@ -11,6 +11,15 @@
  *
  * 스레드: 모든 호출은 streamlite_db_t의 mutex로 직렬화된다. 이 라이브러리는 mutex를 쥔 채 다른 writer를 기다리지 않는다.
  * 트랜잭션 시작과 큐의 자기 트랜잭션은 기다리지 않고 STREAMLITE_BUSY를 돌려주므로 호출자가 mutex 밖에서 다시 시도한다.
+ * 살아 있는 db·큐·트랜잭션 핸들을 쓰는 호출(streamlite_txn_failed 포함)은 여러 스레드에서 동시에 불러도 된다.
+ *
+ * 핸들 수명: 핸들을 끝내는 호출(streamlite_close, streamlite_queue_close, streamlite_commit, streamlite_rollback)은 그
+ * 핸들을 쓰는 다른 호출과 동시에 부르면 안 된다. 끝내는 호출이 시작된 뒤에는 그 핸들(포인터 사본 포함)을 쓰지 않으며,
+ * 다른 스레드가 그 핸들로 호출 중이거나 mutex를 기다리는 중이 아님을 호출자가 보장한다. 큐·트랜잭션 핸들은 자기 db가
+ * 닫히기 전에 끝낸다(살아 있으면 streamlite_close가 STREAMLITE_BUSY다). 이를 어기면 해제된 메모리를 읽는 것이다.
+ * 방어로, 핸들마다 표시를 두고 끝내면서 지운다. 표시가 맞지 않는 포인터(이미 끝낸 핸들, 핸들이 아닌 메모리)는 잠그거나
+ * 실행하기 전에 STREAMLITE_INVALID(streamlite_close는 STREAMLITE_DB_INVALID, 반환값이 없는 호출은 아무것도 하지 않음)로
+ * 거절한다. 해제된 메모리가 다시 쓰이기 전까지만 잡히므로 보장이 아니며 위 규칙을 대신하지 않는다.
  *
  * 세션: 문장과 큐 연산은 session.h의 세션으로 실행한다. 트랜잭션 밖의 호출은 연결 하나에 하나인 자동 commit 세션을,
  * 트랜잭션 안의 호출은 트랜잭션마다 따로 연 세션을 쓴다. 연결의 세션 풀은 한도가 없다.
@@ -23,7 +32,7 @@
  * 반환값: 아래 STREAMLITE_* 값이다. 1~16은 큐 모듈의 상태와 같은 번호다.
  */
 #define STREAMLITE_OK 0
-#define STREAMLITE_INVALID 1        /* 인자 오류: 이름·길이·개수·시간, 다른 database의 트랜잭션 */
+#define STREAMLITE_INVALID 1        /* 인자 오류: 이름·길이·개수·시간, 다른 database의 트랜잭션, 끝낸 핸들, 내부 이름과 겹치는 큐 이름 */
 #define STREAMLITE_NOMEM 2
 #define STREAMLITE_LIMIT 3          /* payload·결과 크기 한도 */
 #define STREAMLITE_BUSY 4           /* 다른 writer(다른 프로세스 포함)가 쓰는 중이다. 반영한 것이 없으며 다시 시도할 수 있다 */
@@ -84,7 +93,10 @@ size_t streamlite_max_result_bytes(void);
 
 /* path의 DB를 연다. create가 0이 아니면 없을 때 만든다. commit은 항상 DURABLE이다(database_txn.h). */
 int streamlite_open(const char *path, int create, streamlite_db_t **out);
-/* 살아 있는 큐 핸들(streamlite_queue_t)이나 트랜잭션(streamlite_txn_t)이 있으면 STREAMLITE_BUSY이고 핸들은 그대로다. 먼저 닫는다. */
+/*
+ * 살아 있는 큐 핸들(streamlite_queue_t)이나 트랜잭션(streamlite_txn_t)이 있으면 STREAMLITE_BUSY이고 핸들은 그대로다. 먼저 닫는다.
+ * 이 db를 쓰는 다른 호출이 모두 돌아온 뒤에 부른다(핸들 수명).
+ */
 int streamlite_close(streamlite_db_t **db);
 /*
  * 지금 실행 중인 문장이나 큐 연산 하나를 취소한다. mutex를 쥐지 않으므로 다른 스레드에서 부른다. 취소된 문장은
@@ -113,7 +125,7 @@ int streamlite_begin(streamlite_db_t *db, streamlite_txn_t **out);
 /* commit·rollback은 성공하든 실패하든 트랜잭션을 해제하고 *txn을 NULL로 만든다. */
 int streamlite_commit(streamlite_txn_t **txn);
 int streamlite_rollback(streamlite_txn_t **txn);
-/* 문장 오류로 실패 상태인지(commit하면 안 되고 rollback만 된다) */
+/* 문장 오류로 실패 상태인지(commit하면 안 되고 rollback만 된다). 다른 호출처럼 mutex 안에서 읽는다. 끝낸 핸들이면 0 */
 int streamlite_txn_failed(const streamlite_txn_t *txn);
 
 /* 큐 옵션. 모두 0이면 기본값이다(ack_queue.h의 ackq_options_t와 같은 뜻). */
@@ -125,7 +137,11 @@ typedef struct {
     void *clock_ctx;
 } streamlite_queue_options_t;
 
-/* 큐 이름 name을 연다. install이 0이 아니면 없을 때 만든다. options가 NULL이면 모두 기본값이다. */
+/*
+ * 큐 이름 name을 연다. install이 0이 아니면 없을 때 만든다. options가 NULL이면 모두 기본값이다. 새로 만드는 이름이
+ * _keys·_state·_idem으로 끝나거나 이미 있는 큐의 내부 테이블·색인 이름과 겹치면 STREAMLITE_INVALID이고 아무것도 만들지
+ * 않는다(ack_queue.h의 이름 규칙). 이미 있는 큐는 이름과 무관하게 열린다.
+ */
 int streamlite_queue_open(streamlite_db_t *db, const char *name, int install, const streamlite_queue_options_t *options,
                     streamlite_queue_t **out);
 void streamlite_queue_close(streamlite_queue_t **queue);

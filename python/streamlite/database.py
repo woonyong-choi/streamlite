@@ -5,7 +5,9 @@ from __future__ import annotations
 import ctypes
 import os
 import struct
+import threading
 import time
+import weakref
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from types import TracebackType
@@ -20,7 +22,7 @@ from streamlite.errors import (
     raise_for_status,
 )
 
-__all__ = ["Database", "Result", "SqlValue", "Transaction"]
+__all__ = ["Database", "NativeDatabase", "Result", "SqlValue", "Transaction"]
 
 SqlValue = Union[None, int, float, str, bytes]  # noqa: UP007 - 실행 시점에 평가되므로 3.9에서는 `|`를 못 쓴다
 
@@ -76,6 +78,49 @@ def status_name(status: int) -> str:
 def check(status: int) -> None:
     """C 상태가 성공이 아니면 대응하는 예외를 던진다."""
     raise_for_status(status, status_name(status))
+
+
+_SELF_BLOCKED = (
+    "this thread holds an open transaction on the same Database, so the call cannot get the writer; "
+    "pass txn=<that transaction> or commit/rollback it first"
+)
+
+
+class NativeDatabase:
+    """Database 객체 없이도 종료자가 정리할 수 있게 따로 둔 native 상태.
+
+    종료자(weakref.finalize)는 Database·Queue·Transaction 객체를 참조하면 안 되므로(참조하면 수거되지 않는다) 핸들과
+    표시만 여기에 두고 나눠 쓴다. handle은 Database가 쥔 것과 같은 c_void_p 객체라 닫히면 양쪽에서 함께 비워진다.
+    """
+
+    def __init__(self, handle: ctypes.c_void_p) -> None:
+        self.handle = handle
+        self.abandoned = False  # close 없이 Database 객체가 사라졌다
+        self.txn_threads: dict[int, int] = {}  # 열린 트랜잭션(핸들 객체의 id) -> 연 스레드
+        self._closing = threading.RLock()
+
+    def holds_transaction(self) -> bool:
+        """지금 스레드가 연 트랜잭션이 이 DB에 남아 있는지."""
+        return threading.get_ident() in list(self.txn_threads.values())  # list()는 다른 스레드의 변경과 겹치지 않는다
+
+    def close_if_abandoned(self) -> None:
+        """Database 객체가 사라졌으면 DB를 닫는다. 큐·트랜잭션이 남아 BUSY면 그 종료자가 끝난 뒤 다시 부른다."""
+        with self._closing:  # 두 종료자가 같은 핸들을 동시에 닫지 않게 한다. 같은 스레드의 재진입은 허용한다
+            if self.abandoned and self.handle:
+                _lib.streamlite_close(ctypes.byref(self.handle))
+
+    def finalize(self, handle: ctypes.c_void_p | None, close: Callable[..., object] | None) -> None:
+        """종료자 본문. 남은 핸들을 close로 끝내고, 버려진 DB를 닫는다. 수거·인터프리터 종료 중이라 예외를 내지 않는다."""
+        try:
+            if handle is not None and close is not None:
+                self.txn_threads.pop(id(handle), None)
+                if handle:
+                    close(ctypes.byref(handle))
+            else:
+                self.abandoned = True
+            self.close_if_abandoned()
+        except Exception:  # noqa: BLE001, S110 - 종료자에서는 알릴 곳이 없다
+            pass
 
 
 def retry_busy(call: Callable[[], int], timeout_s: float) -> int:
@@ -215,6 +260,9 @@ class Database:
         self._handle: ctypes.c_void_p | None = handle
         self._queues: set[Closable]
         self.busy_timeout_s = busy_timeout_s
+        # close 없이 참조를 잃거나 인터프리터가 끝나면 큐·트랜잭션의 종료자와 함께 native 자원을 놓는다
+        self.native = NativeDatabase(handle)
+        self._finalizer = weakref.finalize(self, self.native.finalize, None, None)
 
     @property
     def handle(self) -> ctypes.c_void_p:
@@ -235,7 +283,13 @@ class Database:
             try:
                 return run_sql(self.handle, None, sql, params)
             except SqlError as err:
-                if err.error_class != _RESULT_E_BUSY or time.monotonic() >= deadline:
+                if err.error_class != _RESULT_E_BUSY:
+                    raise
+                if self.native.holds_transaction():  # 기다려도 풀리지 않는다
+                    raise SqlError(
+                        f"{err}; {_SELF_BLOCKED}", error_class=err.error_class, error_code=err.error_code
+                    ) from err
+                if time.monotonic() >= deadline:
                     raise
             time.sleep(delay)
             delay = min(delay * 2, 0.02)
@@ -244,14 +298,28 @@ class Database:
         """쓰기 트랜잭션을 시작한다. 다른 writer가 있으면 busy_timeout_s까지 기다린다.
 
         Raises:
-            BusyError: 기다린 시간 안에 시작하지 못했을 때.
+            BusyError: 기다린 시간 안에 시작하지 못했을 때. 지금 스레드가 이 DB에 연 트랜잭션이 남아 있으면 기다리지 않는다.
         """
         out = ctypes.c_void_p()
-        status = retry_busy(lambda: _lib.streamlite_begin(self.handle, ctypes.byref(out)), self.busy_timeout_s)
+        check(self.wait_for_writer(lambda: _lib.streamlite_begin(self.handle, ctypes.byref(out))))
+        return Transaction(self, out)
+
+    def wait_for_writer(self, call: Callable[[], int]) -> int:
+        """call이 BUSY인 동안 busy_timeout_s까지 다시 부르고 마지막 상태를 돌려준다.
+
+        Raises:
+            BusyError: 끝까지 BUSY일 때. 지금 스레드가 이 DB에 연 트랜잭션이 writer를 쥐고 있으면 기다려도 풀리지
+                않으므로 바로 던지고 원인을 메시지에 적는다.
+        """
+        status = call()
+        if status != STATUS_BUSY:
+            return status
+        if self.native.holds_transaction():
+            raise BusyError(_SELF_BLOCKED, status=status)
+        status = retry_busy(call, self.busy_timeout_s)
         if status == STATUS_BUSY:
             raise BusyError("another writer holds the database", status=status)
-        check(status)
-        return Transaction(self, out)
+        return status
 
     def cancel(self) -> None:
         """다른 스레드에서 지금 실행 중인 문장이나 큐 연산 하나를 취소한다.
@@ -286,6 +354,7 @@ class Database:
         status = _lib.streamlite_close(ctypes.byref(self._handle))
         check(status)
         self._handle = None
+        self._finalizer.detach()
 
     def __enter__(self) -> Database:
         return self
@@ -297,11 +366,18 @@ class Database:
 
 
 class Transaction:
-    """여러 문장을 하나로 확정하거나 모두 버린다. with 블록은 예외가 없으면 commit, 있으면 rollback한다."""
+    """여러 문장을 하나로 확정하거나 모두 버린다. with 블록은 예외가 없으면 commit, 있으면 rollback한다.
+
+    commit·rollback 없이 참조를 잃으면(또는 인터프리터가 끝나면) rollback된다. 수거 시점은 정해져 있지 않으므로
+    writer를 제때 놓으려면 with 블록이나 명시적 commit·rollback을 쓴다.
+    """
 
     def __init__(self, db: Database, handle: ctypes.c_void_p) -> None:
         self.db = db
         self._handle: ctypes.c_void_p | None = handle
+        self._native = db.native
+        self._native.txn_threads[id(handle)] = threading.get_ident()
+        self._finalizer = weakref.finalize(self, self._native.finalize, handle, _lib.streamlite_rollback)
 
     @property
     def handle(self) -> ctypes.c_void_p:
@@ -321,13 +397,20 @@ class Transaction:
 
     def commit(self) -> None:
         """확정한다. 결과를 알 수 없으면 UncertainError이며 성공으로 취급하면 안 된다."""
-        handle, self._handle = self.handle, None
+        handle = self._release()
         check(_lib.streamlite_commit(ctypes.byref(handle)))
 
     def rollback(self) -> None:
         """모두 버린다."""
-        handle, self._handle = self.handle, None
+        handle = self._release()
         check(_lib.streamlite_rollback(ctypes.byref(handle)))
+
+    def _release(self) -> ctypes.c_void_p:
+        """핸들을 꺼내고 이 객체를 끝난 상태로 만든다. 그 뒤의 commit·rollback 한 번이 핸들을 소비한다."""
+        handle, self._handle = self.handle, None
+        self._finalizer.detach()
+        self._native.txn_threads.pop(id(handle), None)
+        return handle
 
     def __enter__(self) -> Transaction:
         return self

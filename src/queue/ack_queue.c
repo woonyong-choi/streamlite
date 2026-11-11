@@ -6,7 +6,11 @@
  * 상태별 조회는 state 보조 색인(같은 상태 안에서 id 순서)과 ORDER BY id LIMIT으로 맞는 행 k개만 읽는다.
  *
  * key 보존 테이블 streamlite_queue_<name>_keys: seq(identity), idem(유일 색인), job(지운 작업 id), digest(payload 요약),
- * expires_at. purge가 key 있는 작업을 지울 때 넣고, 넣는 순서(seq)가 곧 만료 순서라 앞에서부터 만료된 것만 지운다.
+ * expires_at. purge가 key 있는 작업을 지울 때 넣는다. 보존 기간은 핸들의 옵션이라 넣는 순서(seq)가 만료 순서라는
+ * 보장이 없으므로 만료 시각(expires_at)으로 골라 지운다.
+ *
+ * 내부 이름: 큐 하나가 테이블 둘(<table>, <table>_keys)과 색인 셋(<table>_state, <table>_idem, <table>_keys_idem)을 쓴다.
+ * 그래서 _keys·_state·_idem으로 끝나는 큐 이름은 다른 큐의 내부 이름과 겹칠 수 있어 새로 만들지 않는다.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -24,6 +28,10 @@
 
 /* 상태별 조회(claim·recover·purge)와 idempotency key 조회가 쓰는 보조 색인의 열 */
 static const char *const INDEXED[] = {"state", "idem"};
+/* 새 큐 이름이 이렇게 끝나면 다른 큐의 key 테이블·색인 이름과 겹칠 수 있다 */
+static const char *const RESERVED_SUFFIXES[] = {ACKQ_KEYS_SUFFIX, "_state", "_idem"};
+/* 새 큐가 만들 이름(<table> 뒤에 붙는다) 중, 예약 접미어로 끝나는 예전 큐의 테이블 이름과 같을 수 있는 것 */
+static const char *const OWN_SUFFIXES[] = {ACKQ_KEYS_SUFFIX, "_state", "_idem", ACKQ_KEYS_SUFFIX "_idem"};
 
 typedef struct {
     uint64_t id;
@@ -353,6 +361,55 @@ ackq_status_t ackq_open(session_t *session, const ackq_options_t *options, ackq_
     return ACKQ_OK;
 }
 
+static bool ends_with(const char *text, const char *suffix)
+{
+    size_t length = strlen(text), tail = strlen(suffix);
+    return length >= tail && strcmp(text + length - tail, suffix) == 0;
+}
+
+/* 이름이 name인 테이블이 있는지 본다. 행은 읽지 않는다. */
+static ackq_status_t table_exists(ackq_t *queue, session_t *session, const char *name, bool *exists)
+{
+    char sql[ACKQ_SQL_MAX];
+    result_t *result = NULL;
+    result_error_class_t error_class = RESULT_E_NONE;
+    ackq_scope_t scope;
+    *exists = false;
+    ackq_status_t status = ackq_scope_open(queue, session, false, &scope);
+    if (status != ACKQ_OK) return status;
+    snprintf(sql, sizeof(sql), "SELECT 1 FROM %s WHERE 1 = 0", name);
+    status = ackq_run(queue, &scope, false, sql, NULL, 0, &result, &error_class);
+    if (status != ACKQ_OK) return error_class == RESULT_E_SEMANTIC ? ACKQ_OK : status;
+    result_row_t row;
+    result_next_t next;
+    while ((next = result_next(result, &row)) == RESULT_NEXT_ROW) {}
+    status = ackq_finish_rows(next, result);
+    result_release(&result);
+    *exists = status == ACKQ_OK;
+    return status;
+}
+
+/*
+ * 새로 만들 큐의 이름이 다른 큐의 내부 테이블·색인 이름과 겹치는지 본다. 겹치면 아무것도 만들지 않고 ACKQ_INVALID다.
+ * 예약 접미어로 끝나는 이름은 짝이 되는 큐가 지금 없어도 거절한다(나중에 그 큐를 만들 때 겹친다). 이 규칙 전에 만든
+ * 파일에는 그런 이름의 큐가 있을 수 있으므로, 이 큐가 만들 이름과 같은 테이블이 이미 있는지도 본다.
+ */
+static ackq_status_t check_new_name(ackq_t *queue, session_t *session)
+{
+    char other[sizeof(queue->keys) + 8];
+    for (size_t i = 0; i < sizeof(RESERVED_SUFFIXES) / sizeof(RESERVED_SUFFIXES[0]); i++) {
+        if (ends_with(queue->name, RESERVED_SUFFIXES[i])) return ACKQ_INVALID;
+    }
+    for (size_t i = 0; i < sizeof(OWN_SUFFIXES) / sizeof(OWN_SUFFIXES[0]); i++) {
+        bool exists = false;
+        snprintf(other, sizeof(other), "%s%s", queue->table, OWN_SUFFIXES[i]);
+        ackq_status_t status = table_exists(queue, session, other, &exists);
+        if (status != ACKQ_OK) return status;
+        if (exists) return ACKQ_INVALID;
+    }
+    return ACKQ_OK;
+}
+
 static ackq_status_t create_table(ackq_t *queue, session_t *session)
 {
     char sql[ACKQ_SQL_MAX];
@@ -421,8 +478,12 @@ ackq_status_t ackq_install(session_t *session, const ackq_options_t *options, ac
     if (status != ACKQ_OK) return status;
     status = probe_table(queue, session);
     if (status == ACKQ_NOT_INSTALLED) {
-        status = create_table(queue, session);
-        /* 다른 설치가 먼저 만들었을 수 있다. 같은 이름의 테이블이 있으면 그것을 쓴다. */
+        status = check_new_name(queue, session);
+        if (status == ACKQ_OK) status = create_table(queue, session);
+        /*
+         * 다른 설치가 먼저 만들었을 수 있다. 같은 이름의 테이블이 있으면 그것을 쓴다. 그 사이에 만들어졌다면 이름 검사가
+         * 본 것도 이 큐 자신의 key 테이블이므로 INVALID여도 다시 확인한다(겹치는 이름이면 이 큐의 테이블은 여전히 없다).
+         */
         if (status != ACKQ_OK && probe_table(queue, session) == ACKQ_OK) status = ensure_indexes(queue, session);
     } else if (status == ACKQ_OK) {
         status = ensure_indexes(queue, session);
@@ -899,15 +960,25 @@ ackq_status_t ackq_update(ackq_t *queue, session_t *session, uint64_t id, uint64
 
 /* ── 회복·정리·조회 ── */
 
-static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta)
+/*
+ * LEASED 한 건의 claim을 끝낸다. fence를 1 올려 옛 claim의 ack·nack·fail·extend·update가 모두 STALE이 되게 한다
+ * (READY로 돌아간 것만으로는 같은 claim의 중복 nack과 구분되지 않는다). 만료(expired)이고 시도 횟수가 max_attempts에
+ * 닿았으면 FAILED로, 아니면 READY로 돌린다. 호출자의 판단으로 푸는 release는 작업의 실패가 아니므로 시도 횟수를 보지 않는다.
+ */
+static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, bool expired)
 {
     char sql[ACKQ_SQL_MAX];
-    if (queue->max_attempts > 0 && meta->attempts >= (int64_t)queue->max_attempts) {
-        return set_terminal(queue, scope, meta->id, ACKQ_STATE_FAILED, NOTE_MAX_ATTEMPTS);
+    if (meta->fence == INT64_MAX) return ACKQ_LIMIT;
+    int64_t fence = meta->fence + 1;
+    if (expired && queue->max_attempts > 0 && meta->attempts >= (int64_t)queue->max_attempts) {
+        snprintf(sql, sizeof(sql), "UPDATE %s SET state = ?, lease_until = 0, fence = ?, note = ? WHERE id = ?", queue->table);
+        value_view_t failed[4] = {ackq_int(ACKQ_STATE_FAILED), ackq_int(fence), ackq_text(NOTE_MAX_ATTEMPTS),
+                                  ackq_int((int64_t)meta->id)};
+        return run_one_row(queue, scope, sql, failed, 4);
     }
-    snprintf(sql, sizeof(sql), "UPDATE %s SET state = 0, lease_until = 0 WHERE id = ?", queue->table);
-    value_view_t param = ackq_int((int64_t)meta->id);
-    return run_one_row(queue, scope, sql, &param, 1);
+    snprintf(sql, sizeof(sql), "UPDATE %s SET state = 0, lease_until = 0, fence = ? WHERE id = ?", queue->table);
+    value_view_t params[2] = {ackq_int(fence), ackq_int((int64_t)meta->id)};
+    return run_one_row(queue, scope, sql, params, 2);
 }
 
 static ackq_status_t return_leases(ackq_t *queue, session_t *session, size_t limit, bool only_expired,
@@ -924,13 +995,13 @@ static ackq_status_t return_leases(ackq_t *queue, session_t *session, size_t lim
         free(top.items);
         return status;
     }
-    /* 시도 횟수 조건 없이 만료만 본다(release는 만료와 무관). 시도 횟수를 다 쓴 작업은 return_one이 FAILED로 끝낸다 */
+    /* 시도 횟수 조건 없이 만료만 본다(release는 만료와 무관). 시도 횟수를 다 쓴 만료 작업은 return_one이 FAILED로 끝낸다 */
     value_view_t params[3] = {ackq_int(ACKQ_STATE_LEASED), ackq_int(only_expired ? now : INT64_MAX),
                               ackq_int((int64_t)limit)};
     status = scan_meta(queue, &scope, " WHERE state = ? AND lease_until <= ? ORDER BY id LIMIT ?", params, 3, &top);
     size_t done = 0;
     for (size_t i = 0; status == ACKQ_OK && i < top.count; i++) {
-        status = return_one(queue, &scope, &top.items[i]);
+        status = return_one(queue, &scope, &top.items[i], only_expired);
         if (status == ACKQ_OK) done++;
     }
     free(top.items);
@@ -991,30 +1062,30 @@ static ackq_status_t retain_key(ackq_t *queue, ackq_scope_t *scope, uint64_t id)
     return status;
 }
 
-/* 넣은 순서(seq)대로 앞에서부터 만료된 key를 최대 limit개 지우고, 만료 전 key를 만나면 멈춘다. */
+/*
+ * 만료 시각이 지난 key를 seq가 작은 것부터 최대 limit개 지운다. expires_at에는 색인이 없어 만료된 key가 limit개보다
+ * 적으면 key 테이블 전체를 읽는다(만료 전 key를 건너뛰어야 뒤의 만료된 key를 찾는다).
+ */
 static ackq_status_t expire_keys(ackq_t *queue, ackq_scope_t *scope, size_t limit)
 {
     char sql[ACKQ_SQL_MAX];
     result_t *result = NULL;
-    snprintf(sql, sizeof(sql), "SELECT seq, expires_at FROM %s ORDER BY seq LIMIT ?", queue->keys);
-    value_view_t param = ackq_int((int64_t)limit);
-    ackq_status_t status = ackq_run(queue, scope, false, sql, &param, 1, &result, NULL);
+    snprintf(sql, sizeof(sql), "SELECT seq FROM %s WHERE expires_at <= ? ORDER BY seq LIMIT ?", queue->keys);
+    value_view_t params[2] = {ackq_int((int64_t)ackq_now(queue)), ackq_int((int64_t)limit)};
+    ackq_status_t status = ackq_run(queue, scope, false, sql, params, 2, &result, NULL);
     if (status != ACKQ_OK) return status;
-    int64_t now = (int64_t)ackq_now(queue);
     int64_t *expired = calloc(limit, sizeof(*expired));
     size_t count = 0;
-    bool stopped = false;
     if (expired == NULL) status = ACKQ_NOMEM;
     result_row_t row;
     result_next_t next;
     while ((next = result_next(result, &row)) == RESULT_NEXT_ROW) {
-        if (status != ACKQ_OK || stopped) continue;
-        if (row.cell_count < 2 || row.cells[0].type != VALUE_INTEGER || row.cells[1].type != VALUE_INTEGER) {
+        if (status != ACKQ_OK) continue;
+        if (row.cell_count < 1 || row.cells[0].type != VALUE_INTEGER || count >= limit) {
             status = ACKQ_INTERNAL;
             continue;
         }
-        if (row.cells[1].integer > now) stopped = true;
-        else expired[count++] = row.cells[0].integer;
+        expired[count++] = row.cells[0].integer;
     }
     ackq_status_t finished = ackq_finish_rows(next, result);
     result_release(&result);

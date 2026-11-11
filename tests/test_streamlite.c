@@ -7,6 +7,7 @@
  *   - 다른 database의 트랜잭션을 streamlite_exec·streamlite_queue_*가 실행 전에 거절한다
  *   - 살아 있는 큐·트랜잭션 핸들이 있으면 streamlite_close가 BUSY이고 핸들은 그대로다
  *   - 여러 스레드가 실행·인코딩을 번갈아 불러도 결과가 깨지지 않는다(잠금 구간이 결과 소비까지 이어진다)
+ *   - 표시가 없는(닫힌) 핸들을 따라가기 전에 거절하고, 트랜잭션 상태를 읽는 호출도 mutex로 직렬화한다(#273)
  * 합성 데이터만 쓴다.
  */
 #include <pthread.h>
@@ -329,6 +330,79 @@ static void test_handle_lifetime(void)
     streamlite_close(&db);
 }
 
+/* ── #273: 닫혔거나 핸들이 아닌 포인터, 트랜잭션 상태를 읽는 호출의 직렬화 ── */
+
+typedef struct {
+    streamlite_db_t *db;
+    streamlite_txn_t *txn;
+    int errors;
+} failing_t;
+
+static void *failing_main(void *arg)
+{
+    failing_t *f = arg;
+    for (int i = 0; i < 200; i++) {
+        uint8_t *buf = NULL;
+        size_t size = 0;
+        /* 없는 테이블: 문장 오류가 트랜잭션을 실패 상태로 만든다 */
+        if (streamlite_exec(f->db, f->txn, "INSERT INTO missing VALUES (1)", NULL, 0, &buf, &size) != STREAMLITE_OK) f->errors++;
+        streamlite_free(buf);
+    }
+    return NULL;
+}
+
+static void test_handle_guard(void)
+{
+    printf("\n[#273 닫힌 핸들 표시와 txn_failed 직렬화]\n");
+    make_db();
+    /* 표시가 없는 메모리(닫으면서 표시를 지운 핸들과 같은 모양)는 잠그거나 따라가기 전에 거절한다 */
+    static uint64_t blank[64];
+    streamlite_db_t *no_db = (streamlite_db_t *)(void *)blank;
+    streamlite_queue_t *no_queue = (streamlite_queue_t *)(void *)blank;
+    streamlite_txn_t *no_txn = (streamlite_txn_t *)(void *)blank;
+    uint8_t *buf = NULL;
+    size_t size = 0, n = 0;
+    uint64_t id = 0, counts[4];
+    streamlite_queue_item_t item;
+    streamlite_txn_t *txn = NULL;
+    streamlite_queue_t *q = NULL;
+    CHECK(streamlite_exec(no_db, NULL, "SELECT 1", NULL, 0, &buf, &size) == STREAMLITE_INVALID && buf == NULL, "exec");
+    CHECK(streamlite_begin(no_db, &txn) == STREAMLITE_INVALID && txn == NULL, "begin");
+    CHECK(streamlite_queue_open(no_db, "jobs", 1, NULL, &q) == STREAMLITE_INVALID && q == NULL, "queue_open");
+    CHECK(streamlite_close(&no_db) == STREAMLITE_DB_INVALID && no_db == (streamlite_db_t *)(void *)blank, "close는 건드리지 않는다");
+    streamlite_cancel(no_db);
+    CHECK(streamlite_queue_put(no_queue, NULL, (const uint8_t *)"x", 1, NULL, &id, NULL) == STREAMLITE_INVALID, "put");
+    CHECK(streamlite_queue_get(no_queue, NULL, 0, 100, &item) == STREAMLITE_INVALID, "get");
+    CHECK(streamlite_queue_ack(no_queue, NULL, 1, 1) == STREAMLITE_INVALID, "ack");
+    CHECK(streamlite_queue_stats(no_queue, NULL, counts) == STREAMLITE_INVALID, "stats");
+    CHECK(streamlite_queue_purge(no_queue, NULL, 0, 1, &n) == STREAMLITE_INVALID, "purge");
+    streamlite_queue_close(&no_queue);
+    CHECK(no_queue == (streamlite_queue_t *)(void *)blank, "queue_close는 건드리지 않는다");
+    CHECK(streamlite_txn_failed(no_txn) == 0, "txn_failed");
+    CHECK(streamlite_commit(&no_txn) == STREAMLITE_INVALID && no_txn == (streamlite_txn_t *)(void *)blank, "commit");
+    CHECK(streamlite_rollback(&no_txn) == STREAMLITE_INVALID, "rollback");
+
+    streamlite_db_t *db = open_capi_db("main");
+    assert(streamlite_queue_open(db, "jobs", 1, NULL, &q) == STREAMLITE_OK);
+    CHECK(streamlite_exec(db, no_txn, "SELECT 1", NULL, 0, &buf, &size) == STREAMLITE_INVALID && buf == NULL, "끝난 트랜잭션으로 exec");
+    CHECK(streamlite_queue_put(q, no_txn, (const uint8_t *)"x", 1, NULL, &id, NULL) == STREAMLITE_INVALID, "끝난 트랜잭션으로 put");
+    CHECK(streamlite_queue_stats(q, NULL, counts) == STREAMLITE_OK && counts[0] == 0, "거절한 put은 반영되지 않았다");
+
+    /* 한 스레드가 트랜잭션 안에서 실행하는 동안 다른 스레드가 상태를 읽는다(mutex로 직렬화. TSan 빌드가 경합을 본다) */
+    assert(streamlite_begin(db, &txn) == STREAMLITE_OK);
+    CHECK(streamlite_txn_failed(txn) == 0, "새 트랜잭션은 실패 상태가 아니다");
+    failing_t failing = {db, txn, 0};
+    pthread_t thread;
+    pthread_create(&thread, NULL, failing_main, &failing);
+    int seen = 0;
+    for (int i = 0; i < 2000; i++) seen += streamlite_txn_failed(txn);
+    pthread_join(thread, NULL);
+    CHECK(failing.errors == 0 && seen >= 0 && streamlite_txn_failed(txn) == 1, "문장 오류 뒤 실패 상태");
+    CHECK(streamlite_rollback(&txn) == STREAMLITE_OK && txn == NULL, "rollback");
+    streamlite_queue_close(&q);
+    CHECK(streamlite_close(&db) == STREAMLITE_OK && db == NULL, "close");
+}
+
 /* ── 6. 여러 스레드가 실행과 인코딩을 번갈아 부른다 ── */
 
 typedef struct {
@@ -505,6 +579,7 @@ int main(void)
     test_allocation_failure();
     test_wrong_database_transaction();
     test_handle_lifetime();
+    test_handle_guard();
     test_threads();
     test_queue_round_trip();
     printf("\ntest_streamlite: %d checks, %d failed\n", g_run, g_fail);

@@ -8,12 +8,21 @@
 
 #include "ack_queue_internal.h"
 
-uint64_t ackq_now(const ackq_t *queue)
+static uint64_t wall_clock_ms(void)
 {
-    if (queue->now_ms != NULL) return queue->now_ms(queue->clock_ctx);
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0 || ts.tv_sec < 0) return 0;   /* 1970년 전의 시계는 0으로 읽는다 */
+    if ((uint64_t)ts.tv_sec > ACKQ_NOW_MAX / 1000u) return UINT64_MAX;       /* 곱셈이 넘치기 전에 범위 밖으로 표시한다 */
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+uint64_t ackq_now(ackq_t *queue)
+{
+    uint64_t raw = queue->now_ms != NULL ? queue->now_ms(queue->clock_ctx) : wall_clock_ms();
+    if (raw > ACKQ_NOW_MAX) raw = 0;   /* 범위 밖 값을 하한으로 삼으면 되돌릴 수 없으므로 버린다 */
+    uint64_t floor = atomic_load(&queue->clock_floor);
+    while (raw > floor && !atomic_compare_exchange_weak(&queue->clock_floor, &floor, raw)) {}
+    return raw > floor ? raw : floor;
 }
 
 value_view_t ackq_int(int64_t value)

@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 from streamlite import (
+    DEFAULT_IDEM_RETENTION_MS,
     DEFAULT_MAX_PAYLOAD_BYTES,
     BusyError,
     ClaimToken,
@@ -122,13 +123,59 @@ def test_queue_retains_idempotency_key_after_purge(db: Database, clock: FakeCloc
     renewed = queue.put(b"mail", "order-1")
     assert not renewed.duplicate and renewed.id != first.id
 
-    plain = Queue(db, "plain", idem_retention_ms=0, clock=clock)
+    plain = Queue(db, "plain", idem_retention_ms=None, clock=clock)
     kept = plain.put(b"x", "k")
     claim = plain.get(100)
     assert claim is not None
     plain.ack(claim)
     assert plain.purge() == 1
     assert plain.put(b"x", "k").id != kept.id
+
+
+def test_queue_idem_retention_zero_means_default_as_in_c(db: Database, clock: FakeClock) -> None:
+    """#273: idem_retention_ms=0은 C 옵션과 같이 기본 7일이다. 남기지 않으려면 None을 준다."""
+    queue = Queue(db, "jobs", idem_retention_ms=0, clock=clock)
+    first = queue.put(b"mail", "order-1")
+    claim = queue.get(100)
+    assert claim is not None
+    queue.ack(claim)
+    assert queue.purge() == 1
+
+    assert queue.put(b"mail", "order-1") == PutResult(first.id, True)
+    clock.now_ms += DEFAULT_IDEM_RETENTION_MS
+    assert queue.put(b"mail", "order-1").duplicate is False
+    with pytest.raises(InvalidArgumentError):
+        Queue(db, "negative", idem_retention_ms=-1)
+
+
+def test_queue_payload_accepts_bytes_like_and_rejects_str(db: Database, clock: FakeClock) -> None:
+    """#273: bytearray·memoryview는 bytes로 바꿔 받고 str은 TypeError로 거절한다."""
+    queue = Queue(db, "jobs", clock=clock)
+    queue.put(bytearray(b"array"))
+    queue.put(memoryview(b"__view__")[2:6])
+    with pytest.raises(TypeError, match="bytes"):
+        queue.put("text")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="bytes"):
+        queue.put(5)  # type: ignore[arg-type]
+
+    first, second = queue.get(100), queue.get(100)
+    assert first is not None and second is not None
+    assert (first.payload, second.payload) == (b"array", b"view")
+    queue.update(first.id, bytearray(b"changed"), fence=first.fence)
+    with pytest.raises(TypeError, match="bytes"):
+        queue.update(first.id, "text", fence=first.fence)  # type: ignore[arg-type]
+    assert queue.list_items(0, 1, with_payload=True)[0].payload == b"changed"
+    assert queue.stats().leased == 2
+
+
+def test_queue_name_colliding_with_internal_names_is_rejected_with_reason(db: Database) -> None:
+    """#273: 다른 큐의 내부 테이블·색인 이름과 겹치는 새 큐 이름은 설명과 함께 거절한다."""
+    queue = Queue(db, "a")
+    for name in ("a_keys", "a_state", "b_idem"):
+        with pytest.raises(InvalidArgumentError, match="_keys"):
+            Queue(db, name)
+    assert queue.put(b"x").id == 1
+    assert Queue(db, "b").put(b"y").id == 1
 
 
 def test_queue_payload_limit_option(db: Database, clock: FakeClock) -> None:

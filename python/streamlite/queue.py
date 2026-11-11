@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ctypes
+import weakref
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from enum import IntEnum
 
 from streamlite._native import CLOCK_FN, LIST_NOTE_BYTES, Item, ListItem, QueueOptions, load_library
-from streamlite.database import Database, Transaction, check, retry_busy
-from streamlite.errors import STATUS_BUSY, STATUS_EMPTY, BusyError, InvalidArgumentError
+from streamlite.database import Database, Transaction, check
+from streamlite.errors import STATUS_EMPTY, InvalidArgumentError
 
 __all__ = [
     "DEFAULT_IDEM_RETENTION_MS",
@@ -30,6 +31,9 @@ _MAX_LIST_PAGE = 1024
 DEFAULT_MAX_PAYLOAD_BYTES = 1 << 20
 DEFAULT_IDEM_RETENTION_MS = 7 * 24 * 3600 * 1000
 _RETENTION_NONE = (1 << 64) - 1
+_STATUS_INVALID = 1
+# 새 큐 이름이 이렇게 끝나면 다른 큐의 key 테이블·색인 이름과 겹칠 수 있다(ack_queue.h의 이름 규칙)
+_RESERVED_NAME_SUFFIXES = ("_keys", "_state", "_idem")
 
 
 class ItemState(IntEnum):
@@ -95,6 +99,16 @@ def _txn_handle(txn: Transaction | None) -> ctypes.c_void_p | None:
     return txn.handle if txn is not None else None
 
 
+def _payload_bytes(payload: bytes | bytearray | memoryview) -> bytes:
+    """payload를 bytes로 바꾼다. str과 그 밖의 형식은 조용히 바꾸지 않고 거절한다(bytes(5)는 0 다섯 개가 된다)."""
+    if isinstance(payload, bytes):
+        return payload
+    if isinstance(payload, (bytearray, memoryview)):
+        return bytes(payload)
+    hint = "; encode it first" if isinstance(payload, str) else ""
+    raise TypeError(f"payload must be bytes, bytearray or memoryview, not {type(payload).__name__}{hint}")
+
+
 class Queue:
     """이름 붙인 큐 하나. 같은 database의 트랜잭션을 txn으로 주면 업무 갱신과 같은 commit으로 확정된다."""
 
@@ -106,22 +120,25 @@ class Queue:
         install: bool = True,
         max_attempts: int = 0,
         max_payload_bytes: int = DEFAULT_MAX_PAYLOAD_BYTES,
-        idem_retention_ms: int = DEFAULT_IDEM_RETENTION_MS,
+        idem_retention_ms: int | None = DEFAULT_IDEM_RETENTION_MS,
         clock: Callable[[], int] | None = None,
     ) -> None:
         """큐를 연다(install이면 없을 때 만든다).
 
         Args:
+            name: 영문·숫자·밑줄 1~40자. 새로 만드는 이름은 _keys·_state·_idem으로 끝날 수 없다(다른 큐의 내부
+                테이블·색인 이름과 겹친다). 이미 있는 큐는 이름과 무관하게 열린다.
             max_attempts: 시도 횟수 상한. 0이면 제한 없음.
             max_payload_bytes: payload 한 건의 상한. 약 3.9 KB 이하가 가장 빠르다.
-            idem_retention_ms: purge 뒤 idempotency key를 남기는 기간. 0이면 남기지 않는다.
-            clock: 밀리초 시계. 없으면 실시간.
+            idem_retention_ms: purge 뒤 idempotency key를 남기는 기간. C 옵션과 같이 0은 기본값(7일)이고,
+                남기지 않으려면 None을 준다.
+            clock: 밀리초 시계. 없으면 실시간. 뒤로 간 값은 이 큐가 읽은 가장 늦은 시각으로 읽는다.
 
         Raises:
-            InvalidArgumentError: 이름이나 옵션이 범위를 벗어날 때.
+            InvalidArgumentError: 이름이나 옵션이 범위를 벗어나거나 새 이름이 다른 큐의 내부 이름과 겹칠 때.
         """
-        if max_payload_bytes <= 0 or idem_retention_ms < 0:
-            raise InvalidArgumentError("max_payload_bytes must be positive and idem_retention_ms non-negative")
+        if max_payload_bytes <= 0 or (idem_retention_ms is not None and idem_retention_ms < 0):
+            raise InvalidArgumentError("max_payload_bytes must be positive and idem_retention_ms non-negative or None")
         self.db = db
         self.name = name
         self._clock = clock
@@ -129,22 +146,23 @@ class Queue:
         options = QueueOptions(
             max_attempts=max_attempts,
             max_payload_bytes=max_payload_bytes,
-            idem_retention_ms=idem_retention_ms if idem_retention_ms > 0 else _RETENTION_NONE,
+            idem_retention_ms=idem_retention_ms if idem_retention_ms is not None else _RETENTION_NONE,
             clock=self._clock_callback,
             clock_ctx=None,
         )
         handle = ctypes.c_void_p()
         # 다른 프로세스가 쓰는 중이면 BUSY다. 다른 큐 호출처럼 busy_timeout_s까지 다시 시도한다
-        status = retry_busy(
+        status = db.wait_for_writer(
             lambda: _lib.streamlite_queue_open(
                 db.handle, name.encode("utf-8"), 1 if install else 0, ctypes.byref(options), ctypes.byref(handle)
-            ),
-            db.busy_timeout_s,
+            )
         )
-        if status == STATUS_BUSY:
-            raise BusyError("another writer holds the database", status=status)
+        if status == _STATUS_INVALID:
+            raise InvalidArgumentError(_invalid_open_reason(name), status=status)
         check(status)
         self._handle: ctypes.c_void_p | None = handle
+        # close 없이 참조를 잃어도 native 큐 핸들을 닫는다. DB가 닫힐 때는 등록된 큐가 먼저 닫힌다
+        self._finalizer = weakref.finalize(self, db.native.finalize, handle, _lib.streamlite_queue_close)
         try:
             db.register_queue(self)
         except MemoryError:
@@ -158,8 +176,15 @@ class Queue:
             raise ValueError("queue is closed")
         return self._handle
 
-    def put(self, payload: bytes, idem_key: str | None = None, *, txn: Transaction | None = None) -> PutResult:
-        """작업을 넣는다. 같은 key·같은 payload는 기존 작업을 돌려준다(ConflictError: payload가 다름)."""
+    def put(
+        self, payload: bytes | bytearray | memoryview, idem_key: str | None = None, *, txn: Transaction | None = None
+    ) -> PutResult:
+        """작업을 넣는다. 같은 key·같은 payload는 기존 작업을 돌려준다(ConflictError: payload가 다름).
+
+        Raises:
+            TypeError: payload가 bytes·bytearray·memoryview가 아닐 때(str은 먼저 encode한다).
+        """
+        payload = _payload_bytes(payload)
         job_id = ctypes.c_uint64()
         duplicate = ctypes.c_int()
         key = idem_key.encode("utf-8") if idem_key is not None else None
@@ -240,8 +265,11 @@ class Queue:
         )
         return bool(terminal.value)
 
-    def update(self, item_id: int, payload: bytes, *, fence: int = 0, txn: Transaction | None = None) -> None:
+    def update(
+        self, item_id: int, payload: bytes | bytearray | memoryview, *, fence: int = 0, txn: Transaction | None = None
+    ) -> None:
         """payload를 바꾼다. fence 0은 아직 claim하지 않은 작업, 아니면 그 claim이 유효한 작업만 된다."""
+        payload = _payload_bytes(payload)
         check(
             self._call(
                 lambda: _lib.streamlite_queue_update(self.handle, _txn_handle(txn), item_id, fence, payload, len(payload)),
@@ -250,11 +278,18 @@ class Queue:
         )
 
     def recover(self, limit: int = _MAX_LIST_PAGE) -> int:
-        """lease가 만료된 작업을 대기로(시도가 다 되었으면 terminal로) 돌리고 처리한 수를 돌려준다."""
+        """lease가 만료된 작업을 대기로(시도가 다 되었으면 terminal로) 돌리고 처리한 수를 돌려준다.
+
+        돌려놓은 작업의 옛 claim은 끝난다(ack·nack이 StaleError). 살아 있는 lease는 건드리지 않는다.
+        """
         return self._count_call(_lib.streamlite_queue_recover, limit)
 
     def release_leases(self, limit: int = _MAX_LIST_PAGE) -> int:
-        """worker가 모두 죽었다고 아는 호출자가 모든 처리 중 작업을 만료와 무관하게 대기로 돌린다."""
+        """worker가 모두 죽었다고 아는 호출자가 모든 처리 중 작업을 만료와 무관하게 대기로 돌린다.
+
+        살아 있는 worker가 있으면 그 claim이 끝나 ack가 StaleError가 되고 작업이 중복 전달된다. 해제는 실패가 아니므로
+        시도 횟수를 다 쓴 작업도 terminal이 아닌 대기로 돌아가 한 번 더 전달된다.
+        """
         return self._count_call(_lib.streamlite_queue_release_leases, limit)
 
     def purge(self, limit: int = _MAX_LIST_PAGE, *, include_failed: bool = False) -> int:
@@ -314,6 +349,7 @@ class Queue:
         if self._handle is not None:
             _lib.streamlite_queue_close(ctypes.byref(self._handle))
             self._handle = None
+            self._finalizer.detach()
             self.db.unregister_queue(self)
 
     def _count_call(self, function: Callable[..., int], limit: int) -> int:
@@ -322,13 +358,26 @@ class Queue:
         return count.value
 
     def _call(self, call: Callable[[], int], txn: Transaction | None) -> int:
-        """자기 트랜잭션을 여는 호출만 BUSY를 기다려 다시 시도한다. 호출자의 트랜잭션 안에서는 기다리지 않는다."""
+        """자기 트랜잭션을 여는 호출만 BUSY를 기다려 다시 시도한다. 호출자의 트랜잭션 안에서는 기다리지 않는다.
+
+        지금 스레드가 같은 DB에 트랜잭션을 연 채 txn 없이 부르면 기다려도 풀리지 않으므로 바로 BusyError다.
+        """
         if txn is not None:
             return call()
-        status = retry_busy(call, self.db.busy_timeout_s)
-        if status == STATUS_BUSY:
-            raise BusyError("another writer holds the database", status=status)
-        return status
+        return self.db.wait_for_writer(call)
+
+
+def _invalid_open_reason(name: str) -> str:
+    reserved = ", ".join(_RESERVED_NAME_SUFFIXES)
+    if name.endswith(_RESERVED_NAME_SUFFIXES):
+        return (
+            f"INVALID (status 1): cannot create queue {name!r}: new queue names must not end with {reserved} "
+            "(they collide with the key table and index names of another queue)"
+        )
+    return (
+        f"INVALID (status 1): queue {name!r} has an invalid name or options, or it cannot be created because an "
+        f"existing queue whose name ends with {reserved} already uses its internal table or index names"
+    )
 
 
 def _to_info(raw: ListItem, *, with_payload: bool) -> ItemInfo:
