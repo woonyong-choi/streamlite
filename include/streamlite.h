@@ -114,7 +114,8 @@ typedef struct {
      * 다른 writer(다른 프로세스·같은 db의 다른 트랜잭션)가 쓰는 동안 streamlite_begin, txn 없이 부른 큐 변경 연산, 자동 commit
      * 변경 문장이 STREAMLITE_BUSY 대신 다시 시도하는 시간의 상한(밀리초). 0이면 기다리지 않는다. 기다리는 동안 db의 mutex를
      * 쥐지 않는다(잠깐씩 쉬며 다시 시도한다). 이 db에 열린 트랜잭션이 있으면 그 트랜잭션이 끝나야 풀리므로 그 트랜잭션을 연
-     * 스레드가 이 시간 동안 같은 db의 다른 쓰기를 부르면 그만큼 기다린 뒤 BUSY다.
+     * 스레드가 이 시간 동안 같은 db의 다른 쓰기를 부르면 그만큼 기다린 뒤 BUSY다. 기다리는 동안 streamlite_cancel이 오면 다시
+     * 시도하지 않고 끝낸다(streamlite_cancel).
      */
     uint32_t busy_timeout_ms;
 } streamlite_open_options_t;
@@ -135,6 +136,9 @@ int streamlite_close(streamlite_db_t **db);
  * 지금 실행 중인 문장이나 큐 연산 하나를 취소한다. mutex를 쥐지 않으므로 다른 스레드에서 부른다. 취소된 문장은
  * RESULT_E_CANCELLED 오류 결과(큐 연산은 STREAMLITE_CANCELLED)이며 게시를 시작한 문장은 실제 결과로 끝난다. 끝나는 순간과
  * 겹친 요청은 같은 세션의 다음 문장 하나에 적용될 수 있다(session_cancel 계약).
+ * busy_timeout_ms로 BUSY를 다시 시도하려고 기다리는 호출도 취소한다. 그 호출이 시작된 뒤 streamlite_cancel이 불렸으면 다음
+ * 시도 전에(쉬는 간격은 20ms 이하) 멈추고 아무것도 반영하지 않는다. streamlite_begin과 큐 연산은 STREAMLITE_CANCELLED,
+ * streamlite_exec는 실행 중 취소와 같은 RESULT_E_CANCELLED 오류 결과다. 이 db를 쓰는 다른 스레드의 대기 호출도 모두 끝난다.
  */
 void streamlite_cancel(streamlite_db_t *db);
 

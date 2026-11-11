@@ -43,6 +43,7 @@ struct streamlite_db {
     size_t live_queues;           /* mutex 안에서만 바꾼다 */
     size_t live_txns;
     uint32_t busy_timeout_ms;     /* 열 때 정하고 바꾸지 않는다 */
+    _Atomic uint64_t cancel_epoch;  /* streamlite_cancel마다 1 오른다. BUSY 재시도 대기가 취소를 알아보는 데 쓴다 */
     pid_t owner;                  /* 연 프로세스. fork한 자식은 mutex를 잡기 전에 거절한다 */
 };
 
@@ -222,6 +223,7 @@ int streamlite_close(streamlite_db_t **db)
 void streamlite_cancel(streamlite_db_t *db)
 {
     if (!live_db(db) || forked(db)) return;
+    atomic_fetch_add(&db->cancel_epoch, 1);
     pthread_mutex_lock(&db->cancel_lock);
     if (db->running != NULL) session_cancel(db->running);
     pthread_mutex_unlock(&db->cancel_lock);
@@ -243,11 +245,16 @@ static session_t *session_for(streamlite_db_t *db, streamlite_txn_t *txn)
 /*
  * writer를 얻지 못한 호출(BUSY)을 db의 busy_timeout_ms까지 다시 시도하는 상태. mutex 밖에서 쉰다. 쉬는 간격은 0.5ms에서
  * 20ms까지 두 배씩 늘린다. BUSY는 실행 전 거절이라 반영된 것이 없으므로 같은 호출을 다시 해도 된다.
+ * 대기 중에는 실행 중인 세션이 없어 session_cancel이 닿지 않는다. 그래서 호출을 시작할 때 db의 취소 세대를 기억하고, 쉬기
+ * 전후에 세대가 바뀌었으면(그 사이 streamlite_cancel) 다시 시도하지 않고 cancelled로 끝낸다.
  */
 typedef struct {
+    streamlite_db_t *db;
     uint32_t timeout_ms;
     uint64_t deadline_us;
     uint64_t pause_us;
+    uint64_t epoch;
+    bool cancelled;
 } busy_wait_t;
 
 static uint64_t monotonic_us(void)
@@ -257,17 +264,24 @@ static uint64_t monotonic_us(void)
     return (uint64_t)now.tv_sec * 1000000u + (uint64_t)now.tv_nsec / 1000u;
 }
 
-static busy_wait_t busy_wait_start(const streamlite_db_t *db, bool allowed)
+static busy_wait_t busy_wait_start(streamlite_db_t *db, bool allowed)
 {
-    busy_wait_t wait = {allowed ? db->busy_timeout_ms : 0, 0, 500};
+    busy_wait_t wait = {db, allowed ? db->busy_timeout_ms : 0, 0, 500, atomic_load(&db->cancel_epoch), false};
     if (wait.timeout_ms > 0) wait.deadline_us = monotonic_us() + (uint64_t)wait.timeout_ms * 1000u;
     return wait;
 }
 
-/* 아직 다시 시도할 시간이 남았는지 */
-static bool busy_wait_pending(const busy_wait_t *wait)
+/* 호출을 시작한 뒤 streamlite_cancel이 왔는지. 왔으면 cancelled를 남긴다 */
+static bool busy_wait_cancelled(busy_wait_t *wait)
 {
-    return wait->timeout_ms > 0 && monotonic_us() < wait->deadline_us;
+    if (!wait->cancelled) wait->cancelled = atomic_load(&wait->db->cancel_epoch) != wait->epoch;
+    return wait->cancelled;
+}
+
+/* 아직 다시 시도할 시간이 남았고 취소되지 않았는지 */
+static bool busy_wait_pending(busy_wait_t *wait)
+{
+    return wait->timeout_ms > 0 && !busy_wait_cancelled(wait) && monotonic_us() < wait->deadline_us;
 }
 
 /* 남은 시간 안에서 잠깐 쉰다. mutex 밖에서 부른다 */
@@ -281,12 +295,12 @@ static void busy_wait_pause(busy_wait_t *wait)
     if (wait->pause_us < 20000) wait->pause_us *= 2;
 }
 
-/* 한 번 더 시도할 수 있으면 잠깐 쉬고 true다 */
+/* 한 번 더 시도할 수 있으면 잠깐 쉬고 true다. 쉬는 동안 취소되면 false이고 cancelled가 남는다 */
 static bool busy_wait_again(busy_wait_t *wait)
 {
     if (!busy_wait_pending(wait)) return false;
     busy_wait_pause(wait);
-    return true;
+    return !busy_wait_cancelled(wait);
 }
 
 /* 자동 commit 변경 문장이 다른 writer 때문에 실행 전에 거절된 결과인지 */
@@ -434,6 +448,14 @@ static void encode_result(buffer_t *b, result_t *result)
     }
 }
 
+/* BUSY를 다시 시도하려고 기다리는 동안 취소된 문장의 결과. 실행 중에 취소된 문장과 같은 오류 결과다 */
+static void encode_cancelled(buffer_t *b)
+{
+    static const char message[] = "문장이 취소되어 아무것도 반영하지 않았습니다";
+    result_error_t cancelled = {RESULT_E_CANCELLED, DATABASE_CODE_CANCELLED, message, sizeof(message) - 1, false};
+    encode_error(b, &cancelled);
+}
+
 /* 입력 매개변수를 view로 바꾼다. 실패하면 상태를 돌려주고 *views는 NULL이다. */
 static int build_views(const streamlite_param_t *params, size_t count, value_view_t **views)
 {
@@ -497,7 +519,15 @@ int streamlite_exec(streamlite_db_t *db, streamlite_txn_t *txn, const char *sql,
             result_release(&result);
             pthread_mutex_unlock(&db->mutex);
             busy_wait_pause(&wait);
-            continue;
+            if (!busy_wait_cancelled(&wait)) continue;
+            encode_cancelled(&buffer);
+            break;
+        }
+        if (exec_status == DATABASE_EXEC_OK && busy_result(result) && wait.cancelled) {
+            result_release(&result);
+            pthread_mutex_unlock(&db->mutex);
+            encode_cancelled(&buffer);
+            break;
         }
         if (exec_status == DATABASE_EXEC_OK && result != NULL) {
             encode_result(&buffer, result);
@@ -561,6 +591,7 @@ int streamlite_begin(streamlite_db_t *db, streamlite_txn_t **out)
         if (status == STREAMLITE_OK) db->live_txns++;
         pthread_mutex_unlock(&db->mutex);
     } while (status == ACKQ_BUSY && busy_wait_again(&wait));
+    if (status == ACKQ_BUSY && wait.cancelled) status = ACKQ_CANCELLED;
     if (status != STREAMLITE_OK) {
         free(handle);
         return status;
@@ -678,7 +709,8 @@ void streamlite_queue_close(streamlite_queue_t **queue)
 
 /*
  * 큐 연산 공통: 닫힌 큐·끝난 트랜잭션이거나 txn이 이 큐의 database 것이 아니면 잠그기 전에 거절하고, 아니면 mutex 안에서
- * call을 실행한다. txn이 NULL(자기 트랜잭션)이고 BUSY면 busy_timeout_ms까지 mutex 밖에서 쉬며 다시 부른다. call 안의 session은 트랜잭션의 세션이거나 연결의 자동 commit 세션이다. 잠그기 전에 읽는 q->db는 큐
+ * call을 실행한다. txn이 NULL(자기 트랜잭션)이고 BUSY면 busy_timeout_ms까지 mutex 밖에서 쉬며 다시 부르고, 그동안
+ * streamlite_cancel이 오면 ACKQ_CANCELLED로 끝낸다. call 안의 session은 트랜잭션의 세션이거나 연결의 자동 commit 세션이다. 잠그기 전에 읽는 q->db는 큐
  * 핸들이 살아 있는 동안 바뀌지 않고, 살아 있는 큐가 있으면 streamlite_close가 BUSY라 그 db도 살아 있다.
  */
 #define QUEUE_CALL(q, txn, call)                                              \
@@ -696,6 +728,7 @@ void streamlite_queue_close(streamlite_queue_t **queue)
             set_running((q)->db, NULL);                                       \
             pthread_mutex_unlock(&(q)->db->mutex);                            \
         } while (status == ACKQ_BUSY && busy_wait_again(&busy_wait));         \
+        if (status == ACKQ_BUSY && busy_wait.cancelled) status = ACKQ_CANCELLED; \
     } while (0)
 
 int streamlite_queue_put(streamlite_queue_t *q, streamlite_txn_t *txn, const uint8_t *payload, size_t size, const char *idem_key, uint64_t *id,

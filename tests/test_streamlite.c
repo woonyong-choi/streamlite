@@ -644,6 +644,94 @@ static void test_open_options(void)
     streamlite_close(&db);
 }
 
+/* ── #260 busy_timeout_ms로 기다리는 동안의 취소 ── */
+
+typedef enum { WAIT_BEGIN, WAIT_EXEC, WAIT_QUEUE } wait_kind_t;
+
+typedef struct {
+    streamlite_db_t *db;
+    streamlite_queue_t *queue;
+    wait_kind_t kind;
+    int status;
+    char out[256];
+    uint64_t elapsed_ms;
+} waiter_t;
+
+static uint64_t now_ms_mono(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000u + (uint64_t)now.tv_nsec / 1000000u;
+}
+
+static void *wait_main(void *arg)
+{
+    waiter_t *w = arg;
+    uint64_t start = now_ms_mono();
+    if (w->kind == WAIT_BEGIN) {
+        streamlite_txn_t *txn = NULL;
+        w->status = streamlite_begin(w->db, &txn);
+        if (txn != NULL) streamlite_rollback(&txn);
+    } else if (w->kind == WAIT_EXEC) {
+        w->status = exec_str(w->db, NULL, "INSERT INTO t VALUES (9)", NULL, 0, w->out, sizeof(w->out));
+    } else {
+        uint64_t id = 0;
+        w->status = streamlite_queue_put(w->queue, NULL, (const uint8_t *)"y", 1, NULL, &id, NULL);
+    }
+    w->elapsed_ms = now_ms_mono() - start;
+    return NULL;
+}
+
+/* 다른 핸들의 거래가 writer를 쥔 동안 긴 busy_timeout_ms로 기다리는 호출을 다른 스레드가 취소한다 */
+static void cancel_waiter(streamlite_db_t *db, streamlite_queue_t *q, wait_kind_t kind, waiter_t *w)
+{
+    *w = (waiter_t){db, q, kind, -1, "", 0};
+    pthread_t thread;
+    pthread_create(&thread, NULL, wait_main, w);
+    struct timespec pause = {0, 150 * 1000000L};
+    nanosleep(&pause, NULL);
+    streamlite_cancel(db);
+    pthread_join(thread, NULL);
+}
+
+static void test_cancel_busy_wait(void)
+{
+    printf("\n[#260 busy_timeout_ms 대기 중 취소]\n");
+    fresh_dir();
+    char path[192];
+    snprintf(path, sizeof(path), "%s/cancel.streamlite", g_dir);
+    streamlite_db_t *db = NULL, *other = NULL;
+    streamlite_open_options_t waits = {STREAMLITE_DURABILITY_NORMAL, 10000};
+    CHECK(streamlite_open_ex(path, 1, &waits, &db) == STREAMLITE_OK && streamlite_open(path, 0, &other) == STREAMLITE_OK,
+          "대기 10초 핸들과 다른 핸들");
+    char out[256];
+    CHECK(exec_str(db, NULL, "CREATE TABLE t (id INTEGER PRIMARY KEY)", NULL, 0, out, sizeof(out)) == STREAMLITE_OK, "표");
+    streamlite_queue_t *q = NULL;
+    CHECK(streamlite_queue_open(db, "jobs", 1, NULL, &q) == STREAMLITE_OK, "큐 설치");
+    streamlite_txn_t *holder = NULL;
+    CHECK(streamlite_begin(other, &holder) == STREAMLITE_OK, "다른 핸들의 거래가 writer를 쥔다");
+    waiter_t w;
+    cancel_waiter(db, NULL, WAIT_BEGIN, &w);
+    CHECK(w.status == STREAMLITE_CANCELLED && w.elapsed_ms < 2000, "기다리던 begin은 CANCELLED (%d, %llu ms)", w.status,
+          (unsigned long long)w.elapsed_ms);
+    cancel_waiter(db, NULL, WAIT_EXEC, &w);
+    CHECK(w.status == STREAMLITE_OK && strncmp(w.out, "ERR 8", 5) == 0 && w.elapsed_ms < 2000,
+          "기다리던 자동 commit 변경은 취소 오류 결과 (%s, %llu ms)", w.out, (unsigned long long)w.elapsed_ms);
+    cancel_waiter(db, q, WAIT_QUEUE, &w);
+    CHECK(w.status == STREAMLITE_CANCELLED && w.elapsed_ms < 2000, "기다리던 큐 연산은 CANCELLED (%d, %llu ms)", w.status,
+          (unsigned long long)w.elapsed_ms);
+    streamlite_rollback(&holder);
+    uint64_t id = 0;
+    CHECK(streamlite_queue_put(q, NULL, (const uint8_t *)"z", 1, NULL, &id, NULL) == STREAMLITE_OK && id == 1,
+          "취소한 put은 반영되지 않았고 다음 호출은 정상");
+    CHECK(exec_str(db, NULL, "SELECT COUNT(*) FROM t", NULL, 0, out, sizeof(out)) == STREAMLITE_OK &&
+              strcmp(out, "ROWS[COUNT:1?] (0)") == 0,
+          "취소한 INSERT는 반영되지 않았다 (%s)", out);
+    streamlite_queue_close(&q);
+    streamlite_close(&other);
+    streamlite_close(&db);
+}
+
 /* ── #260 새 파일 생성의 동기화 단계 ── */
 
 static int g_fsync_calls, g_full_calls;
@@ -713,6 +801,7 @@ int main(void)
     test_queue_round_trip();
     test_open_options();
     test_create_durability();
+    test_cancel_busy_wait();
     printf("\ntest_streamlite: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;
