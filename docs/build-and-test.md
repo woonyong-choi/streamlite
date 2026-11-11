@@ -439,9 +439,12 @@ Python 패키지 `streamlite`는 아직 PyPI에 게시하지 않았다. 게시 �
 
 Python 바인딩의 라이브러리 탐색은 [설정](configuration.md#우선순위)을 따른다.
 
-로컬에서 확인하려면 아래처럼 빌드해 설치한다.
+로컬에서 확인하려면 아래처럼 빌드해 설치한다. wheel과 sdist 빌드에는 PyPA `build` 패키지가 필요하다. 표준 라이브러리에 없으므로 빌드에 쓰는 Python 환경에 먼저 `python3 -m pip install build`로 설치한다.
+
+`build`가 설치돼 있지 않은 환경에서 저장소 루트의 `python3 -m build`는 `No module named build.__main__; 'build' is a package and cannot be directly executed`로 실패한다. `-m`은 현재 폴더를 모듈 탐색 경로 맨 앞에 두므로, `make`가 만든 저장소 루트의 `build/` 폴더가 `__init__.py` 없는 이름공간 패키지 `build`로 잡히기 때문이다. 이 메시지는 `build/` 폴더나 `make` 산출물의 문제가 아니라 `build` 패키지가 없다는 뜻이다. `build`를 설치하면 설치된 패키지가 먼저 잡혀 폴더가 남아 있어도 된다. 혼동을 피하려면 Python 3.11 이상에서 `python3 -P -m build`로 현재 폴더를 탐색 경로에서 빼고 실행한다. 그러면 패키지가 없을 때 `No module named build`로 바로 드러난다.
 
 ```sh
+python3 -m pip install build
 python3 -m build
 python3 -m venv build/package-env
 build/package-env/bin/pip install dist/*.whl

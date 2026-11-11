@@ -46,7 +46,7 @@ Flat C API의 `streamlite_open`은 writer 경합을 호출자에게 반환한다
 | `max_payload_bytes` | C `size_t`, Python `int` | `1048576`, 1MiB | payload 한 건의 상한 |
 | `name` | 문자열 | 없음, 필수 | `[A-Za-z0-9_]{1,40}` |
 
-C의 `options=NULL` 또는 0으로 초기화한 옵션은 기본값이다. C의 `idem_retention_ms=0`은 기본 7일이고 `UINT64_MAX`는 purge 뒤 키를 보존하지 않는다. Python의 `idem_retention_ms=0`은 보존하지 않는다는 뜻이며 내부에서 이 sentinel로 변환한다. 일반 보존 기간의 최대는 `3162240000000`밀리초다.
+C의 `options=NULL` 또는 0으로 초기화한 옵션은 기본값이다. C의 `idem_retention_ms=0`은 기본 7일이고 `UINT64_MAX`는 purge 뒤 키를 보존하지 않는다. Python도 `idem_retention_ms=0`은 기본 7일이고, 키를 보존하지 않으려면 `None`을 주며 내부에서 이 sentinel로 변환한다. 일반 보존 기간의 최대는 `3162240000000`밀리초다.
 
 C의 `max_payload_bytes=0`은 기본 1MiB다. Python은 0 이하를 거절한다. 설정 가능한 최대는 `1073741824`바이트지만 payload는 큐 테이블의 한 행에 저장하므로 아래 행 저장 한도(TEXT·BLOB 합 63MiB, `idem`·`note` 포함)를 넘는 `put`·`update`는 `LIMIT`이다. 이름, 키와 reason의 NUL 경계는 [데이터](data.md#sql-값과-바인딩)에 있다. 음수나 범위를 넘는 Python 숫자는 unsigned ctypes 변환 전에 모든 인자에서 일관되게 검사하지 않으므로 자동 보정되는 입력으로 취급하지 않는다.
 
