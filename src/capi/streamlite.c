@@ -166,7 +166,7 @@ int streamlite_open_ex(const char *path, int create, const streamlite_open_optio
     if (access(path, F_OK) != 0) {
         if (!create) return STREAMLITE_DB_NOT_FOUND;
         database_t *fresh = NULL;
-        database_status_t created = database_create(path, &fresh);
+        database_status_t created = database_create_ex(path, txn_options.durability, &fresh);
         if (created != DATABASE_OK) return map_database_status(created);
         if (database_close(fresh) != DATABASE_OK) return STREAMLITE_DB_IO;
     }

@@ -199,7 +199,16 @@ static void release_open_lock(page_file_t *file)
 
 database_status_t database_create(const char *path, database_t **out)
 {
+    return database_create_ex(path, DATABASE_DURABILITY_NORMAL, out);
+}
+
+database_status_t database_create_ex(const char *path, database_durability_t durability, database_t **out)
+{
     if (path == NULL || out == NULL) return DATABASE_INVALID;
+    if (durability != DATABASE_DURABILITY_NORMAL && durability != DATABASE_DURABILITY_FULL &&
+        durability != DATABASE_DURABILITY_OFF) {
+        return DATABASE_INVALID;
+    }
     database_t *db = calloc(1, sizeof(*db));
     if (db == NULL) return DATABASE_NOMEM;
     db->writable = true;
@@ -210,6 +219,9 @@ database_status_t database_create(const char *path, database_t **out)
         errno = saved;
         return from_page_file(created);
     }
+    /* 생성 commit·게시·디렉터리 동기화는 OFF에서도 동기화한다. FULL이면 full_sync다 */
+    page_file_set_durability(db->file, durability == DATABASE_DURABILITY_FULL ? PAGE_FILE_DURABILITY_FULL
+                                                                              : PAGE_FILE_DURABILITY_NORMAL);
     database_status_t status = DATABASE_OK;
     catalog_status_t opened = catalog_open_empty(&db->catalog);
     if (opened != CATALOG_OK) {
@@ -231,7 +243,10 @@ database_status_t database_create(const char *path, database_t **out)
             status = published == PAGE_FILE_OK ? DATABASE_OK : from_page_file(published);
         }
     }
-    if (status == DATABASE_OK) release_open_lock(db->file);
+    if (status == DATABASE_OK) {
+        database_set_durability(db, durability);
+        release_open_lock(db->file);
+    }
     if (status != DATABASE_OK) {
         int saved = errno;
         catalog_close(db->catalog);

@@ -121,7 +121,10 @@ typedef struct {
 
 /* path의 DB를 연다. create가 0이 아니면 없을 때 만든다. 동기화 단계는 NORMAL, busy_timeout_ms는 0이다. */
 int streamlite_open(const char *path, int create, streamlite_db_t **out);
-/* 옵션을 주는 열기. options가 NULL이면 streamlite_open과 같다. 새로 만드는 파일의 생성 자체는 항상 동기화한다. */
+/*
+ * 옵션을 주는 열기. options가 NULL이면 streamlite_open과 같다. 새로 만드는 파일의 생성·게시·디렉터리 동기화는 단계와
+ * 무관하게 항상 하며, FULL이면 그 동기화도 FULL의 방식(Apple 플랫폼은 F_FULLFSYNC)이고 NORMAL·OFF는 fsync(2)다.
+ */
 int streamlite_open_ex(const char *path, int create, const streamlite_open_options_t *options, streamlite_db_t **out);
 /*
  * 살아 있는 큐 핸들(streamlite_queue_t)이나 트랜잭션(streamlite_txn_t)이 있으면 STREAMLITE_BUSY이고 핸들은 그대로다. 먼저 닫는다.

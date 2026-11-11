@@ -137,6 +137,11 @@ typedef enum {
     DATABASE_DURABILITY_OFF = 2
 } database_durability_t;
 
+/*
+ * database_create와 같고 만든 핸들의 동기화 단계를 durability로 둔다. 생성 commit·게시·디렉터리 동기화는 OFF에서도
+ * 동기화하며(NORMAL과 같이 fsync) FULL이면 full_sync다(page_file.h). 알 수 없는 값은 DATABASE_INVALID이고 만들지 않는다.
+ */
+database_status_t database_create_ex(const char *path, database_durability_t durability, database_t **out);
 /* 이 핸들의 다음 commit부터 적용한다. 알 수 없는 값은 DATABASE_INVALID이고 바꾸지 않는다 */
 database_status_t database_set_durability(database_t *db, database_durability_t durability);
 database_durability_t database_durability(const database_t *db);

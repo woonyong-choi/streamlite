@@ -29,6 +29,7 @@ static void *capi_test_realloc(void *pointer, size_t size)
 #undef realloc
 
 #include "ack_queue_test_util.h"
+#include "storage/page_file.h"
 
 #define DIR "__test__streamlite"
 
@@ -643,6 +644,59 @@ static void test_open_options(void)
     streamlite_close(&db);
 }
 
+/* ── #260 새 파일 생성의 동기화 단계 ── */
+
+static int g_fsync_calls, g_full_calls;
+static int (*g_real_fsync)(int fd);
+static int (*g_real_full)(int fd);
+
+static int counting_fsync(int fd)
+{
+    g_fsync_calls++;
+    return g_real_fsync(fd);
+}
+
+static int counting_full(int fd)
+{
+    g_full_calls++;
+    return g_real_full(fd);
+}
+
+/* 새 파일을 durability 단계로 만들어 열고 닫는다. 그동안 부른 동기화 종류를 센다 */
+static int create_counted(const char *name, uint32_t durability)
+{
+    char path[192];
+    snprintf(path, sizeof(path), "%s/%s.streamlite", g_dir, name);
+    page_file_io_t libc = page_file_default_io();
+    g_real_fsync = libc.fsync;
+    g_real_full = libc.full_sync;
+    page_file_io_t counted = libc;
+    counted.fsync = counting_fsync;
+    counted.full_sync = counting_full;
+    page_file_set_default_io(&counted);
+    g_fsync_calls = g_full_calls = 0;
+    streamlite_open_options_t options = {durability, 0};
+    streamlite_db_t *db = NULL;
+    int status = streamlite_open_ex(path, 1, &options, &db);
+    page_file_set_default_io(NULL);
+    if (status == STREAMLITE_OK) streamlite_close(&db);
+    return status;
+}
+
+static void test_create_durability(void)
+{
+    printf("\n[#260 새 파일 생성의 동기화 단계]\n");
+    fresh_dir();
+    CHECK(create_counted("full", STREAMLITE_DURABILITY_FULL) == STREAMLITE_OK, "FULL로 생성");
+    CHECK(g_full_calls >= 3 && g_fsync_calls == 0, "FULL 생성·게시·디렉터리 동기화는 full_sync (fsync %d, full %d)",
+          g_fsync_calls, g_full_calls);
+    CHECK(create_counted("normal", STREAMLITE_DURABILITY_NORMAL) == STREAMLITE_OK, "NORMAL로 생성");
+    CHECK(g_fsync_calls >= 3 && g_full_calls == 0, "NORMAL 생성은 fsync (fsync %d, full %d)", g_fsync_calls, g_full_calls);
+    CHECK(create_counted("off", STREAMLITE_DURABILITY_OFF) == STREAMLITE_OK, "OFF로 생성");
+    CHECK(g_fsync_calls >= 3 && g_full_calls == 0, "OFF도 생성 자체는 fsync로 동기화 (fsync %d, full %d)", g_fsync_calls,
+          g_full_calls);
+}
+
 int main(void)
 {
     set_dir(DIR);
@@ -658,6 +712,7 @@ int main(void)
     test_threads();
     test_queue_round_trip();
     test_open_options();
+    test_create_durability();
     printf("\ntest_streamlite: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;
