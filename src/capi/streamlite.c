@@ -25,6 +25,7 @@
 #include "queue/ack_queue.h"
 #include "sql/result.h"
 #include "sql/session.h"
+#include "storage/le.h"
 #include "../benchmark.h"
 
 /* 살아 있는 핸들의 표시. 닫으면서 0으로 지운다 */
@@ -355,14 +356,15 @@ static void put_u8(buffer_t *b, uint8_t v) { put_bytes(b, &v, 1); }
 
 static void put_u32(buffer_t *b, uint32_t v)
 {
-    uint8_t raw[4] = {(uint8_t)v, (uint8_t)(v >> 8), (uint8_t)(v >> 16), (uint8_t)(v >> 24)};
+    uint8_t raw[4];
+    le_put_u32(raw, v);
     put_bytes(b, raw, 4);
 }
 
 static void put_u64(buffer_t *b, uint64_t v)
 {
     uint8_t raw[8];
-    for (int i = 0; i < 8; i++) raw[i] = (uint8_t)(v >> (8 * i));
+    le_put_u64(raw, v);
     put_bytes(b, raw, 8);
 }
 

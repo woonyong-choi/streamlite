@@ -2411,8 +2411,7 @@ static heap_status_t write_directory_page(heap_t *heap, uint32_t page, const cha
         size_t offset = HEAP_DIRECTORY_HEADER_BYTES + k * (hinted ? 6u : 4u);
         le_put_u32(body + offset, items[k]);
         if (hinted) {
-            body[offset + 4u] = (uint8_t)free_bytes[k];
-            body[offset + 5u] = (uint8_t)(free_bytes[k] >> 8);
+            le_put_u16(body + offset + 4u, free_bytes[k]);
         }
     }
     page_file_status_t written = page_file_write(heap->file, page, PAGE_KIND_DIRECTORY, heap->table_id, body);

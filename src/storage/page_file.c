@@ -166,12 +166,6 @@ page_file_io_t page_file_default_io(void)
     return g_default_io;
 }
 
-static void put_u16(uint8_t *at, uint16_t value)
-{
-    at[0] = (uint8_t)value;
-    at[1] = (uint8_t)(value >> 8);
-}
-
 /* 체크섬 필드(28..31)를 뺀 페이지 전체의 CRC32C. 패딩 손상도 잡는다. */
 static uint32_t page_checksum(const uint8_t *page)
 {
@@ -183,8 +177,8 @@ static void encode_page(uint8_t *page, page_kind_t kind, uint32_t page_id, uint3
 {
     memset(page, 0, PAGE_FILE_PAGE_BYTES);
     memcpy(page, "SLPG", 4);
-    put_u16(page + 4, ENVELOPE_VERSION);
-    put_u16(page + 6, (uint16_t)kind);
+    le_put_u16(page + 4, ENVELOPE_VERSION);
+    le_put_u16(page + 6, (uint16_t)kind);
     le_put_u32(page + 8, page_id);
     le_put_u32(page + 12, table_id);
     le_put_u32(page + 16, body_len);

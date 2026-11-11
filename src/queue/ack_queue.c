@@ -27,6 +27,7 @@
 
 #include "ack_queue_internal.h"
 #include "storage/checksum.h"
+#include "storage/le.h"
 
 #define META_COLS "id, state, ready_at, lease_until, fence, attempts"
 #define META_CELLS 6u
@@ -679,9 +680,9 @@ static void payload_digest(const uint8_t *payload, size_t size, uint8_t out[DIGE
     uint32_t crc = crc32c(0, payload, size);
     uint64_t fnv = 0xcbf29ce484222325ull;
     for (size_t i = 0; i < size; i++) fnv = (fnv ^ payload[i]) * 0x100000001b3ull;
-    for (size_t i = 0; i < 8; i++) out[i] = (uint8_t)(length >> (8 * i));
-    for (size_t i = 0; i < 4; i++) out[8 + i] = (uint8_t)(crc >> (8 * i));
-    for (size_t i = 0; i < 8; i++) out[12 + i] = (uint8_t)(fnv >> (8 * i));
+    le_put_u64(out, length);
+    le_put_u32(out + 8, crc);
+    le_put_u64(out + 12, fnv);
 }
 
 /*

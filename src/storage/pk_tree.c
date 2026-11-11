@@ -53,7 +53,7 @@ static heap_locator_t locator_at(const node_t *node, uint32_t index)
 {
     const uint8_t *entry = node->body + PK_TREE_HEADER_BYTES + (size_t)index * PK_TREE_LEAF_ENTRY_BYTES;
     return (heap_locator_t){le_get_u32(entry + 8),
-                            (uint16_t)((uint16_t)entry[12] | (uint16_t)entry[13] << 8)};
+                            le_get_u16(entry + 12)};
 }
 
 static void set_leaf(node_t *node, uint32_t index, int64_t key, heap_locator_t locator)
@@ -61,8 +61,7 @@ static void set_leaf(node_t *node, uint32_t index, int64_t key, heap_locator_t l
     uint8_t *entry = entry_at(node, index);
     le_put_u64(entry, (uint64_t)key);
     le_put_u32(entry + 8, locator.directory_index);
-    entry[12] = (uint8_t)locator.slot;
-    entry[13] = (uint8_t)(locator.slot >> 8);
+    le_put_u16(entry + 12, locator.slot);
     entry[14] = 0;
     entry[15] = 0;
 }
@@ -134,7 +133,7 @@ static pk_status_t load_node(const pk_tree_io_t *io, uint32_t table_id, uint32_t
     pk_status_t status = io->read(io->context, page, node->body);
     if (status != PK_OK) return status;
     if (memcmp(node->body, PK_TREE_MAGIC, 4) != 0 ||
-        ((uint32_t)node->body[4] | (uint32_t)node->body[5] << 8) != PK_TREE_VERSION ||
+        le_get_u16(node->body + 4) != PK_TREE_VERSION ||
         le_get_u32(node->body + 8) != table_id) {
         return PK_CORRUPT;
     }
