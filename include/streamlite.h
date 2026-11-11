@@ -129,7 +129,8 @@ typedef struct {
  * 읽는다. 열 때 하는 일(현재 세대 고르기, 끝나지 않은 commit의 이전 세대 판정, 승인한 commit의 손실 판정과 거절, 빈 페이지
  * 목록·카탈로그 적재)은 모두 읽기이고, 공유 잠금을 쥔 동안에는 게시가 없으며 손실 판정이 읽는 기록도 게시 잠금 안에서만
  * 바뀌므로 writer 잠금 아래와 판정이 같다. 그래서 다른 프로세스가 쓰기 거래를 쥐고 있어도 곧바로 열리고, 그 writer와의
- * 경합은 첫 쓰기의 STREAMLITE_BUSY(busy_timeout_ms만큼 재시도)로 드러난다. 열기 대기를 busy_timeout_ms로 받는 방식은
+ * 경합은 첫 쓰기에서 드러난다(busy_timeout_ms만큼 재시도한 뒤). streamlite_begin과 큐 변경 연산은 STREAMLITE_BUSY이고,
+ * 트랜잭션 없이 실행한 변경 문장은 BUSY 분류의 오류 결과(error_class 7, code 29)다. 열기 대기를 busy_timeout_ms로 받는 방식은
  * 기다릴 까닭이 없는 열기를 다른 거래 길이만큼 늦추므로 고르지 않았다. 게시하는 순간(commit의 제어 쓰기와 동기화)만
  * 비켜 주며 그 대기가 5초를 넘으면 STREAMLITE_DB_LOCKED다. 새 파일 생성은 이전처럼 writer 잠금을 쥐고 한다.
  */
