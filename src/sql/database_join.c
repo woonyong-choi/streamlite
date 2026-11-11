@@ -303,21 +303,33 @@ static database_exec_status_t join_open(database_t *db, const sqlstmt_select_t *
     return status;
 }
 
-static bool orders_by_primary_key(const sqlstmt_select_t *select, const resolver_t *resolver,
-                                   const join_level_t *level, const select_ctx_t *ctx)
+/* ORDER BY가 오름차순 열 하나이면 그 열 번호, 아니면 SIZE_MAX */
+static size_t ordered_column(const sqlstmt_select_t *select, const resolver_t *resolver, const select_ctx_t *ctx,
+                             value_type_t *type)
 {
-    if (select->order_count != 1 || select->order[0].desc || select->order[0].expr->kind != SQLEXPR_COLUMN) return false;
+    if (select->order_count != 1 || select->order[0].desc || select->order[0].expr->kind != SQLEXPR_COLUMN) return SIZE_MAX;
     const select_key_t *key = &ctx->keys[0];
     if (key->prog == NULL) {
         const select_out_t *out = &ctx->outs[key->slot];
-        return out->prog == NULL && out->column == level->view.primary_key_column;
+        if (out->prog != NULL) return SIZE_MAX;
+        *type = VALUE_NULL;
+        return out->column;
     }
     const sqlexpr_t *expr = select->order[0].expr;
-    value_type_t type;
-    size_t column = resolve_column((void *)resolver, &expr->qualifier, &expr->name, &type);
-    return column != SQLEVAL_NO_COLUMN && column != SQLEVAL_AMBIGUOUS &&
-           level->view.primary_key_column != CATALOG_NO_COLUMN && column == level->view.primary_key_column &&
-           (type == VALUE_INTEGER || type == VALUE_TEXT);
+    size_t column = resolve_column((void *)resolver, &expr->qualifier, &expr->name, type);
+    return column == SQLEVAL_NO_COLUMN || column == SQLEVAL_AMBIGUOUS ? SIZE_MAX : column;
+}
+
+static bool orders_by_primary_key(const sqlstmt_select_t *select, const resolver_t *resolver,
+                                   const join_level_t *level, const select_ctx_t *ctx)
+{
+    value_type_t type = VALUE_NULL;
+    size_t column = ordered_column(select, resolver, ctx, &type);
+    if (column == SIZE_MAX || level->view.primary_key_column == CATALOG_NO_COLUMN ||
+        column != level->view.primary_key_column) {
+        return false;
+    }
+    return type == VALUE_NULL || type == VALUE_INTEGER || type == VALUE_TEXT;
 }
 
 /*
@@ -337,6 +349,29 @@ static database_exec_status_t scan_follows_primary_key(join_t *join, join_level_
         } else {
             *ordered = key_range(&step->view, step->heap, &where) != SIZE_MAX ||
                        text_key_range(&step->view, step->heap, &where) != SIZE_MAX;
+        }
+    }
+    where_clear(join->db, &where);
+    return status;
+}
+
+/*
+ * 이 단계의 scan_rows가 행을 정수 열 column의 보조 색인 순서(값, 같은 값 안에서는 기본 키)로 내는지. scan_rows는 기본 키
+ * 등가·보조 색인 등가·기본 키 구간·TEXT 키 구간을 먼저 쓰므로 그것이 없고 그 열의 보조 색인 구간을 쓸 때만이다.
+ */
+static database_exec_status_t scan_follows_index(join_t *join, join_level_t *step, size_t column, bool *ordered)
+{
+    *ordered = false;
+    where_t where;
+    database_exec_status_t status = join_probes(join, step, &where);
+    if (status == DATABASE_EXEC_OK && !where.never) {
+        heap_secondary_spec_t secondary;
+        if (key_probe(&step->view, step->heap, &where) == SIZE_MAX &&
+            secondary_probe(join->db, step->id, &where, &secondary) == SIZE_MAX &&
+            key_range(&step->view, step->heap, &where) == SIZE_MAX &&
+            text_key_range(&step->view, step->heap, &where) == SIZE_MAX) {
+            size_t r = secondary_range(join->db, &step->view, step->id, &where, &secondary);
+            *ordered = r != SIZE_MAX && secondary.column == column;
         }
     }
     where_clear(join->db, &where);
@@ -427,6 +462,18 @@ database_exec_status_t select_run(database_t *db, const sqlstmt_select_t *select
         status = scan_follows_primary_key(&join, &join.levels[0], &ordered);
         if (status != DATABASE_EXEC_OK) goto done;
         if (ordered) ctx->buffered = false;
+    } else if (!core_only && !grouped && !select->distinct && ctx->key_count == 1 && join.level_count == 1 &&
+               join.levels[0].relation == NULL) {
+        /* ORDER BY 정수 열이고 그 열의 보조 색인 구간으로 읽으면 색인 순서 그대로 내보내고 LIMIT에서 멈춘다 */
+        value_type_t type = VALUE_NULL;
+        size_t column = ordered_column(select, &resolver, ctx, &type);
+        if (column != SIZE_MAX && column < join.levels[0].view.column_count &&
+            join.levels[0].view.columns[column].type == VALUE_INTEGER) {
+            bool ordered = false;
+            status = scan_follows_index(&join, &join.levels[0], column, &ordered);
+            if (status != DATABASE_EXEC_OK) goto done;
+            if (ordered) ctx->buffered = false;
+        }
     }
     bool never_stop = false;
     row_sink_t sink = grouped ? (row_sink_t){group_collect, &groups, &never_stop} : (row_sink_t){emit_sink, ctx, &ctx->done};

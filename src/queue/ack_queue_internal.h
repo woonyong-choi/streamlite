@@ -45,7 +45,21 @@ struct ackq {
     uint64_t clock_floor;            /* 돌려준 시각의 하한. 뒤로 간 벽시계는 이 값으로 읽는다 */
     uint64_t clock_seen, clock_seen_mono;   /* 마지막으로 읽은 유효한 벽시계 값과 그때의 단조 시각 */
     uint64_t clock_prior, clock_prior_mono; /* 앞으로 뛰기 직전의 예상 시각과 그때의 단조 시각 */
+    bool due_column;                 /* due 열과 색인이 있는 형식(이 판이 만든 큐). 아니면 이전 형식 */
+    bool lease_index;                /* 이전 형식에 lease_until 색인이 있다(열 때 만들었거나 이미 있었다) */
+    _Atomic bool last_claim_empty;   /* 이 핸들의 마지막 claim이 빈 결과였다. 다음 claim은 먼저 읽기로 확인한다 */
 };
+
+/*
+ * due 열(이 판이 만드는 큐). claim·recover·purge가 쓰는 정수 색인 열이며 상태마다 겹치지 않는 구간에 둔다.
+ *   READY: ready_at, 시도가 남은 LEASED: lease_until (0 이상, claim 가능해지는 시각)
+ *   마지막 시도의 LEASED: ACKQ_DUE_LAST + id, ACKED: ACKQ_DUE_ACKED + id, FAILED: ACKQ_DUE_FAILED + id
+ * id는 ACKQ_DUE_BAND보다 작아야 한다(넘으면 enqueue가 ACKQ_LIMIT).
+ */
+#define ACKQ_DUE_BAND (INT64_C(1) << 60)
+#define ACKQ_DUE_ACKED (-(INT64_C(1) << 62))
+#define ACKQ_DUE_FAILED (ACKQ_DUE_ACKED + ACKQ_DUE_BAND)
+#define ACKQ_DUE_LAST (-(INT64_C(1) << 61))
 
 /* 한 연산이 문장을 실행하는 세션. 세션에 열려 있던 트랜잭션(호출자의 것)이면 own이 false이고 commit하지 않는다. */
 typedef struct {
@@ -103,6 +117,7 @@ ackq_status_t ackq_expect_affected(const result_t *result, uint64_t expected);
 value_view_t ackq_int(int64_t value);
 value_view_t ackq_text(const char *text);
 value_view_t ackq_blob(const uint8_t *bytes, size_t size);
+value_view_t ackq_null(void);
 bool ackq_to_i64(uint64_t value, int64_t *out);
 
 #endif

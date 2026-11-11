@@ -60,11 +60,11 @@ make SQL_TEMPLATE_CACHE=0 all
 
 ### Transaction workspace
 
-`TXN_WORKSPACE`는 0과 1을 받는 내부 비교 빌드 설정이며 기본값은 0이다. 1은 [변경 누적과 실패 경계](design/streamlite.md#변경-누적과-실패-경계)의 catalog 재사용과 private COW page 보유를 켠다. 설정 변경은 객체와 공유 라이브러리 fingerprint에 반영한다. 파일 형식·내구 barrier와 기존 단일 writer 경계는 유지한다.
+`TXN_WORKSPACE`는 0과 1을 받는 빌드 설정이며 기본값은 1이다(#262). 1은 [변경 누적과 실패 경계](design/streamlite.md#변경-누적과-실패-경계)의 catalog 재사용과 private COW page 보유를 켜고, 0은 이전처럼 문장마다 페이지를 바로 쓰는 비교 빌드다. 거래가 모은 페이지 사본과 작업 catalog·목록이 한도(`DATABASE_WORKSPACE_BYTES`, 8MiB)를 넘으면 모은 사본을 그때 파일에 쓰고(사본 없이 쓰는 경로와 같은 새 페이지 쓰기) 거래를 이어 간다. 그래서 큰 거래가 한도 때문에 실패하지 않고 사본 이득만 줄어든다. 설정 변경은 객체와 공유 라이브러리 fingerprint에 반영한다. 파일 형식·내구 barrier와 기존 단일 writer 경계는 유지한다.
 
 ```sh
-make TXN_WORKSPACE=1 SQL_TEMPLATE_CACHE=1 test-database-workspace test-transaction test-session test-ack-queue
-make TXN_WORKSPACE=0 SQL_TEMPLATE_CACHE=0 all
+make TXN_WORKSPACE=0 SQL_TEMPLATE_CACHE=1 test-database-workspace test-transaction test-session test-ack-queue
+make TXN_WORKSPACE=1 SQL_TEMPLATE_CACHE=0 all
 ```
 
 `test-database-workspace`는 기본 빌드에서도 내부 제어로 cache/workspace 네 조건을 검사하며 `test-all`에 포함한다. [database_workspace.h](../src/sql/database_workspace.h)의 제어·통계는 내부 시험용이며 Python·공개 C ABI에 추가하지 않는다. 작업이 열려 있으면 설정 변경과 resident ledger의 새 연결을 거절한다. 한도는 [시험용 설정](design/streamlite.md#공통-개선의-시험용-한도)을 따르며 query·result의 기존 한도와 전체 RSS를 뜻하지 않는다. 문장별 heap·색인 계산과 사본 탐색·복사 비용은 남는다. 시험의 쓰기 횟수·예약 최고치와 실패 주입은 성능 채택이나 물리 전원 장애의 증거가 아니다.
@@ -356,6 +356,16 @@ python3 bench/sqlite_workload.py --smoke
 python3 bench/sqlite_workload.py --output build/bench/sqlite_workload.json
 python3 bench/sqlite_workload.py --output build/bench/sqlite_workload.json --analyze
 ```
+
+[hot_path.c](../bench/hot_path.c)는 C API 경로(자동 commit·거래 INSERT, PK 조회, 큐 put·get·ack 한 건씩과 거래 묶음, LEASED·ACKED backlog, 빈 큐 poller 옆의 put)를 시스템 SQLite C API(prepared 문장 재사용, WAL)와 같은 순서로 잰다(#260). StreamLite 공유 라이브러리를 명령줄로 받아 `dlopen`하므로 같은 바이너리로 다른 commit의 빌드를 비교한다. 결과 대조는 하지 않으며 시간 수치는 판정에 쓰지 않는다.
+
+```sh
+cc -O2 -Iinclude -o build/hot_path bench/hot_path.c -lsqlite3
+SL_DURABILITY=normal build/hot_path sl build/lib/libstreamlite.dylib build/bench-a.streamlite queue_cycle 1000
+build/hot_path sq wal build/bench-a.db backlog 200 4000 20000
+```
+
+DB 경로는 실행 전에 지우지 않으므로 매번 없는 경로를 준다. `SL_DURABILITY`는 `streamlite_open_ex`가 있는 빌드에서만 쓴다.
 
 공식 YCSB 0.17.0은 같은 Java/JNI SQL 바인딩으로 StreamLite와 SQLite에 A~F를 실행한다(2026-10-18 확인). Java 21, Python 3.9 이상, C 컴파일러와 SQLite 개발 헤더가 필요하다. 고정 JAR 다운로드에 네트워크를 사용한다.
 

@@ -54,7 +54,7 @@ static ssize_t counting_pwrite(int fd, const void *buf, size_t size, off_t offse
     return pwrite(fd, buf, size, offset);
 }
 
-static const page_file_io_t COUNTING = {counting_pread, counting_pwrite, fsync, link, unlink};
+static const page_file_io_t COUNTING = {counting_pread, counting_pwrite, fsync, link, unlink, NULL};
 static const value_type_t TYPES[2] = {VALUE_INTEGER, VALUE_BLOB};
 
 typedef struct {

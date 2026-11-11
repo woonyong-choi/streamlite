@@ -225,10 +225,22 @@ python3 bench/sqlite_workload.py
 python3 bench/sqlite_workload.py --analyze
 ```
 
+## 동기화 단계
+
+열기 옵션(C `streamlite_open_ex`의 `durability`, Python `Database(durability=...)`)으로 commit의 동기화 단계를 고른다. 어느 단계든 쓰기 순서(새 데이터 페이지 → 제어 페이지)와 COW는 같으므로 프로세스 종료 뒤에는 commit 전부 또는 전무로 다시 열린다. 단계는 OS 장애·전원 차단에 대한 보장만 바꾼다.
+
+| 단계 | commit의 동기화 | 성공 응답 뒤 OS 장애 | 성공 응답 뒤 전원 차단 |
+|---|---|---|---|
+| NORMAL(기본) | `fsync(2)` | 남는다 | Linux 등은 장치가 `fsync`를 지키면 남는다. Apple 플랫폼은 `fsync`가 장치 캐시를 비우지 않아 최근 commit을 잃을 수 있다 |
+| FULL | Apple은 `F_FULLFSYNC`, 그 밖은 `fsync(2)` | 남는다 | 장치가 요청을 지키면 남는다 |
+| OFF | 없음. 정상 close에서 한 번 `fsync` | 최근 commit을 잃을 수 있다 | 최근 commit을 잃을 수 있다 |
+
+OFF는 동기화하지 않은 세대가 쓴 페이지와 제어 페이지 중 일부만 장치에 남을 수 있어 OS 장애·전원 차단 뒤 파일이 손상(`DB_CORRUPT`)으로 열리거나 이전 세대로 물러날 수 있다. 페이지 체크섬과 manifest 대조가 이를 손상으로 판정하지만, 판정한 파일을 고치지는 않는다. 그래서 OFF commit은 잠금 파일의 내구 확인 기록을 지워 장애 뒤의 물러난 열기를 확정 손실이 아닌 미확정으로 다룬다. OFF는 다시 만들 수 있는 자료나 시험에 쓰고, 성공 응답을 영속 확인으로 쓰는 업무에는 NORMAL 이상을 쓴다. 0.3.0 개발 중 한때(#271) macOS 기본이 `F_FULLFSYNC`였으나 commit 지연이 약 10배가 되어 기본을 `fsync`(NORMAL)로 되돌리고 FULL로 고르게 했다.
+
 ## 검증하지 않은 것
 
 - 전원 차단. 시험은 프로세스 종료와 I/O 오류만 다룬다. 저장 장치가 `fsync` 성공을 돌려준 뒤 최신 제어 쓰기를 통째로 버리면(lost write) 이전 세대가 정상으로 열리며 탐지하지 못한다. 손상 흔적이 남은 경우의 판정과 한계는 [이전 세대로 물러난 열기](#이전-세대로-물러난-열기)에 있다.
-- 동기화의 실제 내구성. Apple 플랫폼에서는 `fsync(2)`가 저장 장치의 쓰기 캐시를 비우지 않으므로 기본 동기화가 `fcntl(F_FULLFSYNC)`를 쓰고, 파일 시스템이 지원하지 않을 때(`ENOTSUP`·`EINVAL`·`ENOTTY`·`ENODEV`)만 `fsync`로 물러난다. 공유 라이브러리에는 끄는 설정이 없다. 그 밖의 플랫폼은 `fsync`다. 장치가 이 요청을 지키는지는 시험하지 않았다. C 시험 바이너리는 `STREAMLITE_TEST_PLAIN_FSYNC`로 빌드해 기본 동기화가 `fsync`이고, 시험이 주입한 I/O 진입점(`page_file_set_default_io`)도 이 경로를 거치지 않는다. 그래서 위 종료·I/O 실패 수치는 `F_FULLFSYNC` 경로의 결과가 아니다. 그 경로는 [test_page_file_durable.c](../tests/test_page_file_durable.c)가 매크로 없이 빌드한 page_file로 생성·commit·게시·재개방만 확인하고, 공유 라이브러리를 쓰는 Python 시험이 함께 거친다.
+- 동기화의 실제 내구성. commit의 동기화는 열기 옵션의 단계([동기화 단계](#동기화-단계))를 따른다. 기본 NORMAL은 `fsync(2)`이고, FULL은 Apple 플랫폼에서 `fcntl(F_FULLFSYNC)`를 쓰며 파일 시스템이 지원하지 않을 때(`ENOTSUP`·`EINVAL`·`ENOTTY`·`ENODEV`)만 `fsync`로 물러난다. 장치가 이 요청을 지키는지는 시험하지 않았다. 위 종료·I/O 실패 수치는 C 시험 바이너리의 기본 단계(NORMAL, `fsync`)와 시험이 주입한 I/O 진입점의 결과다. 단계별로 commit이 부르는 동기화(NORMAL은 `fsync`, FULL은 `full_sync`, OFF는 없음)와 OFF의 close 동기화·내구 확인 기록 삭제·close 없이 끝난 프로세스의 commit 보존은 [test_page_file_durable.c](../tests/test_page_file_durable.c)가 확인한다.
 - 네트워크 파일 시스템. 잠금은 로컬 파일 시스템의 `flock`을 전제로 한다.
 - 여러 writer의 동시 commit. 쓰기 트랜잭션은 파일 전체에서 하나씩 직렬로 실행한다.
 - 다른 운영체제·sanitizer 조합의 전수 검증. 과거 Linux 기록과 현재 macOS undefined 실행만 구분해 적었으며, 이번에 Linux ASan·TSan을 다시 실행하지 않았다.

@@ -83,7 +83,7 @@ C API의 `streamlite_db_t`는 DB mutex와 기본 세션을 소유한다. `stream
 
 ### 읽기와 다음 문장의 재적재
 
-1. `database_txn`의 자동 실행은 `SELECT`에도 먼저 writer 자리를 시도한다. writer가 바쁘거나 timeout이면 읽기 경로로 전환하고, 변경 문장은 그 경로에서 거절한다.
+1. `database_txn`의 자동 실행은 `SELECT`로 시작하는 문장을 writer 자리 없이 곧바로 읽기 경로로 보낸다(#260). 변경 문장은 먼저 writer 자리를 시도하고, writer가 바쁘거나 timeout이면 읽기 경로에서 BUSY로 거절한다. 그래서 자동 commit 조회는 다른 핸들의 쓰기를 막지 않는다.
 2. 읽기 경로의 `database`는 문장 동안 DB 파일의 SHARED 잠금을 보유한다. `page_file_lock`은 디스크의 제어 세대를 확인하고 바뀌었으면 빈 목록과 페이지 캐시를 재설정한다.
 3. `database`는 세대가 바뀌면 카탈로그를 다시 적재하고 SQL 실행기는 사용할 색인이나 heap 스캔으로 행을 찾는다. 색인으로 찾은 행에도 SQL 조건을 평가한다.
 4. `database`는 문장 종료 때 SHARED 잠금을 놓는다. 다음 문장은 다른 핸들이 게시한 새 세대를 읽을 수 있으므로 여러 문장에 걸친 고정 read-only snapshot으로 해석하지 않는다.

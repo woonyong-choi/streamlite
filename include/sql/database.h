@@ -41,13 +41,19 @@
  *
  * 여러 프로세스(#199, #200): 같은 파일을 여러 핸들(다른 프로세스 포함)이 함께 연다. SELECT는 문장 동안 읽기 잠금을,
  * 변경 문장과 쓰기 작업은 그동안 writer 잠금을 쥔다(page_file.h). 잠금을 얻을 때 다른 핸들이 게시했으면 카탈로그를 다시 읽는다.
- * SELECT는 다른 핸들의 쓰기 거래를 기다리지 않고 마지막 게시 상태를 읽으며, 게시하는 순간(제어 쓰기와 fsync)만 기다린다.
+ * SELECT는 다른 핸들의 쓰기 거래를 기다리지 않고 마지막 게시 상태를 읽으며, 게시하는 순간(제어 쓰기와 동기화)만 기다린다.
+ * 트랜잭션 계층(database_txn.h)을 붙인 핸들의 자동 commit SELECT도 writer 잠금을 잡지 않는다.
  * writer 잠금은 기다리지 않는다. 다른 핸들이 쓰는 중이면 변경 문장은 RESULT_E_BUSY(DATABASE_CODE_FILE_LOCKED) 오류 결과, 작업
  * 시작은 DATABASE_LOCKED이며 아무것도 반영하지 않았다. 열기는 page_file 잠금 대기 상한까지 기다린다. fork한 자식이 부모의 핸들을 쓰면 문장은
  * DATABASE_CODE_FORKED 오류 결과, 그 밖은 DATABASE_FORKED이며 파일을 바꾸지 않는다. 자식은 파일을 새로 연다.
  *
+ * 보조 색인 구간(#260): 기본 키가 아닌 정수 열의 비교(<, <=, >, >=, BETWEEN)에 그 열의 보조 색인이 있고 기본 키 등가·
+ * 보조 색인 등가·기본 키 구간이 없으면 색인 구간을 (값, 기본 키) 순서로 읽는다. ORDER BY가 그 열 하나(오름차순)면 정렬하지
+ * 않고 그 순서로 내보내며 LIMIT에서 멈춘다. NULL은 색인에 없고 비교에도 맞지 않는다. 남은 조건은 행마다 평가한다.
+ *
  * 보장하지 않는 것: 여러 문장 거래(database_txn.h가 붙인다), 전원 손실 복구, lost write 탐지, 한 핸들의 동시 사용(단일
- * 스레드), 여러 writer의 동시 commit(쓰기는 파일 전체 배타 잠금으로 직렬), 큰 테이블의 성능(기본 키 등가 밖의 조회는 전체 스캔이고 문장마다 카탈로그를 다시 쓴다), SQLite와 같은
+ * 스레드), 여러 writer의 동시 commit(쓰기는 파일 전체 배타 잠금으로 직렬), 큰 테이블의 성능(기본 키·보조 색인 등가, 기본 키 구간, 보조 색인이 있는 정수 열 구간 밖의 조회는 전체 스캔이고 문장마다
+ * 카탈로그를 다시 쓴다), SQLite와 같은
  * 타입 친화성(여기서는 정확히 변환되는 값만 받고 아니면 오류).
  */
 
@@ -118,6 +124,22 @@ database_status_t database_close(database_t *db);
 
 /* 불확정 commit 결과나 fsync 실패로 더는 쓸 수 없는 핸들인지. */
 bool database_is_poisoned(const database_t *db);
+
+/*
+ * commit의 동기화 단계(page_file.h의 page_file_durability_t와 같은 번호·뜻). 어느 단계든 COW 게시 순서(데이터 → 제어
+ * 페이지)는 같아 프로세스 종료 뒤에는 이전 또는 새 상태다. NORMAL(기본)은 commit마다 fsync(2), FULL은 Apple 플랫폼에서
+ * F_FULLFSYNC(그 밖은 fsync), OFF는 commit에서 동기화하지 않고 정상 close에서 한 번 동기화한다. OFF는 OS·전원 장애 뒤
+ * 최근 commit을 잃거나 파일이 손상으로 열릴 수 있다.
+ */
+typedef enum {
+    DATABASE_DURABILITY_NORMAL = 0,
+    DATABASE_DURABILITY_FULL = 1,
+    DATABASE_DURABILITY_OFF = 2
+} database_durability_t;
+
+/* 이 핸들의 다음 commit부터 적용한다. 알 수 없는 값은 DATABASE_INVALID이고 바꾸지 않는다 */
+database_status_t database_set_durability(database_t *db, database_durability_t durability);
+database_durability_t database_durability(const database_t *db);
 size_t database_table_count(const database_t *db);
 
 /* 이 핸들이 연 뒤 문장들이 누적한 읽기 비용. 전체 스캔이 얼마나 일어났는지 대조하는 데 쓴다. */

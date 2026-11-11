@@ -43,7 +43,7 @@ endif
 CACHE_FLAGS = -USTREAMLITE_SQL_TEMPLATE_CACHE -DSTREAMLITE_SQL_TEMPLATE_CACHE=$(SQL_TEMPLATE_CACHE)
 override CFLAGS += $(CACHE_FLAGS)
 
-TXN_WORKSPACE ?= 0
+TXN_WORKSPACE ?= 1
 ifneq ($(TXN_WORKSPACE),0)
 ifneq ($(TXN_WORKSPACE),1)
 $(error TXN_WORKSPACE must be 0 or 1)
@@ -80,11 +80,6 @@ BUILD_DIR ?= build
 BENCHMARK_FLAGS = -USTREAMLITE_BENCHMARK
 endif
 override CFLAGS += $(BENCHMARK_FLAGS)
-# 시험 바이너리(CFLAGS)는 기본 동기화를 fsync(2)로 빌드한다. Apple 플랫폼의 F_FULLFSYNC는 한 번에 수~십여 ms라 commit을
-# 수천 번 하는 시험이 제한 시간을 넘는다. 공유 라이브러리(SHARED_CFLAGS)는 항상 내구 동기화이고 끄는 설정은 없다.
-# 내구 경로는 test_page_file_durable이 이 매크로 없이 빌드한 page_file로 확인한다.
-TEST_SYNC_FLAGS = -DSTREAMLITE_TEST_PLAIN_FSYNC
-override CFLAGS += $(TEST_SYNC_FLAGS)
 SHARED_CFLAGS ?= -O2 -g $(WARNFLAGS) $(INCLUDES)
 override SHARED_CFLAGS += $(BENCHMARK_FLAGS) $(CACHE_FLAGS) $(WORKSPACE_FLAGS) $(CONDITIONAL_FLAGS)
 BUILD_FINGERPRINT = $(BUILD_DIR)/.build-fingerprint
@@ -520,10 +515,7 @@ $(BUILD_DIR)/test_catalog_fault: $(BUILD_DIR)/tests/test_catalog_fault.o $(BUILD
 $(BUILD_DIR)/test_lexer: $(BUILD_DIR)/tests/test_lexer.o $(BUILD_DIR)/sql/lexer.o
 $(BUILD_DIR)/test_lexer_fault: $(BUILD_DIR)/tests/test_lexer_fault.o $(BUILD_DIR)/sql/lexer_fault.o
 $(BUILD_DIR)/test_page_file: $(BUILD_DIR)/tests/test_page_file.o $(STORAGE_OBJS)
-$(BUILD_DIR)/storage/page_file_durable.o: src/storage/page_file.c $(BUILD_FINGERPRINT)
-	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -USTREAMLITE_TEST_PLAIN_FSYNC $(DEPFLAGS) -c -o $@ $<
-$(BUILD_DIR)/test_page_file_durable: $(BUILD_DIR)/tests/test_page_file_durable.o $(filter-out $(BUILD_DIR)/storage/page_file.o,$(STORAGE_OBJS)) $(BUILD_DIR)/storage/page_file_durable.o
+$(BUILD_DIR)/test_page_file_durable: $(BUILD_DIR)/tests/test_page_file_durable.o $(STORAGE_OBJS)
 $(BUILD_DIR)/test_catalog_store: $(BUILD_DIR)/tests/test_catalog_store.o $(STORAGE_OBJS)
 $(BUILD_DIR)/test_pk_tree: $(BUILD_DIR)/tests/test_pk_tree.o $(BUILD_DIR)/storage/pk_tree.o
 $(BUILD_DIR)/test_text_tree: $(BUILD_DIR)/tests/test_text_tree.o $(BUILD_DIR)/storage/text_tree.o

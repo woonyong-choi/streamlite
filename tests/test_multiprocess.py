@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 import pytest
-from streamlite import Database, ForkedHandleError, Queue
+from streamlite import BusyError, Database, ForkedHandleError, Queue
 
 SPAWN = multiprocessing.get_context("spawn")
 LEASE_MS = 60_000
@@ -296,6 +296,35 @@ def _commit_in_process(path: str, start: int, count: int) -> None:
     try:
         _commit_many(db, start, count)
     finally:
+        db.close()
+
+
+def test_autocommit_select_does_not_take_the_writer(tmp_path: Path) -> None:
+    """자동 commit SELECT는 writer 잠금을 잡지 않는다(#260). 쉬지 않고 읽는 reader 둘이 있어도 begin이 BUSY가 아니다."""
+    path = tmp_path / "select.streamlite"
+    db = Database(path, busy_timeout_s=0)
+    db.execute("CREATE TABLE t (x INTEGER, pad BLOB)")
+    _commit_many(db, 0, 20)
+    stop = SPAWN.Event()
+    ready = [SPAWN.Event() for _ in range(2)]
+    readers = [SPAWN.Process(target=_read_until, args=(str(path), event, stop)) for event in ready]
+    try:
+        for reader in readers:
+            reader.start()
+        for event in ready:
+            assert event.wait(timeout=60), "reader의 첫 조회가 끝나지 않음"
+        busy = 0
+        for i in range(200):
+            try:
+                with db.begin() as txn:
+                    txn.execute("INSERT INTO t VALUES (?, ?)", (1000 + i, b"w"))
+            except BusyError:
+                busy += 1
+        assert busy == 0, f"자동 commit SELECT가 writer를 잡아 begin이 {busy}번 BUSY"
+        assert all(reader.is_alive() for reader in readers)
+    finally:
+        stop.set()
+        _finish_processes(readers)
         db.close()
 
 

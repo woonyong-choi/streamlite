@@ -12,9 +12,10 @@
  * 선택형 ACK 큐(#140). 독립 DB 위에 따로 설치하는 라이브러리이며 DB 코어(database·storage)는 이 모듈을 모른다.
  * 큐를 설치하지 않으면 객체·worker·전용 테이블이 생기지 않는다. 큐는 세션(session.h)의 공개 SQL과 트랜잭션 API만 쓰고
  * 큐 하나는 테이블 하나(streamlite_queue_<name>)다. 큐마다 따로 설치하며 DB와 같은 파일에 산다.
- * 큐는 key 보존 테이블(<table>_keys)과 색인(<table>_state, <table>_idem, <table>_keys_idem)도 만든다. 그래서 _keys·_state·
- * _idem으로 끝나는 이름과, 이미 있는 큐의 테이블 이름이 자기 내부 이름과 같아지는 이름은 새로 설치하지 않는다
- * (ACKQ_INVALID, 아무것도 만들지 않는다). 이 규칙 전에 만든 큐는 이름과 무관하게 그대로 열린다.
+ * 큐는 key 보존 테이블(<table>_keys)과 색인(<table>_due, <table>_idem, <table>_keys_idem, 이전 판이 만든 큐는 <table>_state와
+ * 열 때 더하는 <table>_lease)도 만든다. 그래서 _keys·_state·_idem·_due·_lease로 끝나는 이름과, 이미 있는 큐의 테이블 이름이
+ * 자기 내부 이름과 같아지는 이름은 새로 설치하지 않는다(ACKQ_INVALID, 아무것도 만들지 않는다). 이 규칙 전에 만든 큐는 이름과
+ * 무관하게 그대로 열린다.
  *
  * 작업(job) 상태: READY -> LEASED -> ACKED | FAILED, 그리고 LEASED -> READY(nack, 만료, 해제).
  *   claim이 READY 작업(또는 만료된 LEASED)을 LEASED로 바꾸고 fence token을 1 올려 돌려준다. fence는 작업별로 단조 증가하며
@@ -46,10 +47,15 @@
  * 정한다). 그 밖의 비OK 상태(IO·NOMEM·LIMIT·INTERNAL 등)는 문장이 일부만 실행됐을 수 있으므로 호출자는 그 트랜잭션을
  * rollback해야 한다(commit하면 큐 상태가 일부만 반영될 수 있다).
  *
- * 저장과 조회: 설치 때 state·idem 보조 색인을 만든다. 정수 기본 키 테이블의 비고유 색인은 같은 값 안에서 id 순서라
- * claim·recover·purge는 WHERE state = ? ... ORDER BY id LIMIT k로 맞는 작업 k개만 읽는다. ack·nack·fail·update는 기본 키
- * 한 행을 읽고 고친다. stats는 상태별 개수라 테이블 전체를 읽는다. 행 단위 잠금은 없고 쓰기 트랜잭션은 하나다.
- * payload는 선택한 작업의 것만 읽는다.
+ * 저장과 조회(#260): 이 판이 설치한 큐는 정수 due 열과 그 색인을 둔다. READY는 ready_at, 시도가 남은 LEASED는
+ * lease_until(claim 가능해지는 시각)을, 마지막 시도의 LEASED·ACKED·FAILED는 음수의 상태별 구간에 id를 둔다. claim은 due
+ * 색인의 [0, now] 구간을 due 순서로 읽고 k개에서 멈추므로 만료 전 LEASED·지연 READY·ACKED·FAILED 수와 무관하다. recover는
+ * 같은 구간의 LEASED와 마지막 시도 구간을, purge는 ACKED·FAILED 구간을 id 순서로 읽는다. key 없는 작업의 idem은 NULL이라
+ * idem 색인에 들어가지 않는다. 이전 판이 설치한 큐(due 없음)는 그대로 열리며 READY를 state 색인으로 id 순서로 읽는다. 열 때
+ * lease_until 색인을 만들어(자기 트랜잭션. 실패하거나 호출자 트랜잭션 안이면 만들지 않고 이전 경로) 만료 lease를 그 구간으로
+ * 찾는다. ack·nack·fail·update는 기본 키 한 행을 읽고 고친다. stats는 상태별 개수라 테이블 전체를 읽는다. 행 단위 잠금은
+ * 없고 쓰기 트랜잭션은 하나다. payload는 선택한 작업의 것만 읽는다. 이 판이 설치한 큐는 due가 NOT NULL이라 이전 판
+ * 라이브러리로 쓰면 enqueue가 실패한다.
  *
  * 스레드: 한 세션은 한 번에 한 스레드만 쓴다(session 계약). ackq_t의 설정은 바뀌지 않고 아래의 시각 하한과 관측만 짧은 잠금
  * 안에서 갱신하므로 여러 스레드가 각자 세션으로 같은 큐를 써도 된다. 쓰기 트랜잭션은 데이터베이스마다 하나이므로 다른 세션이
@@ -127,6 +133,8 @@ typedef struct {
     /*
      * 0이면 제한 없음. 시도(claim) 횟수가 이 값에 닿은 작업의 nack·만료(ackq_recover)는 FAILED로 끝난다.
      * ackq_release_leases는 작업의 실패가 아니므로 한도에 닿은 작업을 한 번 더 전달하고, 한도를 넘긴 작업만 FAILED로 끝낸다.
+     * 이 판이 설치한 큐는 claim한 핸들의 값으로 마지막 시도를 표시해 만료 뒤 claim 후보에서 뺀다(recover가 FAILED로 끝낸다).
+     * 같은 큐를 쓰는 핸들은 같은 값을 준다.
      */
     uint32_t max_attempts;
     uint32_t begin_timeout_ms;       /* 자기 트랜잭션이 다른 writer를 기다리는 시간. 0이면 기다리지 않고 BUSY */
@@ -141,7 +149,10 @@ typedef struct {
  * 겹치면 ACKQ_INVALID이고 아무것도 만들지 않는다(파일 머리말의 이름 규칙).
  */
 ackq_status_t ackq_install(session_t *session, const ackq_options_t *options, ackq_t **out);
-/* 테이블이 있어야 한다. 없으면 ACKQ_NOT_INSTALLED이고 아무것도 만들지 않는다. */
+/*
+ * 테이블이 있어야 한다. 없으면 ACKQ_NOT_INSTALLED이고 아무것도 만들지 않는다. 이전 판이 설치한 큐면 lease_until 색인을
+ * 만든다(위 저장과 조회). 그 이관이 실패해도 열기는 성공한다.
+ */
 ackq_status_t ackq_open(session_t *session, const ackq_options_t *options, ackq_t **out);
 void ackq_close(ackq_t **queue);
 
@@ -163,8 +174,12 @@ ackq_status_t ackq_enqueue(ackq_t *queue, session_t *session, const uint8_t *pay
                            const char *idem_key, uint64_t *id, bool *duplicate);
 
 /*
- * 최대 max_items(1..ACKQ_MAX_CLAIM_BATCH)개를 id 순서로 claim한다. 대상은 ready_at이 지난 READY와 lease가 만료된
- * LEASED(시도 횟수가 max_attempts에 닿은 것은 제외, ackq_recover가 FAILED로 끝낸다)다. 각 작업의 fence가 1 오르고
+ * 최대 max_items(1..ACKQ_MAX_CLAIM_BATCH)개를 claim한다. 대상은 ready_at이 지난 READY와 lease가 만료된 LEASED(시도 횟수가
+ * max_attempts에 닿은 것은 제외, ackq_recover가 FAILED로 끝낸다)다. 이 판이 설치한 큐는 claim 가능해진 시각(READY는
+ * ready_at, LEASED는 lease_until)이 이른 것부터, 같으면 작은 id부터 고른다. 그래서 nack한 작업은 그보다 먼저 때가 된 작업
+ * 뒤로 간다. 이전 판이 설치한 큐는 후보(READY는 작은 id부터, 만료 LEASED는 만료가 이른 것부터 각각 max_items개) 가운데
+ * 작은 id부터 고른다. 호출자 트랜잭션 없이 부른 claim은 같은 핸들의 바로 앞 claim이 빈 결과였으면 먼저 쓰기 트랜잭션
+ * 없이(writer 잠금 없이) 후보가 있는지 읽고, 없으면 쓰기 트랜잭션을 열지 않고 빈 결과다. 각 작업의 fence가 1 오르고
  * 시도 횟수가 늘며 lease는 now + lease_ms다. 가져올 것이 없으면 *count가 0이고 ACKQ_OK다. items 배열은 호출자가
  * max_items 크기로 준비하며 반환된 *count개를 ackq_claims_release로 해제한다. 실패하면 *count는 0이다.
  */

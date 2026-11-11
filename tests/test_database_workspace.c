@@ -297,18 +297,27 @@ static void overflow_and_workspace_limit(void)
     assert(body != NULL);
     memset(body, 'y', length);
     param = (value_view_t){.type = VALUE_TEXT, .bytes = body, .size_bytes = length};
+    /* 사본 예산을 넘는 거래는 모은 사본을 파일에 먼저 쓰고 이어 간다. 예산 때문에 실패하지 않는다 */
     database_exec_status_t status = execute(db, "UPDATE t SET body=?1 WHERE id=1", &binding, NULL, &r);
-    assert(status == DATABASE_EXEC_NOMEM ||
-           (status == DATABASE_EXEC_OK && result_kind(r) == RESULT_KIND_ERROR &&
-            result_outcome(r).error->error_class == RESULT_E_NOMEM));
+    assert(status == DATABASE_EXEC_OK && result_kind(r) == RESULT_KIND_COMMAND);
     result_release(&r);
-    assert(database_work_failed(db));
+    assert(!database_work_failed(db));
     database_workspace_stats_t stats;
     database_workspace_stats(db, &stats);
     assert(stats.peak_bytes <= DATABASE_WORKSPACE_BYTES);
+    assert(stats.physical_writes > 0);
+    assert(integer(db, "SELECT length(body) FROM t WHERE id=1", false) == (int64_t)length);
     database_work_end(db, DATABASE_WORK_NOT_APPLIED);
-    free(body);
     assert(integer(db, "SELECT length(body) FROM t WHERE id=1", false) == 3);
+
+    /* 같은 크기를 commit하면 다시 열어도 그대로다 */
+    assert(database_work_begin(db) == DATABASE_OK);
+    assert(execute(db, "UPDATE t SET body=?1 WHERE id=1", &binding, NULL, &r) == DATABASE_EXEC_OK);
+    assert(result_kind(r) == RESULT_KIND_COMMAND);
+    result_release(&r);
+    commit(db);
+    free(body);
+    assert(integer(db, "SELECT length(body) FROM t WHERE id=1", false) == (int64_t)length);
     close_database(db, &budget);
 }
 

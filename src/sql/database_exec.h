@@ -477,6 +477,8 @@ bool constant_count(database_t *db, const sqlexpr_t *expr, bool *present, uint64
                            database_exec_status_t *status);
 size_t key_probe(const catalog_table_view_t *view, const heap_t *heap, const where_t *where);
 size_t key_range(const catalog_table_view_t *view, const heap_t *heap, const where_t *where);
+size_t secondary_range(database_t *db, const catalog_table_view_t *view, catalog_table_id_t table_id,
+                       const where_t *where, heap_secondary_spec_t *spec);
 size_t text_key_range(const catalog_table_view_t *view, const heap_t *heap, const where_t *where);
 heap_status_t visit_text_range(heap_t *heap, const text_range_t *range,
                                bool (*visit)(void *, heap_locator_t), void *context, bool *stopped);

@@ -10,6 +10,9 @@
 #define CLAIM_LIMITS " AND fence < 9223372036854775807 AND attempts < 9223372036854775807"
 #define CLAIM_SET " SET state = 1, lease_until = ?, fence = fence + 1, attempts = attempts + 1 WHERE id = "
 #define CLAIM_RETURN " RETURNING id, fence, attempts, payload"
+/* due 형식: 새 시도 횟수가 max_attempts에 닿으면 마지막 시도 구간, 아니면 lease_until(ack_queue_internal.h) */
+#define CLAIM_SET_DUE " SET state = 1, lease_until = ?, fence = fence + 1, attempts = attempts + 1, " \
+                      "due = CASE WHEN ? > 0 AND attempts + 1 >= ? THEN ? + id ELSE ? END WHERE id = "
 
 static ackq_status_t copy_claim(const result_row_t *row, int64_t until, ackq_claim_t *item)
 {
@@ -52,6 +55,18 @@ static ackq_status_t take_claim(result_t *result, int64_t until, ackq_claim_t *i
 
 static int claim_sql(const ackq_t *queue, bool by_id, char sql[CONDITIONAL_SQL_MAX])
 {
+    if (queue->due_column) {
+        if (by_id) {
+            return snprintf(sql, CONDITIONAL_SQL_MAX, "UPDATE %s" CLAIM_SET_DUE "? AND " ELIGIBLE CLAIM_LIMITS CLAIM_RETURN,
+                            queue->table);
+        }
+        return snprintf(sql, CONDITIONAL_SQL_MAX,
+                        "UPDATE %s" CLAIM_SET_DUE
+                        "(SELECT COALESCE(MIN(id), -1) FROM (SELECT id FROM %s WHERE due >= 0 AND due <= ? "
+                        "AND (state = 0 OR ? = 0 OR attempts < ?) ORDER BY due LIMIT 1) candidates) AND "
+                        ELIGIBLE CLAIM_LIMITS CLAIM_RETURN,
+                        queue->table, queue->table);
+    }
     if (by_id) {
         return snprintf(sql, CONDITIONAL_SQL_MAX, "UPDATE %s" CLAIM_SET "? AND " ELIGIBLE CLAIM_LIMITS CLAIM_RETURN,
                         queue->table);
@@ -76,11 +91,21 @@ ackq_status_t ackq_conditional_claim(ackq_t *queue, ackq_scope_t *scope, const a
     char sql[CONDITIONAL_SQL_MAX];
     int length = claim_sql(queue, request->id != 0, sql);
     if (length < 0 || (size_t)length >= sizeof(sql)) return ACKQ_LIMIT;
-    value_view_t params[9];
+    value_view_t params[16];
     size_t count = 0;
     params[count++] = ackq_int(request->lease_until);
+    if (queue->due_column) {
+        params[count++] = ackq_int(queue->max_attempts);
+        params[count++] = ackq_int(queue->max_attempts);
+        params[count++] = ackq_int(ACKQ_DUE_LAST);
+        params[count++] = ackq_int(request->lease_until);
+    }
     if (request->id != 0) params[count++] = ackq_int(id);
-    else {
+    else if (queue->due_column) {
+        params[count++] = ackq_int(request->now);
+        params[count++] = ackq_int(queue->max_attempts);
+        params[count++] = ackq_int(queue->max_attempts);
+    } else {
         params[count++] = ackq_int(request->now);
         params[count++] = ackq_int(request->now);
         params[count++] = ackq_int(queue->max_attempts);
@@ -108,14 +133,21 @@ ackq_status_t ackq_conditional_finish(ackq_t *queue, ackq_scope_t *scope, const 
     if (!ackq_to_i64(request->id, &id)) return ACKQ_NOT_FOUND;
     char sql[ACKQ_SQL_MAX];
     int length = snprintf(sql, sizeof(sql),
-                          "UPDATE %s SET state = ?, lease_until = 0, note = ? WHERE id = ? AND state = 1 AND fence = ?",
-                          queue->table);
+                          "UPDATE %s SET state = ?, lease_until = 0, note = ?%s WHERE id = ? AND state = 1 AND fence = ?",
+                          queue->table, queue->due_column ? ", due = ? + id" : "");
     if (length < 0 || (size_t)length >= sizeof(sql)) return ACKQ_LIMIT;
-    value_view_t params[4] = {ackq_int(request->state), ackq_text(request->note), ackq_int(id),
+    int64_t base = request->state == ACKQ_STATE_ACKED ? ACKQ_DUE_ACKED : ACKQ_DUE_FAILED;
+    value_view_t params[5] = {ackq_int(request->state), ackq_text(request->note), ackq_int(base), ackq_int(id),
                               ackq_int((int64_t)request->fence)};
+    size_t count = 5;
+    if (!queue->due_column) {
+        params[2] = params[3];
+        params[3] = params[4];
+        count = 4;
+    }
     bool was_dirty = scope->dirty;
     result_t *result = NULL;
-    ackq_status_t status = ackq_run(queue, scope, true, sql, params, 4, &result, NULL);
+    ackq_status_t status = ackq_run(queue, scope, true, sql, params, count, &result, NULL);
     if (status != ACKQ_OK) return status;
     const result_command_t *command = result_command(result);
     if (command == NULL || command->affected_rows > 1) status = ACKQ_INTERNAL;

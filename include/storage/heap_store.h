@@ -226,6 +226,14 @@ bool heap_secondary_key_fits(const value_view_t *value);
 heap_status_t heap_secondary_visit_equal(heap_t *heap, heap_secondary_spec_t spec,
                                          const value_view_t *value,
                                          bool (*visit)(void *context, heap_locator_t locator), void *context);
+/*
+ * 정수 열의 보조 색인에서 값이 low 이상 high 이하인 항목의 locator를 (값, 꼬리) 오름차순으로 visit에 넘긴다. ordered
+ * 색인이면 같은 값 안에서 정수 기본 키 순서다. NULL 값은 색인에 없으므로 방문하지 않는다. visit이 false를 돌려주면
+ * 멈추고 *stopped가 true이며 HEAP_OK다. 열의 형식이 정수가 아니면 호출자가 부르지 않는다(값 인코딩이 정수 순서다).
+ */
+heap_status_t heap_secondary_visit_range(heap_t *heap, heap_secondary_spec_t spec, int64_t low, int64_t high,
+                                         bool (*visit)(void *context, heap_locator_t locator), void *context,
+                                         bool *stopped);
 /* 색인에 있는 가장 큰 키. 비어 있으면 *present가 false다. */
 heap_status_t heap_max_key(heap_t *heap, bool *present, int64_t *key);
 void heap_release_row(const heap_t *heap, value_t *row);

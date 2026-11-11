@@ -19,6 +19,7 @@
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "queue/ack_queue.h"
@@ -41,6 +42,7 @@ struct streamlite_db {
     session_t *running;           /* cancel_lock 안에서만 읽고 쓴다 */
     size_t live_queues;           /* mutex 안에서만 바꾼다 */
     size_t live_txns;
+    uint32_t busy_timeout_ms;     /* 열 때 정하고 바꾸지 않는다 */
     pid_t owner;                  /* 연 프로세스. fork한 자식은 mutex를 잡기 전에 거절한다 */
 };
 
@@ -146,9 +148,21 @@ static void close_parts(streamlite_db_t *handle)
 
 int streamlite_open(const char *path, int create, streamlite_db_t **out)
 {
+    return streamlite_open_ex(path, create, NULL, out);
+}
+
+int streamlite_open_ex(const char *path, int create, const streamlite_open_options_t *options, streamlite_db_t **out)
+{
     if (out == NULL) return STREAMLITE_DB_INVALID;
     *out = NULL;
-    if (path == NULL) return STREAMLITE_DB_INVALID;
+    static const streamlite_open_options_t defaults = {0};
+    if (options == NULL) options = &defaults;
+    if (path == NULL || options->durability > STREAMLITE_DURABILITY_OFF) return STREAMLITE_DB_INVALID;
+    _Static_assert(STREAMLITE_DURABILITY_NORMAL == DATABASE_DURABILITY_NORMAL && STREAMLITE_DURABILITY_FULL == DATABASE_DURABILITY_FULL &&
+                       STREAMLITE_DURABILITY_OFF == DATABASE_DURABILITY_OFF,
+                   "공개 동기화 단계 번호는 database와 같다");
+    database_txn_options_t txn_options = {0};
+    txn_options.durability = (database_durability_t)options->durability;
     if (access(path, F_OK) != 0) {
         if (!create) return STREAMLITE_DB_NOT_FOUND;
         database_t *fresh = NULL;
@@ -161,7 +175,7 @@ int streamlite_open(const char *path, int create, streamlite_db_t **out)
     int status = map_session_status(session_pool_open(&UNLIMITED, &handle->pool));
     database_status_t opened = DATABASE_OK;
     if (status == STREAMLITE_OK) {
-        session_status_t made = session_pool_open_transactional(handle->pool, path, NULL, &handle->db, &opened);
+        session_status_t made = session_pool_open_transactional(handle->pool, path, &txn_options, &handle->db, &opened);
         status = opened != DATABASE_OK ? map_database_status(opened) : map_session_status(made);
     }
     if (status == STREAMLITE_OK) status = map_session_status(session_open(handle->db, &handle->autocommit));
@@ -173,6 +187,7 @@ int streamlite_open(const char *path, int create, streamlite_db_t **out)
     pthread_mutex_init(&handle->mutex, NULL);
     pthread_mutex_init(&handle->cancel_lock, NULL);
     handle->owner = getpid();
+    handle->busy_timeout_ms = options->busy_timeout_ms;
     handle->magic = DB_MAGIC;
     *out = handle;
     return STREAMLITE_OK;
@@ -223,6 +238,63 @@ static void set_running(streamlite_db_t *db, session_t *session)
 static session_t *session_for(streamlite_db_t *db, streamlite_txn_t *txn)
 {
     return txn != NULL ? txn->session : db->autocommit;
+}
+
+/*
+ * writer를 얻지 못한 호출(BUSY)을 db의 busy_timeout_ms까지 다시 시도하는 상태. mutex 밖에서 쉰다. 쉬는 간격은 0.5ms에서
+ * 20ms까지 두 배씩 늘린다. BUSY는 실행 전 거절이라 반영된 것이 없으므로 같은 호출을 다시 해도 된다.
+ */
+typedef struct {
+    uint32_t timeout_ms;
+    uint64_t deadline_us;
+    uint64_t pause_us;
+} busy_wait_t;
+
+static uint64_t monotonic_us(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)now.tv_sec * 1000000u + (uint64_t)now.tv_nsec / 1000u;
+}
+
+static busy_wait_t busy_wait_start(const streamlite_db_t *db, bool allowed)
+{
+    busy_wait_t wait = {allowed ? db->busy_timeout_ms : 0, 0, 500};
+    if (wait.timeout_ms > 0) wait.deadline_us = monotonic_us() + (uint64_t)wait.timeout_ms * 1000u;
+    return wait;
+}
+
+/* 아직 다시 시도할 시간이 남았는지 */
+static bool busy_wait_pending(const busy_wait_t *wait)
+{
+    return wait->timeout_ms > 0 && monotonic_us() < wait->deadline_us;
+}
+
+/* 남은 시간 안에서 잠깐 쉰다. mutex 밖에서 부른다 */
+static void busy_wait_pause(busy_wait_t *wait)
+{
+    uint64_t now = monotonic_us();
+    if (now >= wait->deadline_us) return;
+    uint64_t pause = wait->pause_us < wait->deadline_us - now ? wait->pause_us : wait->deadline_us - now;
+    struct timespec ts = {(time_t)(pause / 1000000u), (long)(pause % 1000000u) * 1000};
+    nanosleep(&ts, NULL);
+    if (wait->pause_us < 20000) wait->pause_us *= 2;
+}
+
+/* 한 번 더 시도할 수 있으면 잠깐 쉬고 true다 */
+static bool busy_wait_again(busy_wait_t *wait)
+{
+    if (!busy_wait_pending(wait)) return false;
+    busy_wait_pause(wait);
+    return true;
+}
+
+/* 자동 commit 변경 문장이 다른 writer 때문에 실행 전에 거절된 결과인지 */
+static bool busy_result(const result_t *result)
+{
+    if (result == NULL || result_kind(result) != RESULT_KIND_ERROR) return false;
+    const result_outcome_t outcome = result_outcome(result);
+    return outcome.error != NULL && outcome.error->error_class == RESULT_E_BUSY;
 }
 
 /* ── 결과 인코딩: 상한을 넘거나 할당이 실패하면 error를 남기고 부분 결과를 주지 않는다 ── */
@@ -409,19 +481,31 @@ int streamlite_exec(streamlite_db_t *db, streamlite_txn_t *txn, const char *sql,
     result_t *result = NULL;
     buffer_t buffer = {0};
     /* 실행, 인코딩, 해제를 한 잠금 구간에서 끝낸다. 행은 result_next가 database 상태를 읽어 만든다. */
-    TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
-    pthread_mutex_lock(&db->mutex);
-    TB_END(bench_lock);
-    session_t *session = session_for(db, txn);
-    set_running(db, session);
-    database_exec_status_t exec_status = session_exec(session, NULL, (const uint8_t *)sql, strlen(sql),
-                                                      param_count > 0 ? &binding : NULL, &result);
-    set_running(db, NULL);
-    if (exec_status == DATABASE_EXEC_OK && result != NULL) {
-        encode_result(&buffer, result);
-        result_release(&result);
+    database_exec_status_t exec_status;
+    busy_wait_t wait = busy_wait_start(db, txn == NULL);
+    for (;;) {
+        TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
+        pthread_mutex_lock(&db->mutex);
+        TB_END(bench_lock);
+        session_t *session = session_for(db, txn);
+        set_running(db, session);
+        exec_status = session_exec(session, NULL, (const uint8_t *)sql, strlen(sql), param_count > 0 ? &binding : NULL,
+                                   &result);
+        set_running(db, NULL);
+        if (exec_status == DATABASE_EXEC_OK && busy_result(result) && busy_wait_pending(&wait)) {
+            /* 실행 전 거절이라 반영된 것이 없다. mutex를 놓고 쉰 뒤 다시 실행한다 */
+            result_release(&result);
+            pthread_mutex_unlock(&db->mutex);
+            busy_wait_pause(&wait);
+            continue;
+        }
+        if (exec_status == DATABASE_EXEC_OK && result != NULL) {
+            encode_result(&buffer, result);
+            result_release(&result);
+        }
+        pthread_mutex_unlock(&db->mutex);
+        break;
     }
-    pthread_mutex_unlock(&db->mutex);
     free(views);
     if (exec_status == DATABASE_EXEC_NOMEM) return ACKQ_NOMEM;
     if (exec_status != DATABASE_EXEC_OK) return ACKQ_INVALID;
@@ -462,17 +546,21 @@ int streamlite_begin(streamlite_db_t *db, streamlite_txn_t **out)
     streamlite_txn_t *handle = calloc(1, sizeof(*handle));
     if (handle == NULL) return ACKQ_NOMEM;
     session_txn_options_t options = {TXN_GUARANTEE_DURABLE, 0};
-    TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
-    pthread_mutex_lock(&db->mutex);
-    TB_END(bench_lock);
-    int status = session_open(db->db, &handle->session) == SESSION_OK ? STREAMLITE_OK : ACKQ_NOMEM;
-    if (status == STREAMLITE_OK) {
-        txn_status_t begun = session_txn_begin(handle->session, &options);
-        status = map_txn(begun);
-        if (begun != TXN_OK) session_close(handle->session);
-    }
-    if (status == STREAMLITE_OK) db->live_txns++;
-    pthread_mutex_unlock(&db->mutex);
+    busy_wait_t wait = busy_wait_start(db, true);
+    int status;
+    do {
+        TB_BEGIN(bench_lock, TB_HANDLE_LOCK);
+        pthread_mutex_lock(&db->mutex);
+        TB_END(bench_lock);
+        status = session_open(db->db, &handle->session) == SESSION_OK ? STREAMLITE_OK : ACKQ_NOMEM;
+        if (status == STREAMLITE_OK) {
+            txn_status_t begun = session_txn_begin(handle->session, &options);
+            status = map_txn(begun);
+            if (begun != TXN_OK) session_close(handle->session);
+        }
+        if (status == STREAMLITE_OK) db->live_txns++;
+        pthread_mutex_unlock(&db->mutex);
+    } while (status == ACKQ_BUSY && busy_wait_again(&wait));
     if (status != STREAMLITE_OK) {
         free(handle);
         return status;
@@ -590,21 +678,24 @@ void streamlite_queue_close(streamlite_queue_t **queue)
 
 /*
  * 큐 연산 공통: 닫힌 큐·끝난 트랜잭션이거나 txn이 이 큐의 database 것이 아니면 잠그기 전에 거절하고, 아니면 mutex 안에서
- * call을 실행한다. call 안의 session은 트랜잭션의 세션이거나 연결의 자동 commit 세션이다. 잠그기 전에 읽는 q->db는 큐
+ * call을 실행한다. txn이 NULL(자기 트랜잭션)이고 BUSY면 busy_timeout_ms까지 mutex 밖에서 쉬며 다시 부른다. call 안의 session은 트랜잭션의 세션이거나 연결의 자동 commit 세션이다. 잠그기 전에 읽는 q->db는 큐
  * 핸들이 살아 있는 동안 바뀌지 않고, 살아 있는 큐가 있으면 streamlite_close가 BUSY라 그 db도 살아 있다.
  */
 #define QUEUE_CALL(q, txn, call)                                              \
     do {                                                                      \
         if (!live_queue(q) || ((txn) != NULL && (!live_txn(txn) || (txn)->db != (q)->db))) return ACKQ_INVALID; \
         if (forked((q)->db)) return STREAMLITE_DB_FORKED;                           \
-        TB_BEGIN(bench_lock, TB_HANDLE_LOCK);                                 \
-        pthread_mutex_lock(&(q)->db->mutex);                                  \
-        TB_END(bench_lock);                                                   \
-        session_t *session = session_for((q)->db, (txn));                    \
-        set_running((q)->db, session);                                        \
-        status = (call);                                                      \
-        set_running((q)->db, NULL);                                           \
-        pthread_mutex_unlock(&(q)->db->mutex);                                \
+        busy_wait_t busy_wait = busy_wait_start((q)->db, (txn) == NULL);      \
+        do {                                                                  \
+            TB_BEGIN(bench_lock, TB_HANDLE_LOCK);                             \
+            pthread_mutex_lock(&(q)->db->mutex);                              \
+            TB_END(bench_lock);                                               \
+            session_t *session = session_for((q)->db, (txn));                \
+            set_running((q)->db, session);                                    \
+            status = (call);                                                  \
+            set_running((q)->db, NULL);                                       \
+            pthread_mutex_unlock(&(q)->db->mutex);                            \
+        } while (status == ACKQ_BUSY && busy_wait_again(&busy_wait));         \
     } while (0)
 
 int streamlite_queue_put(streamlite_queue_t *q, streamlite_txn_t *txn, const uint8_t *payload, size_t size, const char *idem_key, uint64_t *id,

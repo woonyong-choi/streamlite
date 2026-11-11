@@ -33,7 +33,7 @@ DEFAULT_IDEM_RETENTION_MS = 7 * 24 * 3600 * 1000
 _RETENTION_NONE = (1 << 64) - 1
 _STATUS_INVALID = 1
 # 새 큐 이름이 이렇게 끝나면 다른 큐의 key 테이블·색인 이름과 겹칠 수 있다(ack_queue.h의 이름 규칙)
-_RESERVED_NAME_SUFFIXES = ("_keys", "_state", "_idem")
+_RESERVED_NAME_SUFFIXES = ("_keys", "_state", "_idem", "_due", "_lease")
 
 
 class ItemState(IntEnum):
@@ -126,7 +126,7 @@ class Queue:
         """큐를 연다(install이면 없을 때 만든다).
 
         Args:
-            name: 영문·숫자·밑줄 1~40자. 새로 만드는 이름은 _keys·_state·_idem으로 끝날 수 없다(다른 큐의 내부
+            name: 영문·숫자·밑줄 1~40자. 새로 만드는 이름은 _keys·_state·_idem·_due·_lease로 끝날 수 없다(다른 큐의 내부
                 테이블·색인 이름과 겹친다). 이미 있는 큐는 이름과 무관하게 열린다.
             max_attempts: 시도 횟수 상한. 0이면 제한 없음.
             max_payload_bytes: payload 한 건의 상한. 약 3.9 KB 이하가 가장 빠르다.
@@ -206,6 +206,9 @@ class Queue:
 
     def get(self, lease_ms: int, *, item_id: int | None = None, txn: Transaction | None = None) -> Claim | None:
         """다음 작업(또는 item_id 하나)을 lease_ms 동안 claim한다. 가져올 것이 없으면 None이다.
+
+        이 판이 설치한 큐는 claim 가능해진 시각(대기는 ready_at, 만료 lease는 lease_until)이 이른 작업부터 준다.
+        바로 앞 get이 빈 결과였으면 writer 없이 먼저 확인하므로 빈 큐를 쉬지 않고 묻는 소비자가 writer를 붙잡지 않는다.
 
         Raises:
             StaleError: item_id가 claim할 수 없는 상태(처리 중이거나 끝남)일 때.

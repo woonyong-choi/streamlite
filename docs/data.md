@@ -86,7 +86,7 @@ Record codec의 코드 `0`은 NULL, `1`과 `2`는 정수 0과 1, `3..10`은 1~8�
 
 ### `streamlite_queue_<name>`
 
-큐 설치가 만드는 작업 본체다. 모든 열은 `NOT NULL`이고 DDL에 `DEFAULT`가 없다. `put`이 넣는 초기 값은 열 기본값과 다르다.
+큐 설치가 만드는 작업 본체다. `idem`을 뺀 모든 열은 `NOT NULL`이고 DDL에 `DEFAULT`가 없다. `put`이 넣는 초기 값은 열 기본값과 다르다. 아래는 0.3.0(#260)부터 설치하는 형식이며, 그 전 판이 설치한 큐는 `due` 열이 없고 `idem`이 `NOT NULL`(키가 없으면 빈 TEXT)이다.
 
 | 열 | 타입 | 뜻 |
 |---|---|---|
@@ -96,19 +96,21 @@ Record codec의 코드 `0`은 NULL, `1`과 `2`는 정수 0과 1, `3..10`은 1~8�
 | `lease_until` | `INTEGER` | lease 만료 절대 시각, 밀리초 |
 | `fence` | `INTEGER` | 재claim마다 증가하는 claim 식별값 |
 | `attempts` | `INTEGER` | claim 횟수 |
-| `idem` | `TEXT` | 중복 제거 키, 미사용은 빈 TEXT |
+| `idem` | `TEXT` | 중복 제거 키, 미사용은 NULL(이전 형식은 빈 TEXT) |
 | `payload` | `BLOB` | 작업 바이트, 빈 BLOB 허용 |
 | `note` | `TEXT` | 마지막 이유, 없으면 빈 TEXT |
 | `created_at` | `INTEGER` | 생성 절대 시각, 밀리초 |
+| `due` | `INTEGER` | claim·recover·purge 색인 값. READY는 `ready_at`, 시도가 남은 LEASED는 `lease_until`, 마지막 시도의 LEASED는 `-2^61 + id`, ACKED는 `-2^62 + id`, FAILED는 `-2^62 + 2^60 + id` |
 
 | 키와 색인 | 열 |
 |---|---|
 | 기본 키 | `id` |
-| 비고유 색인 `streamlite_queue_<name>_state` | `state` |
-| 비고유 색인 `streamlite_queue_<name>_idem` | `idem` |
+| 비고유 색인 `streamlite_queue_<name>_due` | `due` |
+| 비고유 색인 `streamlite_queue_<name>_idem` | `idem`(NULL은 들어가지 않는다) |
+| 이전 형식: 비고유 색인 `streamlite_queue_<name>_state`, `streamlite_queue_<name>_lease` | `state`, `lease_until`(`_lease`는 열 때 만든다) |
 | 외래 키 | 없음 |
 
-`put`은 `state=0`, `lease_until=0`, `fence=0`, `attempts=0`, `note=''`를 명시하고 `ready_at`과 `created_at`에 현재 시각을 넣는다. 상태 전이와 lease 만료의 의미는 [트랜잭션 큐 설계](design/transaction-queue.md)에 있다.
+`put`은 `state=0`, `lease_until=0`, `fence=0`, `attempts=0`, `note=''`를 명시하고 `ready_at`·`created_at`·`due`에 현재 시각을 넣는다. `due` 구간이 겹치지 않도록 작업 ID는 `2^60`보다 작아야 하며 넘으면 `put`이 `LIMIT`이다. 상태 전이와 lease 만료의 의미는 [트랜잭션 큐 설계](design/transaction-queue.md)에 있다.
 
 ### `streamlite_queue_<name>_keys`
 

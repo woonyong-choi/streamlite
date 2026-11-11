@@ -1572,6 +1572,47 @@ heap_status_t heap_secondary_visit_equal(heap_t *heap, heap_secondary_spec_t spe
     return scan.halted ? HEAP_OK : heap_from_pk(heap, checked);
 }
 
+static bool visit_range_entry(void *context, const uint8_t *key, size_t key_bytes, heap_locator_t locator)
+{
+    (void)key;
+    (void)key_bytes;
+    return visit_equal_entry(context, locator);
+}
+
+// cost: time O(d·log c + m), heap O(1), stack O(d), io O(d + m/c)
+// vars: d = 색인 깊이, c = 노드당 항목 수, m = 방문한 항목 수
+// basis: estimate
+heap_status_t heap_secondary_visit_range(heap_t *heap, heap_secondary_spec_t spec, int64_t low, int64_t high,
+                                         bool (*visit)(void *context, heap_locator_t locator), void *context,
+                                         bool *stopped)
+{
+    if (heap == NULL || visit == NULL || stopped == NULL || spec.column >= heap->column_count) return HEAP_INVALID;
+    *stopped = false;
+    if (low > high) return HEAP_OK;
+    if (spec.root == PAGE_FILE_NO_PAGE) return heap->root == PAGE_FILE_NO_PAGE ? HEAP_OK : HEAP_CORRUPT;
+    pk_tree_io_t io = index_read_io(heap);
+    uint32_t stamp;
+    heap_status_t status = heap_from_pk(heap, text_tree_stamp(&io, heap->table_id, spec.root, &stamp));
+    if (status != HEAP_OK) return status;
+    if (stamp != heap->root) return HEAP_CORRUPT;
+    if (heap->stats != NULL) heap->stats->index_lookups++;
+    /* 값은 순서 보존 8바이트로 키 앞에 놓인다. [low, high+1) 구간의 키가 low 이상 high 이하인 값이다 */
+    uint8_t lower_key[8], upper_key[8];
+    put_ordered_integer(lower_key, low);
+    text_key_bound_t lower = {lower_key, sizeof(lower_key), true};
+    text_key_bound_t upper = {upper_key, sizeof(upper_key), false};
+    if (high != INT64_MAX) put_ordered_integer(upper_key, high + 1);
+    text_key_range_t bounds = {&lower, high != INT64_MAX ? &upper : NULL};
+    equal_visit_t scan = {visit, context, false};
+    bool halted = false;
+    pk_status_t visited = text_tree_visit_range(&io, heap->table_id, spec.root, bounds, visit_range_entry, &scan, &halted);
+    if (scan.halted) {
+        *stopped = true;
+        return HEAP_OK;
+    }
+    return heap_from_pk(heap, visited);
+}
+
 // cost: time O(d·log c), heap O(1), io O(d)
 // vars: d = 색인 깊이, c = 노드당 항목 수
 // basis: estimate
