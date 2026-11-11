@@ -884,6 +884,45 @@ static void clone_empty_and_invalid_arguments(void)
     catalog_close(source);
 }
 
+/* #283: 보조 색인은 테이블당 CATALOG_MAX_TABLE_INDEXES, DB 전체 CATALOG_MAX_INDEXES까지이고 그만큼을 부호화해 다시 읽는다 */
+static void index_limits_are_per_table_and_per_database(void)
+{
+    static const catalog_column_spec_t column[] = {{"v", 1, VALUE_INTEGER, false, NULL}};
+    catalog_t *catalog;
+    assert(catalog_open_empty(&catalog) == CATALOG_OK);
+    char name[32];
+    size_t tables = CATALOG_MAX_INDEXES / CATALOG_MAX_TABLE_INDEXES;
+    catalog_table_id_t first = CATALOG_NO_TABLE;
+    for (size_t t = 0; t < tables; t++) {
+        catalog_table_id_t id;
+        snprintf(name, sizeof(name), "t%zu", t);
+        assert(create(catalog, name, column, 1, CATALOG_NO_COLUMN, false, &id) == CATALOG_OK);
+        if (t == 0) first = id;
+        for (size_t i = 0; i < CATALOG_MAX_TABLE_INDEXES; i++) {
+            snprintf(name, sizeof(name), "t%zu_i%zu", t, i);
+            assert(catalog_add_index(catalog, id, name, strlen(name), 0, false, false) == CATALOG_OK);
+        }
+        /* 테이블 한도를 넘는 색인은 거절하고 카탈로그를 바꾸지 않는다 */
+        uint64_t generation = catalog_generation(catalog);
+        assert(catalog_add_index(catalog, id, "over", 4, 0, false, false) == CATALOG_LIMIT);
+        assert(catalog_generation(catalog) == generation);
+    }
+    catalog_table_id_t extra;
+    assert(create(catalog, "extra", column, 1, CATALOG_NO_COLUMN, false, &extra) == CATALOG_OK);
+    assert(catalog_add_index(catalog, extra, "over", 4, 0, false, false) == CATALOG_LIMIT);
+    snapshot_t full = snapshot(catalog);
+    catalog_t *back;
+    assert(catalog_decode(full.bytes, full.size, &back) == CATALOG_OK);
+    assert(catalog_index_count(back, first) == CATALOG_MAX_TABLE_INDEXES);
+    catalog_index_view_t view;
+    assert(catalog_index_at(back, first, CATALOG_MAX_TABLE_INDEXES - 1, &view) == CATALOG_OK);
+    snprintf(name, sizeof(name), "t0_i%u", CATALOG_MAX_TABLE_INDEXES - 1u);
+    assert(view.name_bytes == strlen(name) && memcmp(view.name, name, view.name_bytes) == 0);
+    catalog_close(back);
+    free(full.bytes);
+    catalog_close(catalog);
+}
+
 int main(void)
 {
     clone_preserves_metadata_and_independent_lifetimes();
@@ -903,6 +942,7 @@ int main(void)
     encoded_size_cap_is_enforced();
     stored_wide_tables_still_decode();
     index_metadata_survives_restart();
+    index_limits_are_per_table_and_per_database();
     puts("catalog: independent tables, stable IDs, preserved failures, strict encode/decode");
     return 0;
 }

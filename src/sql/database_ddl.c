@@ -190,8 +190,8 @@ database_exec_status_t exec_drop(database_t *db, const sqlstmt_drop_t *drop, res
     heap_status_t opened = open_heap(db, &view, id, &heap);
     if (opened != HEAP_OK) return heap_failure(db, opened, "open");
     size_t index_count = catalog_index_count(base_catalog(db), id);
-    uint32_t roots[CATALOG_MAX_INDEXES];
-    if (index_count > CATALOG_MAX_INDEXES) {
+    uint32_t roots[CATALOG_MAX_TABLE_INDEXES];
+    if (index_count > CATALOG_MAX_TABLE_INDEXES) {
         status = heap_failure(db, HEAP_CORRUPT, "index count");
         goto done;
     }

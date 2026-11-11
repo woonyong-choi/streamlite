@@ -19,7 +19,7 @@ typedef struct {
 
 typedef struct {
     const sqlstmt_conflict_t *spec;
-    conflict_target_t targets[1 + CATALOG_MAX_INDEXES];
+    conflict_target_t targets[1 + CATALOG_MAX_TABLE_INDEXES];
     size_t target_count;
     source_ref_t sources[2];    /* 이미 있는 행, excluded */
     resolver_t existing;        /* sources[0]만. 바깥 열을 보는 서브쿼리가 쓴다 */

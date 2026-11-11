@@ -42,6 +42,7 @@
 
 - 다른 연결·프로세스가 쓰기 거래를 쥔 동안 DB 열기가 writer 잠금을 기다리다 5초 뒤 `DB_LOCKED`(Python `DatabaseOpenError`)로 실패하던 문제 수정: 쓰기 가능한 열기도 읽기와 같은 공유 잠금으로 게시 상태를 읽어 곧바로 열린다. 손실 판정과 쓰기 열기 거절(#271)은 같고, writer와의 경합은 첫 쓰기의 BUSY(`busy_timeout_ms`·`busy_timeout_s` 재시도)로 드러난다. ([#283](https://github.com/woonyong-choi/streamlite/issues/283))
 - 이미 있는 큐를 `install=True`(Python 기본값)로 열 때 색인을 만들려고 쓰기 거래를 열어 다른 writer가 쓰는 동안 `BusyError`로 실패하던 문제 수정: 큐 테이블과 색인이 모두 있으면 쓰기 거래 없이 연다. ([#283](https://github.com/woonyong-choi/streamlite/issues/283))
+- 보조 색인 한도가 DB 전체 64개라 큐를 16개까지만 만들 수 있고 그 뒤 사용자 `CREATE INDEX`도 실패하던 문제 수정: DB 전체 1024개, 테이블당 64개로 바꿈. 파일 형식은 같고, 전체 한도가 64개이던 빌드는 64개를 넘는 파일을 바꾸지 않고 `DB_CORRUPT`로 거절한다. ([#283](https://github.com/woonyong-choi/streamlite/issues/283))
 - 긴 큐 이름의 경계 처리 수정
 - free-list 경계 처리 수정
 - 음수이거나 범위를 넘는 시계 값에서 큐 연산이 모두 `LIMIT`이 되던 문제 수정: 유효한 값을 한 번도 읽지 못한 핸들만 1970년으로 진행하지 않고 `LIMIT`으로 거절한다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))

@@ -456,7 +456,8 @@ catalog_status_t catalog_add_index(catalog_t *catalog, catalog_table_id_t table_
     if (find_index(catalog, name, name_bytes) != NULL || find_by_name(catalog, name, name_bytes) != NULL) {
         return CATALOG_EXISTS;
     }
-    if (catalog->index_count == CATALOG_MAX_INDEXES) return CATALOG_LIMIT;
+    if (catalog->index_count >= CATALOG_MAX_INDEXES) return CATALOG_LIMIT;
+    if (catalog_index_count(catalog, table_id) >= CATALOG_MAX_TABLE_INDEXES) return CATALOG_LIMIT;
     size_t extra = INDEX_FIXED_BYTES + name_bytes;
     if (extra > CATALOG_MAX_ENCODED_BYTES - catalog->encoded_bytes) return CATALOG_LIMIT;
     catalog_status_t status = check_can_mutate(catalog);

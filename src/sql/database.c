@@ -672,8 +672,8 @@ heap_status_t configure_secondary(heap_batch_t *batch, const catalog_t *catalog,
                                          catalog_table_id_t table_id)
 {
     size_t count = catalog_index_count(catalog, table_id);
-    if (count > CATALOG_MAX_INDEXES) return HEAP_CORRUPT;
-    heap_secondary_spec_t specs[CATALOG_MAX_INDEXES];
+    if (count > CATALOG_MAX_TABLE_INDEXES) return HEAP_CORRUPT;
+    heap_secondary_spec_t specs[CATALOG_MAX_TABLE_INDEXES];
     for (size_t i = 0; i < count; i++) {
         catalog_index_view_t view;
         if (catalog_index_at(catalog, table_id, i, &view) != CATALOG_OK) return HEAP_CORRUPT;

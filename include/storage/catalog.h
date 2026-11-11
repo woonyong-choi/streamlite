@@ -34,7 +34,15 @@ typedef uint32_t catalog_table_id_t;
  * decode·describe·drop은 되지만 heap으로는 열리지 않는다.
  */
 #define CATALOG_MAX_CREATE_COLUMNS 511u
-#define CATALOG_MAX_INDEXES 64u
+/*
+ * 보조 색인 수 한도. CATALOG_MAX_INDEXES는 DB 전체, CATALOG_MAX_TABLE_INDEXES는 테이블 하나의 한도다(넘으면
+ * catalog_add_index가 CATALOG_LIMIT). 부호화는 색인 수를 u32로 쓰고 색인마다 이름을 함께 쓰므로 전체 한도는 형식에
+ * 묶인 값이 아니며 1024개의 부호화도 CATALOG_MAX_ENCODED_BYTES보다 훨씬 작다(#283). 전체 한도가 64이던 이전 빌드는
+ * 64개를 넘는 파일을 열 때 카탈로그를 해석하기 전에 CATALOG_CORRUPT로 거절하고 파일을 바꾸지 않는다. 테이블 한도는
+ * heap batch의 보조 색인 수 한도(64)와 같고 테이블별 고정 배열의 크기다.
+ */
+#define CATALOG_MAX_INDEXES 1024u
+#define CATALOG_MAX_TABLE_INDEXES 64u
 /* encode 결과와 decode 입력의 최대 바이트. 이를 넘는 카탈로그는 만들 수 없다. */
 #define CATALOG_MAX_ENCODED_BYTES (16u * 1024u * 1024u)
 

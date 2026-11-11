@@ -366,4 +366,17 @@ def test_order_ties_and_access_paths_keep_row_order(tmp_path: Path) -> None:
         db.execute(sql)
     for sql, expected in ORDER_TIE_CASES:
         assert db.execute(sql).rows == expected, sql
+
+
+# #283: 색인 한도는 DB 전체 1024개라 색인 4개를 쓰는 큐를 16개 넘게 만들고 그 뒤에도 사용자 색인을 만든다
+def test_more_than_sixteen_queues_and_user_index(tmp_path: Path) -> None:
+    from streamlite import Queue
+
+    db = Database(tmp_path / "queues.streamlite")
+    for i in range(40):
+        Queue(db, f"q{i}").close()
+    db.execute("CREATE TABLE u (id INTEGER PRIMARY KEY, v TEXT)")
+    db.execute("CREATE INDEX u_v ON u (v)")
+    db.execute("INSERT INTO u VALUES (1, 'a')")
+    assert db.execute("SELECT id FROM u WHERE v = 'a'").rows == ((1,),)
     db.close()
