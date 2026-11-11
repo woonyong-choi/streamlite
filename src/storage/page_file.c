@@ -107,6 +107,8 @@ struct page_file {
     uint32_t publish_timeout_ms;  /* 게시 순간의 배타 잠금과 reader 공유 잠금의 대기 상한 */
     int writer_fd;          /* writer 잠금 파일(<path>-lock). 쓰기 핸들만, 없으면 -1 */
     int gate_fd;            /* 읽기 핸들이 게시 대기 표시를 보는 잠금 파일 fd. 없으면 -1(쓰기 핸들은 writer_fd를 쓴다) */
+    page_file_durability_t durability;  /* commit의 동기화 단계 */
+    bool unsynced;          /* OFF 단계에서 동기화하지 않은 commit이 있다. 정상 close가 동기화한다 */
     page_file_t *next_open; /* 열린 핸들 목록(fork한 자식에서 fd 사본을 닫는다) */
     page_file_t *prev_open;
     bool stale;             /* 버린 변경이 남았다. 다음 잠금에서 디스크의 게시 상태로 다시 읽는다 */
@@ -128,22 +130,22 @@ static ssize_t libc_pwrite(int fd, const void *buf, size_t size, off_t offset)
 }
 
 /*
- * 내구 동기화. Apple 플랫폼의 fsync(2)는 저장 장치의 쓰기 캐시를 비우지 않아 전원이 끊기면 성공한 commit이 사라질 수
- * 있다. 그래서 F_FULLFSYNC를 쓰고, 파일 시스템이 지원하지 않을 때만 fsync로 물러난다. 그 밖의 실패(EIO 등)를 fsync로
- * 다시 시도해 성공으로 바꾸지 않는다. STREAMLITE_TEST_PLAIN_FSYNC는 시험 바이너리 빌드 전용이다(Makefile). commit을
- * 수천 번 하는 시험이 commit마다 장치 캐시를 비우지 않게 한다. 배포하는 라이브러리는 이 매크로 없이 빌드한다.
+ * 내구 동기화. 기본(page_file_durability_t의 NORMAL)은 fsync(2)다. FULL은 full_sync를 쓴다. Apple 플랫폼의 fsync(2)는 저장
+ * 장치의 쓰기 캐시를 비우지 않아 전원이 끊기면 성공한 commit이 사라질 수 있으므로, 그 플랫폼의 full_sync는 F_FULLFSYNC를
+ * 쓰고 파일 시스템이 지원하지 않을 때만 fsync로 물러난다. 그 밖의 실패(EIO 등)를 fsync로 다시 시도해 성공으로 바꾸지 않는다.
+ * 다른 플랫폼의 full_sync는 fsync와 같다.
  */
-static int libc_sync(int fd)
+static int libc_full_sync(int fd)
 {
-#if defined(__APPLE__) && defined(F_FULLFSYNC) && !defined(STREAMLITE_TEST_PLAIN_FSYNC)
+#if defined(__APPLE__) && defined(F_FULLFSYNC)
     if (fcntl(fd, F_FULLFSYNC) == 0) return 0;
     if (errno != ENOTSUP && errno != EOPNOTSUPP && errno != EINVAL && errno != ENOTTY && errno != ENODEV) return -1;
 #endif
     return fsync(fd);
 }
 
-static const page_file_io_t LIBC_IO = {libc_pread, libc_pwrite, libc_sync, link, unlink};
-static page_file_io_t g_default_io = {libc_pread, libc_pwrite, libc_sync, link, unlink};
+static const page_file_io_t LIBC_IO = {libc_pread, libc_pwrite, fsync, link, unlink, libc_full_sync};
+static page_file_io_t g_default_io = {libc_pread, libc_pwrite, fsync, link, unlink, libc_full_sync};
 static size_t g_default_cache_pages = PAGE_FILE_CACHE_PAGES;
 static uint32_t g_default_lock_timeout_ms = PAGE_FILE_LOCK_TIMEOUT_MS;
 static uint32_t g_default_publish_timeout_ms = PAGE_FILE_PUBLISH_TIMEOUT_MS;
@@ -368,12 +370,19 @@ static page_file_status_t write_full(const page_file_t *file, const uint8_t *buf
     return PAGE_FILE_OK;
 }
 
+/* 단계에 맞는 동기화 함수. FULL이고 주입한 진입점에 full_sync가 없으면 fsync를 쓴다 */
+static int sync_call(const page_file_t *file, int fd)
+{
+    if (file->durability == PAGE_FILE_DURABILITY_FULL && file->io.full_sync != NULL) return file->io.full_sync(fd);
+    return file->io.fsync(fd);
+}
+
 static page_file_status_t sync_file(page_file_t *file)
 {
     int eintr = 0;
     for (;;) {
         TB_BEGIN(bench_io, TB_SYNC);
-        int synced = file->io.fsync(file->fd);
+        int synced = sync_call(file, file->fd);
         TB_END(bench_io);
         TB_IO(TB_SYNC, synced, 0, errno);
         if (synced == 0) break;
@@ -382,6 +391,18 @@ static page_file_status_t sync_file(page_file_t *file)
         file->poisoned = true;
         return PAGE_FILE_IO;
     }
+    file->unsynced = false;
+    return PAGE_FILE_OK;
+}
+
+/*
+ * commit 안의 동기화. OFF 단계는 동기화하지 않고 표시만 남긴다. 쓰기 순서(데이터 → 제어)는 그대로이므로 프로세스 종료에는
+ * 안전하다. OS·전원 장애 때 커널이 버린 쓰기는 이 단계에서 막지 못한다.
+ */
+static page_file_status_t sync_commit(page_file_t *file)
+{
+    if (file->durability != PAGE_FILE_DURABILITY_OFF) return sync_file(file);
+    file->unsynced = true;
     return PAGE_FILE_OK;
 }
 
@@ -761,7 +782,7 @@ static page_file_status_t sync_directory(const page_file_t *file, const char *pa
     if (fd < 0) return PAGE_FILE_IO;
     page_file_status_t status = PAGE_FILE_OK;
     int eintr = 0;
-    while (file->io.fsync(fd) != 0) {
+    while (sync_call(file, fd) != 0) {
         if (errno == EINTR && ++eintr <= EINTR_RETRY_MAX) continue;
         status = PAGE_FILE_IO;
         break;
@@ -1140,6 +1161,15 @@ page_file_status_t page_file_close(page_file_t *file)
          * 잠금을 명시적으로 푼다. flock은 열린 파일 설명에 걸려 있어 그 설명을 가리키는 fd 사본이 다른 곳에 남으면
          * (atfork를 거치지 않고 만들어진 자식 등) close만으로는 풀리지 않는다.
          */
+        /* OFF 단계에서 동기화하지 않은 commit이 남았으면 정상 close가 동기화한다 */
+        if (file->unsynced && file->fd >= 0 && !file->poisoned) {
+            int eintr = 0;
+            while (file->io.fsync(file->fd) != 0) {
+                if (errno == EINTR && ++eintr <= EINTR_RETRY_MAX) continue;
+                status = PAGE_FILE_IO;
+                break;
+            }
+        }
         if (file->fd >= 0) flock(file->fd, LOCK_UN);
         if (file->writer_fd >= 0) flock(file->writer_fd, LOCK_UN);
     }
@@ -1210,6 +1240,20 @@ static page_file_status_t sync_published(page_file_t *file, bool *changed)
     file->stale = false;
     *changed = true;
     return PAGE_FILE_OK;
+}
+
+void page_file_set_durability(page_file_t *file, page_file_durability_t durability)
+{
+    if (file == NULL) return;
+    if (durability != PAGE_FILE_DURABILITY_FULL && durability != PAGE_FILE_DURABILITY_OFF) {
+        durability = PAGE_FILE_DURABILITY_NORMAL;
+    }
+    file->durability = durability;
+}
+
+page_file_durability_t page_file_durability(const page_file_t *file)
+{
+    return file != NULL ? file->durability : PAGE_FILE_DURABILITY_NORMAL;
 }
 
 void page_file_set_lock_timeout(page_file_t *file, uint32_t timeout_ms)
@@ -1810,7 +1854,7 @@ page_file_status_t page_file_commit(page_file_t *file)
     }
     /* manifest로 끝남을 확인할 수 있으면 데이터 fsync를 제어 쓰기 뒤의 fsync 하나로 합친다 */
     bool barrier = file->needs_barrier;
-    if (status == PAGE_FILE_OK && barrier) status = sync_file(file);
+    if (status == PAGE_FILE_OK && barrier) status = sync_commit(file);
     if (status != PAGE_FILE_OK) {
         int err = errno;
         if (!file->poisoned) undo_chain(file, &next_chain);
@@ -1848,10 +1892,14 @@ page_file_status_t page_file_commit(page_file_t *file)
     file->commit_outcome = PAGE_FILE_COMMIT_UNKNOWN;
     status = write_full(file, page, sizeof(page), (uint64_t)slot * PAGE_FILE_PAGE_BYTES);
     if (status != PAGE_FILE_OK) file->poisoned = true;
-    if (status == PAGE_FILE_OK) status = sync_file(file);
+    bool synced = file->durability != PAGE_FILE_DURABILITY_OFF;
+    if (status == PAGE_FILE_OK) status = sync_commit(file);
     int err = errno;
-    /* 내구 확인 기록은 게시 잠금을 쥔 채 쓴다. reader가 제어 페이지와 어긋난 기록을 보지 않는다 */
-    if (status == PAGE_FILE_OK) record_confirmed(file, next.generation);
+    /*
+     * 내구 확인 기록은 게시 잠금을 쥔 채 쓴다. reader가 제어 페이지와 어긋난 기록을 보지 않는다. 동기화하지 않은 세대(OFF)는
+     * 확인한 것이 아니므로 기록을 지운다. 남겨 두면 장애 뒤 물러난 열기가 낡은 기록으로 손실을 잘못 확정할 수 있다.
+     */
+    if (status == PAGE_FILE_OK) record_confirmed(file, synced ? next.generation : 0);
     else set_publish_intent(file, false);
     flock(file->fd, LOCK_UN);
     errno = err;

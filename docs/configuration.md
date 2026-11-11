@@ -22,13 +22,15 @@ macOS는 `.dylib`, 그 밖은 `.so` 이름을 쓴다. 후보가 없으면 다음
 
 | 키 | 타입 | 기본값 | 뜻 |
 |---|---|---|---|
+| `busy_timeout_ms` | C `uint32_t`, 밀리초 | `0`, 기다리지 않음 | C `streamlite_open_ex`의 BUSY 재시도 기간 |
 | `busy_timeout_s` | Python `float`, 초 | `5.0` | Python의 BUSY 재시도 기간 |
 | `create` | C `int`, Python `bool` | C 필수 인자, Python `True` | 파일이 없으면 생성 |
+| `durability` | C `uint32_t`(`STREAMLITE_DURABILITY_*`), Python `"normal"`·`"full"`·`"off"` | NORMAL | commit 동기화 단계([안전성](safety.md#동기화-단계)) |
 | `path` | C 문자열, Python 경로 | 없음, 필수 | DB 파일 경로 |
 
 `Database` 생성자의 `streamlite_open` 호출은 한 번이며 `busy_timeout_s`로 재시도하지 않는다. 이 값은 `Database.execute`의 SQL BUSY, `begin`, 큐 열기와 트랜잭션 인자를 받지 않은 큐 호출의 BUSY 재시도에 쓰인다. 명시적 `Transaction.execute`와 `txn=`을 받은 큐 호출은 자동 재시도하지 않는다. 초기 대기는 0.5밀리초이고 두 배씩 늘려 최대 20밀리초로 둔다. 운영체제 스케줄링과 호출 시간 때문에 실제 경과가 timeout을 넘지 않는다는 보장은 아니다.
 
-Flat C API는 writer 경합을 호출자에게 반환하며 Python과 같은 재시도 루프가 없다. Commit은 항상 `DURABLE`이고, 이 API에는 read-only, isolation, durability, 세션 풀·메모리 예산을 선택하는 인자가 없다. Core 헤더의 별도 옵션을 Python `Database` 옵션으로 전달할 수 없다.
+Flat C API의 `streamlite_open`은 writer 경합을 호출자에게 반환한다. `streamlite_open_ex`의 `busy_timeout_ms`가 0이 아니면 `streamlite_begin`, 트랜잭션 없이 부른 큐 변경 연산과 자동 commit 변경 문장의 BUSY를 그 기간까지 db mutex 밖에서 다시 시도한다(0.5밀리초에서 20밀리초까지 두 배씩). 트랜잭션 안의 문장·큐 호출은 다시 시도하지 않는다. Python `Database`는 C에 0을 넘기고 자기 `busy_timeout_s`로 재시도한다. 동기화 단계 NORMAL·FULL의 commit은 `DURABLE`을, OFF는 `VISIBLE`을 달성한다. 이 API에는 read-only, isolation, 세션 풀·메모리 예산을 선택하는 인자가 없다. Core 헤더의 별도 옵션을 Python `Database` 옵션으로 전달할 수 없다.
 
 ### 큐 열기
 

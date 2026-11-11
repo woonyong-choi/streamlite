@@ -8,7 +8,7 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-__all__ = ["CLOCK_FN", "LIST_NOTE_BYTES", "Item", "ListItem", "Param", "QueueOptions", "load_library"]
+__all__ = ["CLOCK_FN", "LIST_NOTE_BYTES", "Item", "ListItem", "OpenOptions", "Param", "QueueOptions", "load_library"]
 
 CLOCK_FN = ctypes.CFUNCTYPE(ctypes.c_uint64, ctypes.c_void_p)
 
@@ -24,6 +24,15 @@ class Param(ctypes.Structure):
         ("real", ctypes.c_double),
         ("bytes", ctypes.c_void_p),
         ("size", ctypes.c_size_t),
+    ]
+
+
+class OpenOptions(ctypes.Structure):
+    """열기 옵션(streamlite_open_options_t). 0이면 기본값이다."""
+
+    _fields_ = [
+        ("durability", ctypes.c_uint32),
+        ("busy_timeout_ms", ctypes.c_uint32),
     ]
 
 
@@ -95,6 +104,7 @@ def _candidates() -> Iterator[Path]:
 
 _INT_FUNCTIONS = (
     "streamlite_open",
+    "streamlite_open_ex",
     "streamlite_close",
     "streamlite_exec",
     "streamlite_begin",
@@ -129,6 +139,7 @@ def _declare(lib: ctypes.CDLL) -> ctypes.CDLL:
     lib.streamlite_set_max_result_bytes.argtypes = [size]
     lib.streamlite_max_result_bytes.restype = size
     lib.streamlite_open.argtypes = [c.c_char_p, c.c_int, pptr]
+    lib.streamlite_open_ex.argtypes = [c.c_char_p, c.c_int, c.POINTER(OpenOptions), pptr]
     lib.streamlite_close.argtypes = [pptr]
     lib.streamlite_cancel.argtypes = [ptr]
     lib.streamlite_cancel.restype = None

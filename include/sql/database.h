@@ -118,6 +118,22 @@ database_status_t database_close(database_t *db);
 
 /* 불확정 commit 결과나 fsync 실패로 더는 쓸 수 없는 핸들인지. */
 bool database_is_poisoned(const database_t *db);
+
+/*
+ * commit의 동기화 단계(page_file.h의 page_file_durability_t와 같은 번호·뜻). 어느 단계든 COW 게시 순서(데이터 → 제어
+ * 페이지)는 같아 프로세스 종료 뒤에는 이전 또는 새 상태다. NORMAL(기본)은 commit마다 fsync(2), FULL은 Apple 플랫폼에서
+ * F_FULLFSYNC(그 밖은 fsync), OFF는 commit에서 동기화하지 않고 정상 close에서 한 번 동기화한다. OFF는 OS·전원 장애 뒤
+ * 최근 commit을 잃거나 파일이 손상으로 열릴 수 있다.
+ */
+typedef enum {
+    DATABASE_DURABILITY_NORMAL = 0,
+    DATABASE_DURABILITY_FULL = 1,
+    DATABASE_DURABILITY_OFF = 2
+} database_durability_t;
+
+/* 이 핸들의 다음 commit부터 적용한다. 알 수 없는 값은 DATABASE_INVALID이고 바꾸지 않는다 */
+database_status_t database_set_durability(database_t *db, database_durability_t durability);
+database_durability_t database_durability(const database_t *db);
 size_t database_table_count(const database_t *db);
 
 /* 이 핸들이 연 뒤 문장들이 누적한 읽기 비용. 전체 스캔이 얼마나 일어났는지 대조하는 데 쓴다. */

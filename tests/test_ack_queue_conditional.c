@@ -341,7 +341,7 @@ static void test_full_batch_observation(unsigned condition, bool candidate)
 int main(void)
 {
     set_dir("build/test_ack_queue_conditional_dir");
-    page_file_io_t io = {observed_read, observed_write, observed_sync, link, unlink};
+    page_file_io_t io = {observed_read, observed_write, observed_sync, link, unlink, NULL};
     page_file_set_default_io(&io);
     for (unsigned condition = 0; condition < 4; condition++) {
         for (unsigned candidate = 0; candidate < 2; candidate++) {

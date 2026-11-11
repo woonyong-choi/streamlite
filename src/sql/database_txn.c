@@ -14,6 +14,12 @@ typedef struct {
     uint32_t autocommit_timeout_ms;
 } layer_t;
 
+/* 이 열기의 동기화 단계가 달성하는 보증. OFF는 동기화하지 않으므로 VISIBLE이다 */
+static txn_guarantee_t layer_guarantee(const layer_t *l)
+{
+    return database_durability(l->db) == DATABASE_DURABILITY_OFF ? TXN_GUARANTEE_VISIBLE : TXN_GUARANTEE_DURABLE;
+}
+
 struct database_txn {
     layer_t *layer;
     txn_t *txn;
@@ -43,7 +49,7 @@ static database_exec_status_t layer_exec(void *ctx, database_t *db, const databa
                                          result_t **out)
 {
     layer_t *l = ctx;
-    txn_begin_options_t begin = {TXN_ACCESS_READ_WRITE, TXN_ISOLATION_SNAPSHOT, TXN_GUARANTEE_DURABLE,
+    txn_begin_options_t begin = {TXN_ACCESS_READ_WRITE, TXN_ISOLATION_SNAPSHOT, layer_guarantee(l),
                                  l->autocommit_timeout_ms, NULL};
     txn_t *txn = NULL;
     txn_status_t st = txn_begin(l->manager, &begin, &txn);
@@ -108,8 +114,9 @@ static txn_status_t be_write_begin(void *ctx, uint64_t base_seq, void **write)
 }
 
 /*
- * 게시는 COW다. 새 페이지와 카탈로그를 쓰고 fsync한 뒤 제어 페이지 한 장으로 세대를 바꾸고 다시 fsync한다.
- * 성공을 돌려준 게시는 프로세스·OS 종료 뒤에도 남으므로 요청한 보증과 무관하게 DURABLE을 달성한다.
+ * 게시는 COW다. 새 페이지와 카탈로그를 쓰고 제어 페이지 한 장으로 세대를 바꾼 뒤 동기화한다. NORMAL·FULL 단계에서 성공을
+ * 돌려준 게시는 프로세스·OS 종료 뒤에도 남으므로 요청한 보증과 무관하게 DURABLE을 달성한다. OFF 단계는 동기화하지 않아
+ * VISIBLE이다(begin이 요청을 그 단계로 낮춘다).
  */
 static txn_publish_result_t be_publish(void *ctx, void *write, uint64_t commit_seq, txn_guarantee_t requested)
 {
@@ -119,7 +126,7 @@ static txn_publish_result_t be_publish(void *ctx, void *write, uint64_t commit_s
     (void)requested;
     if (database_work_failed(l->db)) return (txn_publish_result_t){TXN_OUTCOME_NOT_APPLIED, TXN_GUARANTEE_VISIBLE};
     database_work_result_t r = database_work_commit(l->db);
-    if (r.outcome == DATABASE_WORK_APPLIED) return (txn_publish_result_t){TXN_OUTCOME_APPLIED, TXN_GUARANTEE_DURABLE};
+    if (r.outcome == DATABASE_WORK_APPLIED) return (txn_publish_result_t){TXN_OUTCOME_APPLIED, layer_guarantee(l)};
     txn_outcome_t outcome = r.outcome == DATABASE_WORK_UNKNOWN ? TXN_OUTCOME_UNKNOWN : TXN_OUTCOME_NOT_APPLIED;
     return (txn_publish_result_t){outcome, TXN_GUARANTEE_VISIBLE};
 }
@@ -153,6 +160,8 @@ txn_status_t database_txn_begin(database_t *db, const txn_begin_options_t *optio
     if (l == NULL) return TXN_UNSUPPORTED;
     txn_begin_options_t o = options != NULL ? *options : (txn_begin_options_t){0};
     if (o.access != TXN_ACCESS_READ_WRITE) return TXN_UNSUPPORTED;
+    /* 알 수 없는 값은 낮추지 않고 txn_begin이 거절하게 둔다 */
+    if (o.guarantee <= TXN_GUARANTEE_DURABLE && o.guarantee > layer_guarantee(l)) o.guarantee = layer_guarantee(l);
     database_txn_t *t = calloc(1, sizeof(*t));
     if (t == NULL) return TXN_NOMEM;
     txn_status_t st = txn_begin(l->manager, &o, &t->txn);
@@ -394,9 +403,14 @@ database_status_t database_open_transactional(const char *path, const database_t
     static const database_txn_options_t defaults = {0};
     if (options == NULL) options = &defaults;
 
+    if (options->durability != DATABASE_DURABILITY_NORMAL && options->durability != DATABASE_DURABILITY_FULL &&
+        options->durability != DATABASE_DURABILITY_OFF) {
+        return DATABASE_INVALID;
+    }
     database_t *db = NULL;
     database_status_t st = database_open(path, true, &db);
     if (st != DATABASE_OK) return st;
+    database_set_durability(db, options->durability);
     layer_t *l = calloc(1, sizeof(*l));
     if (l == NULL) {
         database_close(db);

@@ -173,7 +173,7 @@ static int hook_fsync(int fd)
     return fsync(fd);
 }
 
-static const page_file_io_t HOOKED = {hook_pread, hook_pwrite, hook_fsync, link, unlink};
+static const page_file_io_t HOOKED = {hook_pread, hook_pwrite, hook_fsync, link, unlink, NULL};
 
 typedef enum { KIND_PWRITE, KIND_PREAD, KIND_FSYNC, KIND_ALLOC } kind_t;
 static const char *KIND_NAMES[] = {"pwrite", "pread", "fsync", "alloc"};

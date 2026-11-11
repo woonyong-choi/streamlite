@@ -4,7 +4,14 @@
 
 ## 0.3.0 - 미배포
 
+### 추가
+
+- commit 동기화 단계 NORMAL·FULL·OFF 추가: C `streamlite_open_ex`의 `streamlite_open_options_t.durability`, Python `Database(durability="normal"|"full"|"off")`. 어느 단계든 프로세스 종료 뒤에는 commit 전부 또는 전무이고, 단계는 OS 장애·전원 차단 보장만 바꾼다. OFF는 commit에서 동기화하지 않고 정상 close에서 한 번 동기화한다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+- C `streamlite_open_options_t.busy_timeout_ms` 추가: `streamlite_begin`, 트랜잭션 없이 부른 큐 변경 연산, 자동 commit 변경 문장의 BUSY를 db mutex 밖에서 그 기간까지 다시 시도한다. 기본 0은 이전처럼 기다리지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+
 ### 변경
+
+- macOS의 기본 commit 동기화를 `F_FULLFSYNC`에서 `fsync(2)`(NORMAL)로 변경: 0.3.0 개발 중 `F_FULLFSYNC` 고정으로 자동 commit INSERT가 약 10배 느려졌다. 전원 차단 보장이 필요하면 FULL 단계를 고른다. 다른 플랫폼의 동작은 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 
 - 공개 이름을 StreamLite로 변경: 배포·설치 이름과 Python import `streamlite`, C API `streamlite_*`, 공유 라이브러리 `libstreamlite`. 이전 이름의 별칭은 제공하지 않는다.
 - DB 파일 형식을 형식 4 하나로 정리: 16바이트 전체 magic과 SL codec을 쓰며, 이전 ToteDB 형식 파일을 읽는 reader는 제공하지 않는다.

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from types import TracebackType
 from typing import Protocol, Union
 
-from streamlite._native import Param, load_library
+from streamlite._native import OpenOptions, Param, load_library
 from streamlite.errors import (
     STATUS_BUSY,
     BusyError,
@@ -27,6 +27,8 @@ __all__ = ["Database", "NativeDatabase", "Result", "SqlValue", "Transaction"]
 SqlValue = Union[None, int, float, str, bytes]  # noqa: UP007 - 실행 시점에 평가되므로 3.9에서는 `|`를 못 쓴다
 
 DEFAULT_BUSY_TIMEOUT_S = 5.0
+# commit 동기화 단계(include/streamlite.h의 STREAMLITE_DURABILITY_*)
+DURABILITY_LEVELS = {"normal": 0, "full": 1, "off": 2}
 _PARAM_NULL, _PARAM_INTEGER, _PARAM_REAL, _PARAM_TEXT, _PARAM_BLOB = 0, 1, 2, 3, 4
 _KIND_ROWS, _KIND_COMMAND, _KIND_ERROR = 0, 1, 2
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
@@ -254,9 +256,24 @@ class Database:
         *,
         create: bool = True,
         busy_timeout_s: float = DEFAULT_BUSY_TIMEOUT_S,
+        durability: str = "normal",
     ) -> None:
+        """path의 DB를 연다.
+
+        durability는 commit 동기화 단계다. 어느 단계든 프로세스가 죽은 뒤에는 commit 전부 또는 전무로 다시 열린다.
+        "normal"(기본)은 commit마다 fsync(2)라 OS 장애 뒤에도 남는다(Apple 플랫폼은 장치 캐시를 비우지 않아 전원
+        차단 뒤 최근 commit을 잃을 수 있다). "full"은 Apple 플랫폼에서 F_FULLFSYNC를 쓴다. "off"는 commit에서
+        동기화하지 않고 close에서 한 번 동기화하므로 OS 장애·전원 차단 뒤 최근 commit을 잃거나 파일이 손상으로 열릴 수 있다.
+
+        Raises:
+            InvalidArgumentError: durability가 "normal"·"full"·"off"가 아닐 때.
+        """
+        level = DURABILITY_LEVELS.get(durability)
+        if level is None:
+            raise InvalidArgumentError(f"durability must be one of {sorted(DURABILITY_LEVELS)}: {durability!r}")
         handle = ctypes.c_void_p()
-        check(_lib.streamlite_open(os.fsencode(path), 1 if create else 0, ctypes.byref(handle)))
+        options = OpenOptions(level, 0)  # BUSY 대기는 이 객체가 busy_timeout_s로 한다
+        check(_lib.streamlite_open_ex(os.fsencode(path), 1 if create else 0, ctypes.byref(options), ctypes.byref(handle)))
         self._handle: ctypes.c_void_p | None = handle
         self._queues: set[Closable]
         self.busy_timeout_s = busy_timeout_s

@@ -144,7 +144,7 @@ static int hook_fsync(int fd)
     return fsync(fd);
 }
 
-static const page_file_io_t HOOKED = {hook_pread, hook_pwrite, hook_fsync, link, unlink};
+static const page_file_io_t HOOKED = {hook_pread, hook_pwrite, hook_fsync, link, unlink, NULL};
 
 /* ── 파일·데이터 보조 ── */
 static void clean_dir(void)

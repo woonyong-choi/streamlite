@@ -68,9 +68,11 @@ typedef enum {
 } page_file_status_t;
 
 /*
- * 테스트가 실패를 주입하는 자리. 기본값은 libc다. 다만 기본 fsync는 Apple 플랫폼에서 fcntl(F_FULLFSYNC)를 먼저 쓴다.
- * 그 플랫폼의 fsync(2)는 저장 장치의 쓰기 캐시를 비우지 않기 때문이다. 파일 시스템이 F_FULLFSYNC를 지원하지 않으면
- * (ENOTSUP·EINVAL·ENOTTY·ENODEV) fsync로 물러나고, 그 밖의 실패는 그대로 실패다. 끄는 설정은 없다.
+ * 테스트가 실패를 주입하는 자리. 기본값은 libc다. fsync는 NORMAL 단계의 동기화(fsync(2))이고 full_sync는 FULL 단계의
+ * 동기화다. 기본 full_sync는 Apple 플랫폼에서 fcntl(F_FULLFSYNC)를 먼저 쓴다(그 플랫폼의 fsync(2)는 저장 장치의 쓰기
+ * 캐시를 비우지 않는다). 파일 시스템이 F_FULLFSYNC를 지원하지 않으면(ENOTSUP·EINVAL·ENOTTY·ENODEV) fsync로 물러나고, 그
+ * 밖의 실패는 그대로 실패다. 다른 플랫폼에서는 fsync(2)다. full_sync가 NULL이면 FULL 단계도 fsync를 쓴다(앞 다섯 칸만
+ * 채운 주입 진입점은 모든 단계의 동기화가 그 fsync를 거친다).
  */
 typedef struct {
     ssize_t (*pread)(int fd, void *buf, size_t size, off_t offset);
@@ -78,7 +80,25 @@ typedef struct {
     int (*fsync)(int fd);
     int (*link)(const char *from, const char *to);
     int (*unlink)(const char *path);
+    int (*full_sync)(int fd);
 } page_file_io_t;
+
+/*
+ * commit의 동기화 단계. 어느 단계든 쓰기 순서(새 데이터 페이지 → 제어 페이지)와 COW는 같으므로 프로세스 종료 뒤에는
+ * 이전 또는 새 세대 중 하나로 열린다. 단계는 OS·전원 장애에 대한 보장만 바꾼다.
+ * - NORMAL(기본): commit마다 fsync(2). 성공한 commit은 OS 종료 뒤에도 남는다. Apple 플랫폼의 fsync(2)는 장치 쓰기 캐시를
+ *   비우지 않으므로 그 플랫폼에서는 전원 차단 뒤 최근 commit이 사라질 수 있다.
+ * - FULL: commit마다 full_sync(Apple은 F_FULLFSYNC). 장치가 요청을 지키면 전원 차단 뒤에도 남는다.
+ * - OFF: commit에서 동기화하지 않는다. 정상 close가 한 번 동기화한다. OS·전원 장애 뒤에는 최근 commit을 잃을 수 있고,
+ *   커널이 쓰기 일부만 남기면 파일이 손상(CORRUPT·LOST_COMMIT 판정)으로 열릴 수도 있다. 동기화하지 않은 세대는 잠금
+ *   파일의 내구 확인 기록을 지운다(page_file_loss_t).
+ * 파일 생성·게시와 디렉터리 동기화는 OFF에서도 동기화한다(FULL이면 full_sync).
+ */
+typedef enum {
+    PAGE_FILE_DURABILITY_NORMAL = 0,
+    PAGE_FILE_DURABILITY_FULL = 1,
+    PAGE_FILE_DURABILITY_OFF = 2
+} page_file_durability_t;
 
 /* 이후 열리는 핸들이 쓰는 I/O 진입점을 바꾼다. NULL이면 libc로 복원한다. 테스트 전용. */
 void page_file_set_default_io(const page_file_io_t *io);
@@ -357,6 +377,9 @@ typedef enum {
 void page_file_set_default_lock_timeout(uint32_t timeout_ms);
 /* 이후 열리는 핸들의 게시 대기 상한(밀리초). 기본 PAGE_FILE_PUBLISH_TIMEOUT_MS. 테스트용 */
 void page_file_set_default_publish_timeout(uint32_t timeout_ms);
+/* 이 핸들의 동기화 단계를 바꾼다. 다음 commit부터 적용한다. 알 수 없는 값은 NORMAL이다 */
+void page_file_set_durability(page_file_t *file, page_file_durability_t durability);
+page_file_durability_t page_file_durability(const page_file_t *file);
 /* 이 핸들의 잠금 대기 상한(밀리초) */
 void page_file_set_lock_timeout(page_file_t *file, uint32_t timeout_ms);
 /* 잠금을 잡고 게시 상태를 디스크와 맞춘다. 이미 잠금을 쥐었으면(승격 포함) INVALID, 게시 전 핸들도 INVALID다.

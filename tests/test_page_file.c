@@ -141,7 +141,7 @@ static int hook_unlink(const char *path)
     return unlink(path);
 }
 
-static const page_file_io_t HOOKED = {hook_pread, hook_pwrite, hook_fsync, hook_link, hook_unlink};
+static const page_file_io_t HOOKED = {hook_pread, hook_pwrite, hook_fsync, hook_link, hook_unlink, NULL};
 
 /* ── 보조 함수 ── */
 

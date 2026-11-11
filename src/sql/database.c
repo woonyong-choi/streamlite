@@ -358,6 +358,26 @@ database_status_t database_close(database_t *db)
 
 bool database_is_poisoned(const database_t *db) { return db != NULL && db->poisoned; }
 
+database_status_t database_set_durability(database_t *db, database_durability_t durability)
+{
+    if (db == NULL) return DATABASE_INVALID;
+    switch (durability) {
+        case DATABASE_DURABILITY_NORMAL: page_file_set_durability(db->file, PAGE_FILE_DURABILITY_NORMAL); break;
+        case DATABASE_DURABILITY_FULL: page_file_set_durability(db->file, PAGE_FILE_DURABILITY_FULL); break;
+        case DATABASE_DURABILITY_OFF: page_file_set_durability(db->file, PAGE_FILE_DURABILITY_OFF); break;
+        default: return DATABASE_INVALID;
+    }
+    return DATABASE_OK;
+}
+
+database_durability_t database_durability(const database_t *db)
+{
+    page_file_durability_t level = db != NULL ? page_file_durability(db->file) : PAGE_FILE_DURABILITY_NORMAL;
+    return level == PAGE_FILE_DURABILITY_FULL ? DATABASE_DURABILITY_FULL
+           : level == PAGE_FILE_DURABILITY_OFF ? DATABASE_DURABILITY_OFF
+                                               : DATABASE_DURABILITY_NORMAL;
+}
+
 void database_scan_stats(const database_t *db, database_scan_stats_t *out)
 {
     if (db == NULL || out == NULL) return;

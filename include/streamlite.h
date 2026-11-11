@@ -10,7 +10,8 @@
  * 라이브러리 libstreamlite에만 들어가고 DB 단독 사용 빌드(DATABASE_OBJS)에는 들어가지 않는다.
  *
  * 스레드: 모든 호출은 streamlite_db_t의 mutex로 직렬화된다. 이 라이브러리는 mutex를 쥔 채 다른 writer를 기다리지 않는다.
- * 트랜잭션 시작과 큐의 자기 트랜잭션은 기다리지 않고 STREAMLITE_BUSY를 돌려주므로 호출자가 mutex 밖에서 다시 시도한다.
+ * 트랜잭션 시작과 큐의 자기 트랜잭션은 writer를 얻지 못하면 STREAMLITE_BUSY다. busy_timeout_ms(streamlite_open_ex)가 0이 아니면
+ * 라이브러리가 mutex 밖에서 그 시간까지 다시 시도하고, 0이면 호출자가 다시 시도한다.
  * 살아 있는 db·큐·트랜잭션 핸들을 쓰는 호출(streamlite_txn_failed 포함)은 여러 스레드에서 동시에 불러도 된다.
  *
  * 핸들 수명: 핸들을 끝내는 호출(streamlite_close, streamlite_queue_close, streamlite_commit, streamlite_rollback)은 그
@@ -25,8 +26,9 @@
  * 트랜잭션 안의 호출은 트랜잭션마다 따로 연 세션을 쓴다. 연결의 세션 풀은 한도가 없다.
  *
  * 여러 프로세스: 같은 파일을 여러 프로세스가 각자 streamlite_open으로 연다. 쓰기 트랜잭션은 파일 전체에서 한 번에 하나이고,
- * 다른 프로세스가 쓰는 동안 변경 문장·큐 연산·streamlite_begin은 기다리지 않고 STREAMLITE_BUSY(문장은 BUSY 오류 결과)다. SELECT는
- * 기다리지 않고 마지막 게시 상태를 읽는다. 게시하는 순간(commit의 마지막 fsync)만 비켜 준다. 핸들은 연
+ * 다른 프로세스가 쓰는 동안 변경 문장·큐 연산·streamlite_begin은 STREAMLITE_BUSY(문장은 BUSY 오류 결과)다. 기본은 기다리지
+ * 않으며 streamlite_open_ex의 busy_timeout_ms로 다시 시도할 시간을 준다. SELECT는 기다리지 않고 마지막 게시 상태를 읽는다.
+ * 게시하는 순간(commit의 제어 쓰기와 동기화)만 비켜 준다. 핸들은 연
  * 프로세스에서만 쓴다. fork한 자식에서는 streamlite_close를 포함한 모든 호출이 STREAMLITE_DB_FORKED이며 아무것도 하지 않는다.
  *
  * 반환값: 아래 STREAMLITE_* 값이다. 1~16은 큐 모듈의 상태와 같은 번호다.
@@ -91,8 +93,36 @@ void streamlite_free(void *pointer);
 void streamlite_set_max_result_bytes(size_t limit);
 size_t streamlite_max_result_bytes(void);
 
-/* path의 DB를 연다. create가 0이 아니면 없을 때 만든다. commit은 항상 DURABLE이다(database_txn.h). */
+/*
+ * commit 동기화 단계. 어느 단계든 COW 게시 순서(새 데이터 페이지 → 제어 페이지)는 같아서 프로세스가 죽은 뒤에는 commit 전부
+ * 또는 전무로 다시 열린다. 단계는 OS 장애·전원 차단에 대한 보장만 바꾼다.
+ *   NORMAL(기본): commit마다 fsync(2). 성공을 돌려준 commit은 OS 장애 뒤에도 남는다. Apple 플랫폼의 fsync(2)는 장치의 쓰기
+ *                 캐시를 비우지 않으므로 그 플랫폼에서 전원이 끊기면 최근 commit을 잃을 수 있다.
+ *   FULL:         commit마다 Apple 플랫폼은 fcntl(F_FULLFSYNC)(지원하지 않는 파일 시스템은 fsync), 그 밖은 fsync(2).
+ *                 장치가 요청을 지키면 전원 차단 뒤에도 남는다. commit 한 번에 수 ms가 더 든다.
+ *   OFF:          commit에서 동기화하지 않고 정상 streamlite_close에서 한 번 동기화한다. 프로세스 종료에는 NORMAL과 같이
+ *                 안전하다. OS 장애·전원 차단 뒤에는 최근 commit을 잃을 수 있고 파일이 손상으로 열릴 수도 있다.
+ */
+#define STREAMLITE_DURABILITY_NORMAL 0
+#define STREAMLITE_DURABILITY_FULL 1
+#define STREAMLITE_DURABILITY_OFF 2
+
+/* 열기 옵션. 모두 0이면 streamlite_open과 같다. */
+typedef struct {
+    uint32_t durability;         /* STREAMLITE_DURABILITY_*. 그 밖의 값은 STREAMLITE_DB_INVALID */
+    /*
+     * 다른 writer(다른 프로세스·같은 db의 다른 트랜잭션)가 쓰는 동안 streamlite_begin, txn 없이 부른 큐 변경 연산, 자동 commit
+     * 변경 문장이 STREAMLITE_BUSY 대신 다시 시도하는 시간의 상한(밀리초). 0이면 기다리지 않는다. 기다리는 동안 db의 mutex를
+     * 쥐지 않는다(잠깐씩 쉬며 다시 시도한다). 이 db에 열린 트랜잭션이 있으면 그 트랜잭션이 끝나야 풀리므로 그 트랜잭션을 연
+     * 스레드가 이 시간 동안 같은 db의 다른 쓰기를 부르면 그만큼 기다린 뒤 BUSY다.
+     */
+    uint32_t busy_timeout_ms;
+} streamlite_open_options_t;
+
+/* path의 DB를 연다. create가 0이 아니면 없을 때 만든다. 동기화 단계는 NORMAL, busy_timeout_ms는 0이다. */
 int streamlite_open(const char *path, int create, streamlite_db_t **out);
+/* 옵션을 주는 열기. options가 NULL이면 streamlite_open과 같다. 새로 만드는 파일의 생성 자체는 항상 동기화한다. */
+int streamlite_open_ex(const char *path, int create, const streamlite_open_options_t *options, streamlite_db_t **out);
 /*
  * 살아 있는 큐 핸들(streamlite_queue_t)이나 트랜잭션(streamlite_txn_t)이 있으면 STREAMLITE_BUSY이고 핸들은 그대로다. 먼저 닫는다.
  * 이 db를 쓰는 다른 호출이 모두 돌아온 뒤에 부른다(핸들 수명).
@@ -120,7 +150,7 @@ void streamlite_cancel(streamlite_db_t *db);
 int streamlite_exec(streamlite_db_t *db, streamlite_txn_t *txn, const char *sql, const streamlite_param_t *params, size_t param_count,
                uint8_t **out, size_t *out_size);
 
-/* 쓰기 트랜잭션 시작. 다른 writer가 있으면 기다리지 않고 STREAMLITE_BUSY다. */
+/* 쓰기 트랜잭션 시작. 다른 writer가 있으면 busy_timeout_ms(기본 0)까지 다시 시도한 뒤 STREAMLITE_BUSY다. */
 int streamlite_begin(streamlite_db_t *db, streamlite_txn_t **out);
 /* commit·rollback은 성공하든 실패하든 트랜잭션을 해제하고 *txn을 NULL로 만든다. */
 int streamlite_commit(streamlite_txn_t **txn);

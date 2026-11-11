@@ -28,9 +28,10 @@
  *
  * commit과 재시작
  *   commit은 COW 게시다. 바뀐 데이터 페이지와 카탈로그를 새 자리에 쓰고 제어 페이지 한 장으로 세대를 바꾼 뒤
- *   fsync한다(순서는 page_file_commit). 성공 응답은 제어 쓰기 뒤의 fsync가 끝난 뒤에만 돌아오므로 승인된 거래는 프로세스·OS
- *   종료 뒤에도 남고, 승인 전에 멈추면 다시 열었을 때 이전 세대 또는 새 세대 중 하나다(부분 반영 없음). 그래서
- *   달성 보증은 항상 TXN_GUARANTEE_DURABLE이다. 제어 쓰기를 시도한 뒤 실패하면 TXN_COMMIT_UNCERTAIN이고 핸들은
+ *   fsync한다(순서는 page_file_commit). NORMAL·FULL 단계의 성공 응답은 제어 쓰기 뒤의 동기화가 끝난 뒤에만 돌아오므로
+ *   승인된 거래는 프로세스·OS 종료 뒤에도 남고, 승인 전에 멈추면 다시 열었을 때 이전 세대 또는 새 세대 중 하나다(부분
+ *   반영 없음). 그래서 달성 보증은 TXN_GUARANTEE_DURABLE이다. OFF 단계는 동기화하지 않으므로 달성 보증이
+ *   TXN_GUARANTEE_VISIBLE이다. 프로세스 종료에는 같은 원자성을 지키지만 OS·전원 장애 뒤에는 보장하지 않는다. 제어 쓰기를 시도한 뒤 실패하면 TXN_COMMIT_UNCERTAIN이고 핸들은
  *   poison이 된다. 다시 열면 이전 또는 새 상태다.
  *
  * 한계: 성공 반환 뒤 저장 장치가 버린 쓰기(lost write)는 탐지하지 못한다. 전원 장애 검증은 하지 않았다(프로세스
@@ -45,6 +46,8 @@ typedef struct {
     const mem_ledger_t *resident;
     /* 트랜잭션 밖 변경 문장이 다른 쓰기를 기다리는 시간. 0이면 기다리지 않고 BUSY */
     uint32_t autocommit_timeout_ms;
+    /* commit 동기화 단계(database.h). 0이면 NORMAL. 알 수 없는 값이면 열기가 DATABASE_INVALID다 */
+    database_durability_t durability;
 } database_txn_options_t;
 
 /* 쓰기로 열고 트랜잭션 계층을 붙인다. options가 NULL이면 기본값이다. 실패하면 *out은 NULL이다. */
@@ -52,8 +55,8 @@ database_status_t database_open_transactional(const char *path, const database_t
                                               database_t **out);
 /*
  * 트랜잭션을 시작한다. options는 transaction.h의 txn_begin_options_t이며 NULL이면 기본값(READ_WRITE, SNAPSHOT,
- * VISIBLE, 기다리지 않음)이다. READ_ONLY와 SNAPSHOT 외의 격리는 TXN_UNSUPPORTED다. 어떤 보증을 요청해도
- * commit은 DURABLE을 달성한다. 성공한 *out은 database_txn_release로 해제한다.
+ * VISIBLE, 기다리지 않음)이다. READ_ONLY와 SNAPSHOT 외의 격리는 TXN_UNSUPPORTED다. NORMAL·FULL 단계는 어떤 보증을 요청해도
+ * commit이 DURABLE을 달성한다. OFF 단계는 요청 보증을 VISIBLE로 낮춰 시작한다(달성할 수 없는 보증을 약속하지 않는다). 성공한 *out은 database_txn_release로 해제한다.
  */
 txn_status_t database_txn_begin(database_t *db, const txn_begin_options_t *options, database_txn_t **out);
 

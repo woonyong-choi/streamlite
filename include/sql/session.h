@@ -154,8 +154,8 @@ database_exec_status_t session_exec(session_t *session, const session_exec_optio
  * 세션의 트랜잭션(C API). BEGIN·COMMIT·ROLLBACK 문장과 같은 database_conn의 트랜잭션을 쓴다. 세션은 열린 트랜잭션을
  * 최대 하나 쥐고, 세션 안의 session_exec는 열린 트랜잭션 안에서 실행된다(없으면 자동 commit). 트랜잭션 계층이 없는
  * 데이터베이스의 세션은 TXN_UNSUPPORTED다. session_close는 열린 트랜잭션을 rollback한다. 실행 중인 세션은 TXN_INVALID다.
- *   begin: timeout_ms만큼 다른 세션의 writer를 기다린다. 기다리는 동안 실행 잠금을 쥐지 않는다. commit은 항상
- *          DURABLE을 달성한다(database_txn.h)
+ *   begin: timeout_ms만큼 다른 세션의 writer를 기다린다. 기다리는 동안 실행 잠금을 쥐지 않는다. commit은 동기화 단계
+ *          NORMAL·FULL에서 DURABLE, OFF에서 VISIBLE을 달성한다(database_txn.h)
  *   commit: 실패 상태(session_txn_failed)면 TXN_INVALID이고 그대로다. 그 밖에는 결과와 무관하게 트랜잭션이 끝난다
  *   rollback: 열린 트랜잭션이 없으면 TXN_NOT_ACTIVE
  */
