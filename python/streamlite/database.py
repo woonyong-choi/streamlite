@@ -125,8 +125,14 @@ class NativeDatabase:
             pass
 
 
-def retry_busy(call: Callable[[], int], timeout_s: float) -> int:
-    """BUSY인 동안 잠깐씩 쉬며 다시 부른다. C 호출은 잠금을 쥔 채 기다리지 않으므로 기다림은 여기서 한다."""
+_STATUS_CANCELLED = 16  # streamlite.h의 STREAMLITE_CANCELLED
+
+
+def retry_busy(call: Callable[[], int], timeout_s: float, cancelled: Callable[[], bool] = lambda: False) -> int:
+    """BUSY인 동안 잠깐씩 쉬며 다시 부른다. C 호출은 잠금을 쥔 채 기다리지 않으므로 기다림은 여기서 한다.
+
+    쉬는 사이에 cancelled()가 참이 되면 다시 부르지 않고 취소 상태를 돌려준다.
+    """
     deadline = time.monotonic() + timeout_s
     delay = 0.0005
     while True:
@@ -134,6 +140,8 @@ def retry_busy(call: Callable[[], int], timeout_s: float) -> int:
         if status != STATUS_BUSY or time.monotonic() >= deadline:
             return status
         time.sleep(delay)
+        if cancelled():
+            return _STATUS_CANCELLED
         delay = min(delay * 2, 0.02)
 
 
@@ -277,6 +285,7 @@ class Database:
         self._handle: ctypes.c_void_p | None = handle
         self._queues: set[Closable]
         self.busy_timeout_s = busy_timeout_s
+        self._cancel_epoch = 0  # cancel마다 1씩 오른다. BUSY 대기 중의 취소를 알아차리는 데 쓴다
         # close 없이 참조를 잃거나 인터프리터가 끝나면 큐·트랜잭션의 종료자와 함께 native 자원을 놓는다
         self.native = NativeDatabase(handle)
         self._finalizer = weakref.finalize(self, self.native.finalize, None, None)
@@ -296,6 +305,7 @@ class Database:
         """
         deadline = time.monotonic() + self.busy_timeout_s
         delay = 0.0005
+        epoch = self._cancel_epoch
         while True:
             try:
                 return run_sql(self.handle, None, sql, params)
@@ -309,6 +319,8 @@ class Database:
                 if time.monotonic() >= deadline:
                     raise
             time.sleep(delay)
+            if self._cancel_epoch != epoch:  # 기다리는 동안 취소됐다. 실행 중 취소와 같은 결과로 알린다
+                raise SqlError("statement was cancelled while waiting for another writer", error_class=RESULT_E_CANCELLED, error_code=0)
             delay = min(delay * 2, 0.02)
 
     def begin(self) -> Transaction:
@@ -328,12 +340,15 @@ class Database:
             BusyError: 끝까지 BUSY일 때. 지금 스레드가 이 DB에 연 트랜잭션이 writer를 쥐고 있으면 기다려도 풀리지
                 않으므로 바로 던지고 원인을 메시지에 적는다.
         """
+        epoch = self._cancel_epoch
         status = call()
         if status != STATUS_BUSY:
             return status
         if self.native.holds_transaction():
             raise BusyError(_SELF_BLOCKED, status=status)
-        status = retry_busy(call, self.busy_timeout_s)
+        status = retry_busy(call, self.busy_timeout_s, lambda: self._cancel_epoch != epoch)
+        if status == _STATUS_CANCELLED:
+            check(status)
         if status == STATUS_BUSY:
             raise BusyError("another writer holds the database", status=status)
         return status
@@ -343,8 +358,10 @@ class Database:
 
         취소된 문장은 SqlError(error_class=RESULT_E_CANCELLED)이고, 큐 연산은 CancelledError이며 자기 트랜잭션을
         반영하지 않는다. 게시를 시작한 문장은 취소와 무관하게 끝난다. 끝나는 순간과 겹친 요청은 같은 세션의
-        다음 문장 하나에 적용될 수 있다.
+        다음 문장 하나에 적용될 수 있다. 다른 writer를 기다리는 중인 호출(busy_timeout_s)도 쉬는 사이에 멈추고
+        같은 방식으로 취소를 알린다.
         """
+        self._cancel_epoch += 1
         _lib.streamlite_cancel(self.handle)
 
     def register_queue(self, queue: Closable) -> None:

@@ -273,3 +273,45 @@ def test_package_header_and_library_versions_match() -> None:
     declared = re.search(r'#define STREAMLITE_VERSION "([^"]+)"', header)
     assert declared is not None
     assert streamlite.__version__ == declared.group(1) == _lib.streamlite_version().decode("ascii")
+
+
+def test_cancel_stops_waiting_for_another_writer(tmp_path: Path) -> None:
+    """다른 writer를 기다리는 begin·execute는 cancel을 받으면 busy_timeout_s를 다 쓰지 않고 끝난다."""
+    from streamlite import CancelledError
+    from streamlite.database import RESULT_E_CANCELLED
+
+    path = tmp_path / "wait.streamlite"
+    holder = Database(path, create=True)
+    holder.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    waiter = Database(path, busy_timeout_s=30.0)
+    held = holder.begin()
+    try:
+        for action in ("begin", "execute"):
+            caught: list[BaseException] = []
+
+            def run(kind: str = action) -> None:
+                try:
+                    if kind == "begin":
+                        waiter.begin()
+                    else:
+                        waiter.execute("INSERT INTO t VALUES (1)")
+                except BaseException as err:  # noqa: BLE001 - 주 스레드에서 판정한다
+                    caught.append(err)
+
+            worker = threading.Thread(target=run, daemon=True)
+            started = time.monotonic()
+            worker.start()
+            time.sleep(0.3)
+            waiter.cancel()
+            worker.join(timeout=5)
+            assert not worker.is_alive(), f"{action} kept waiting after cancel"
+            assert time.monotonic() - started < 5
+            assert len(caught) == 1
+            if action == "begin":
+                assert isinstance(caught[0], CancelledError)
+            else:
+                assert isinstance(caught[0], SqlError) and caught[0].error_class == RESULT_E_CANCELLED
+    finally:
+        held.rollback()
+        waiter.close()
+        holder.close()
