@@ -54,7 +54,7 @@
 #define STREAMLITE_DB_INVALID 101   /* database 열기 인자 오류 */
 #define STREAMLITE_DB_IO 102
 #define STREAMLITE_DB_CORRUPT 103
-#define STREAMLITE_DB_LOCKED 104
+#define STREAMLITE_DB_LOCKED 104    /* 열기가 게시 중인 다른 핸들을 5초 넘게 기다렸다. 다른 writer의 쓰기 거래로는 생기지 않는다(streamlite_open) */
 #define STREAMLITE_DB_UNSUPPORTED 105
 #define STREAMLITE_DB_NOMEM 106
 #define STREAMLITE_DB_NOT_FOUND 107 /* create가 0인데 파일이 없다 */
@@ -88,6 +88,9 @@ void streamlite_free(void *pointer);
  * streamlite_exec가 만드는 인코딩 버퍼의 상한(바이트). 기본은 STREAMLITE_DEFAULT_MAX_RESULT_BYTES다. 넘는 결과는 부분 행을 주지 않고
  * STREAMLITE_LIMIT으로 거절하며, 메모리 할당 실패는 STREAMLITE_NOMEM이다. TEXT·BLOB 셀과 열 이름은 u32 길이로 인코딩하므로
  * UINT32_MAX를 넘는 길이도 STREAMLITE_LIMIT이다. 이 값은 프로세스 전역이며 결과를 만들기 전에 정한다.
+ * 저장하는 쪽은 한 행의 TEXT·BLOB 합을 63MiB(기본 상한 - 1MiB)로 제한하므로(#283) 기본 상한에서는 저장한 행 하나를
+ * 언제나 돌려줄 수 있다. 넘는 INSERT·UPDATE는 반영하지 않고 LIMIT 분류(코드 54)의 오류 결과다. 상한을 줄이거나 큰 행
+ * 여러 개를 한 결과로 읽으면 그 결과는 STREAMLITE_LIMIT일 수 있다.
  */
 #define STREAMLITE_DEFAULT_MAX_RESULT_BYTES ((size_t)64 << 20)
 void streamlite_set_max_result_bytes(size_t limit);
@@ -120,7 +123,17 @@ typedef struct {
     uint32_t busy_timeout_ms;
 } streamlite_open_options_t;
 
-/* path의 DB를 연다. create가 0이 아니면 없을 때 만든다. 동기화 단계는 NORMAL, busy_timeout_ms는 0이다. */
+/*
+ * path의 DB를 연다. create가 0이 아니면 없을 때 만든다. 동기화 단계는 NORMAL, busy_timeout_ms는 0이다.
+ * 열기는 다른 writer를 기다리지 않는다(#283). 쓰기 가능한 핸들도 writer 잠금 없이 읽기와 같은 공유 잠금으로 게시 상태를
+ * 읽는다. 열 때 하는 일(현재 세대 고르기, 끝나지 않은 commit의 이전 세대 판정, 승인한 commit의 손실 판정과 거절, 빈 페이지
+ * 목록·카탈로그 적재)은 모두 읽기이고, 공유 잠금을 쥔 동안에는 게시가 없으며 손실 판정이 읽는 기록도 게시 잠금 안에서만
+ * 바뀌므로 writer 잠금 아래와 판정이 같다. 그래서 다른 프로세스가 쓰기 거래를 쥐고 있어도 곧바로 열리고, 그 writer와의
+ * 경합은 첫 쓰기에서 드러난다(busy_timeout_ms만큼 재시도한 뒤). streamlite_begin과 큐 변경 연산은 STREAMLITE_BUSY이고,
+ * 트랜잭션 없이 실행한 변경 문장은 BUSY 분류의 오류 결과(error_class 7, code 29)다. 열기 대기를 busy_timeout_ms로 받는 방식은
+ * 기다릴 까닭이 없는 열기를 다른 거래 길이만큼 늦추므로 고르지 않았다. 게시하는 순간(commit의 제어 쓰기와 동기화)만
+ * 비켜 주며 그 대기가 5초를 넘으면 STREAMLITE_DB_LOCKED다. 새 파일 생성은 이전처럼 writer 잠금을 쥐고 한다.
+ */
 int streamlite_open(const char *path, int create, streamlite_db_t **out);
 /*
  * 옵션을 주는 열기. options가 NULL이면 streamlite_open과 같다. 새로 만드는 파일의 생성·게시·디렉터리 동기화는 단계와

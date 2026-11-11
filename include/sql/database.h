@@ -89,6 +89,9 @@ typedef struct database database_t;
 database_status_t database_create(const char *path, database_t **out);
 /*
  * 게시된 파일을 연다. writable이 아니면 SELECT만 실행된다. 열기는 파일을 바꾸지 않는다.
+ * 쓰기 열기도 writer 잠금이 아니라 읽기와 같은 공유 잠금으로 게시 상태를 읽으므로 다른 핸들·프로세스의 쓰기 거래를
+ * 기다리지 않는다(#283). 게시하는 순간(commit의 제어 쓰기와 동기화)만 비켜 주며 그 대기가 PAGE_FILE_LOCK_TIMEOUT_MS를
+ * 넘으면 DATABASE_LOCKED다. 아래 손실 판정과 거절은 공유 잠금 아래에서도 같다(내구 확인 기록은 게시 잠금 안에서만 바뀐다).
  *
  * 최신 세대를 읽을 수 없어(제어 페이지 손상, 그 commit이 쓴 페이지·파일 길이 불일치) 이전 세대로 물러난 열기는
  * database_open_report로 확인한다. 물러난 까닭이 "fsync 전에 전원이 끊긴 commit"인지 "성공을 돌려준 commit의 손상"인지는
@@ -146,6 +149,13 @@ database_status_t database_create_ex(const char *path, database_durability_t dur
 database_status_t database_set_durability(database_t *db, database_durability_t durability);
 database_durability_t database_durability(const database_t *db);
 size_t database_table_count(const database_t *db);
+/*
+ * 이 핸들이 마지막으로 읽은 게시 카탈로그에 table의 보조 색인 index가 있는지(#283). 쓰기 잠금도 거래도 열지 않는다.
+ * 문장을 실행한 직후에 부르면 그 문장이 본 게시 상태다. 열린 거래 안의 변경과 그 뒤 다른 핸들이 게시한 변경은 보지
+ * 않으므로 false는 "없음"이 아니라 "이 핸들이 아직 보지 못함"일 수 있다. true는 게시된 색인이 있다는 뜻이다(색인은
+ * 지워도 이 판정 뒤에 지워진 것이다).
+ */
+bool database_has_index(const database_t *db, const char *table, const char *index);
 
 /* 이 핸들이 연 뒤 문장들이 누적한 읽기 비용. 전체 스캔이 얼마나 일어났는지 대조하는 데 쓴다. */
 typedef struct {
@@ -227,6 +237,18 @@ database_exec_status_t database_exec(database_t *db, const uint8_t *sql, size_t 
 #define DATABASE_CODE_SET_OPERATION 51      /* 집합 연산 양쪽 열 수가 다르거나 ORDER BY가 결과 열이 아님 */
 #define DATABASE_CODE_SUBQUERY 52           /* 서브쿼리 결과 모양이 자리에 맞지 않음, WITH 열 이름 수가 다름 */
 #define DATABASE_CODE_CONFLICT 53           /* ON CONFLICT 대상·갱신 열이 맞지 않거나 같은 행을 두 번 바꿈 */
+/* 저장할 행이 DATABASE_MAX_ROW_VALUE_BYTES를 넘는 오류 결과의 code(RESULT_E_LIMIT) */
+#define DATABASE_CODE_ROW_TOO_LARGE 54
+
+/*
+ * INSERT·UPDATE·ON CONFLICT DO UPDATE가 저장할 한 행의 TEXT·BLOB 바이트 합 한도(#283). 넘으면 아무것도 반영하지 않고
+ * RESULT_E_LIMIT(DATABASE_CODE_ROW_TOO_LARGE) 오류 결과다. 저장한 행을 SELECT로 돌려줄 수 없는 상태를 만들지 않기 위한
+ * 값이다: 행 하나의 결과 비용(값 바이트 + 셀 배열, 열 최대 1024개면 수십 KiB)이 결과 행 한도
+ * RESULT_DEFAULT_MAX_ROW_BYTES(64MiB) 안에 들고, 그 행 하나의 C 인코딩(열 이름·형식·셀 머리 포함 1MiB 미만의 추가분)이
+ * 기본 결과 상한 STREAMLITE_DEFAULT_MAX_RESULT_BYTES(64MiB) 안에 들도록 1MiB를 남긴다. 결과 상한을
+ * streamlite_set_max_result_bytes로 줄이거나 여러 큰 행을 한 결과로 읽으면 그 결과는 여전히 LIMIT일 수 있다.
+ */
+#define DATABASE_MAX_ROW_VALUE_BYTES (RESULT_DEFAULT_MAX_ROW_BYTES - ((size_t)1 << 20))
 
 typedef struct {
     bool (*requested)(void *ctx);

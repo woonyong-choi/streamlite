@@ -79,8 +79,8 @@ static database_status_t mark_table(database_t *db, catalog_table_id_t id, page_
     catalog_table_view_t view;
     if (catalog_describe(db->catalog, id, &view) != CATALOG_OK) return DATABASE_CORRUPT;
     size_t index_count = catalog_index_count(db->catalog, id);
-    if (index_count > CATALOG_MAX_INDEXES) return DATABASE_CORRUPT;
-    uint32_t roots[CATALOG_MAX_INDEXES];
+    if (index_count > CATALOG_MAX_TABLE_INDEXES) return DATABASE_CORRUPT;
+    uint32_t roots[CATALOG_MAX_TABLE_INDEXES];
     for (size_t i = 0; i < index_count; i++) {
         catalog_index_view_t index;
         if (catalog_index_at(db->catalog, id, i, &index) != CATALOG_OK) return DATABASE_CORRUPT;

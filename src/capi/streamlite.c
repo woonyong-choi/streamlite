@@ -28,6 +28,10 @@
 #include "storage/le.h"
 #include "../benchmark.h"
 
+/* 저장한 행 하나는 기본 결과 상한 안에서 인코딩된다(#283). 남긴 1MiB는 열 이름·형식·셀 머리의 몫이다 */
+_Static_assert(DATABASE_MAX_ROW_VALUE_BYTES + ((size_t)1 << 20) <= STREAMLITE_DEFAULT_MAX_RESULT_BYTES,
+               "행 저장 한도는 기본 결과 상한보다 1MiB 이상 작다");
+
 /* 살아 있는 핸들의 표시. 닫으면서 0으로 지운다 */
 #define DB_MAGIC 0x42444c53u      /* "SLDB" */
 #define QUEUE_MAGIC 0x51444c53u   /* "SLDQ" */

@@ -120,6 +120,21 @@ void where_clear(database_t *db, where_t *where)
     memset(where, 0, sizeof(*where));
 }
 
+bool row_fits_limit(database_t *db, const value_view_t *cells, size_t count, database_exec_status_t *status)
+{
+    size_t total = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (cells[i].type != VALUE_TEXT && cells[i].type != VALUE_BLOB) continue;
+        if (cells[i].size_bytes > DATABASE_MAX_ROW_VALUE_BYTES - total) {
+            *status = fail_result(db, RESULT_E_LIMIT, DATABASE_CODE_ROW_TOO_LARGE,
+                                  "행의 TEXT·BLOB 값 합이 한도 %zu바이트를 넘습니다", (size_t)DATABASE_MAX_ROW_VALUE_BYTES);
+            return false;
+        }
+        total += cells[i].size_bytes;
+    }
+    return true;
+}
+
 /* 값을 컬럼 타입으로 정확히 변환한다. 실패하면 *status에 반환값을 둔다. */
 bool cast_for_column(database_t *db, const value_view_t *source, const catalog_column_t *column,
                             value_t *target, database_exec_status_t *status)

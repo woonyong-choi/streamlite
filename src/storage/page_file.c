@@ -984,8 +984,8 @@ static page_file_status_t verify_published(page_file_t *file, const uint8_t page
 
 /*
  * 이전 세대로 물러났으면(손상 슬롯 또는 끝나지 않은 commit) 성공을 돌려준 commit을 잃었는지 판정한다. 내구 확인 기록이
- * "고른 세대 + 1"을 말하면 건너뛴 세대는 fsync까지 끝났던 commit이다. 그 밖에는 알 수 없다. 읽기 핸들은 공유 잠금을,
- * 쓰기 핸들은 writer 잠금을 쥐고 부르므로 기록은 그동안 바뀌지 않는다.
+ * "고른 세대 + 1"을 말하면 건너뛴 세대는 fsync까지 끝났던 commit이다. 그 밖에는 알 수 없다. 공유 잠금(읽기 핸들,
+ * shared_open 쓰기 핸들)이나 writer 잠금을 쥐고 부른다. 기록은 게시 잠금(배타)을 쥔 writer만 쓰므로 그동안 바뀌지 않는다.
  */
 static void judge_fallback(page_file_t *file, const page_file_control_t *chosen, page_file_open_info_t *info)
 {
@@ -1046,18 +1046,20 @@ page_file_status_t page_file_open_with(const char *path, const page_file_open_op
     static const page_file_open_options_t READ_ONLY = {0};
     if (options == NULL) options = &READ_ONLY;
     bool writable = options->writable;
+    /* writer 잠금을 쥐고 여는지. shared_open이면 쓰기 핸들도 읽기 열기와 같이 공유 잠금만 쥔다(#283) */
+    bool writer_open = writable && !options->shared_open;
     page_file_admit_fn admit = options->admit;
     void *ctx = options->admit_ctx;
     int fd = open(path, (writable ? O_RDWR : O_RDONLY) | O_CLOEXEC);
     if (fd < 0) return PAGE_FILE_IO;
     /*
-     * 읽기 핸들은 파일 공유 잠금을, 쓰기 핸들은 writer 잠금을 쥔 채 게시 상태를 읽는다. 어느 쪽이든 그동안 게시가 없다.
-     * 쓰기 핸들은 먼저 공유 잠금으로 StreamLite 파일인지 확인하고 놓은 뒤 writer 잠금을 잡는다. 다른 형식 파일 옆에 잠금
+     * 읽기 핸들과 shared_open 쓰기 핸들은 파일 공유 잠금을, 그 밖의 쓰기 핸들은 writer 잠금을 쥔 채 게시 상태를 읽는다.
+     * 어느 쪽이든 그동안 게시가 없다. writer 잠금으로 여는 쓰기 핸들은 먼저 공유 잠금으로 StreamLite 파일인지 확인하고 놓은 뒤 writer 잠금을 잡는다. 다른 형식 파일 옆에 잠금
      * 파일을 만들지 않고, 공유 잠금을 쥔 채 writer 잠금을 기다리다 게시하려는 writer와 서로 막히지 않게 하기 위해서다.
      */
     int writer_fd = -1;
     page_file_status_t status = lock_fd(fd, LOCK_SH, g_default_lock_timeout_ms);
-    if (status == PAGE_FILE_OK && writable) {
+    if (status == PAGE_FILE_OK && writer_open) {
         status = check_published_file(fd);
         flock(fd, LOCK_UN);
         if (status == PAGE_FILE_OK) status = lock_writer(path, &writer_fd, g_default_lock_timeout_ms);
@@ -1099,7 +1101,7 @@ page_file_status_t page_file_open_with(const char *path, const page_file_open_op
         free_handle(file);
         return PAGE_FILE_NOMEM;
     }
-    if (writable) clear_stale_intent(file);
+    if (writer_open) clear_stale_intent(file);
 
     uint8_t pages[2][PAGE_FILE_PAGE_BYTES];
     page_file_control_t chosen;
@@ -1131,7 +1133,7 @@ page_file_status_t page_file_open_with(const char *path, const page_file_open_op
     }
     adopt_published(file, &chosen, file_bytes);
     file->published = true;
-    file->lock = writable ? PAGE_FILE_LOCK_EXCLUSIVE : PAGE_FILE_LOCK_SHARED;
+    file->lock = writer_open ? PAGE_FILE_LOCK_EXCLUSIVE : PAGE_FILE_LOCK_SHARED;
     file->open_info = local_info;
     *out = file;
     return PAGE_FILE_OK;

@@ -329,6 +329,15 @@ typedef struct {
     bool writable;
     /* 쓰기 열기에서 PAGE_FILE_LOSS_CONFIRMED를 받아들인다. 다음 commit이 손상된 세대를 덮어쓴다 */
     bool accept_lost_commit;
+    /*
+     * 쓰기 열기를 writer 잠금 대신 DB 파일 공유 잠금(읽기 열기와 같은 잠금)을 쥔 채 한다(#283). 열기가 하는 일(제어 페이지
+     * 선택, 끝나지 않은 commit의 이전 세대 판정, 손실 판정과 LOST_COMMIT 거절, 빈 목록 적재)은 게시 상태를 읽기만 하며,
+     * 공유 잠금을 쥔 동안에는 게시(제어 쓰기)가 없고 내구 확인 기록도 게시 잠금 안에서만 바뀌므로 writer 잠금 아래와 같은
+     * 결과다. 그래서 다른 핸들·프로세스가 쓰기 거래를 쥐고 있어도 기다리지 않는다. 열린 핸들의 잠금은 SHARED이며, 바꾸려면
+     * page_file_unlock 뒤 page_file_lock(EXCLUSIVE)으로 writer 잠금을 잡는다. 그때 sync_published가 디스크와 다시 맞추고
+     * (세대가 바뀌었으면 빈 목록을 다시 읽음) 남은 게시 대기 표시를 지우고 손실 판정을 다시 한다.
+     */
+    bool shared_open;
     page_file_admit_fn admit;     /* NULL이면 상한 없이 연다 */
     void *admit_ctx;
 } page_file_open_options_t;
@@ -347,7 +356,7 @@ page_file_open_info_t page_file_open_info(const page_file_t *file);
  *   페이지가 다시 쓰이지 않는다. reader 프로세스가 죽으면 커널이 잠금을 푼다.
  * - 잠금은 열린 파일 설명마다(flock) 걸리므로 같은 프로세스의 두 핸들도 서로를 기다린다. 잠금 파일은 지우지 않는다.
  *   잡은 뒤 경로가 같은 파일인지 확인하고, 바뀌었으면 새로 열어 다시 잡는다.
- * - 열기·생성은 잠금을 쥔 채 돌려준다(쓰기 핸들은 writer 잠금, 읽기 핸들은 공유). 함께 쓰려면 page_file_unlock으로
+ * - 열기·생성은 잠금을 쥔 채 돌려준다(쓰기 핸들은 writer 잠금, 읽기 핸들과 shared_open으로 연 쓰기 핸들은 공유). 함께 쓰려면 page_file_unlock으로
  *   놓고, 읽기 전에 SHARED, 바꾸기 전에 EXCLUSIVE를 page_file_lock으로 잡는다.
  * - page_file_lock은 잠금을 얻은 뒤 디스크의 게시 상태를 열기와 같은 규칙(끝나지 않은 commit이면 이전 세대)으로 다시
  *   읽는다. 다른 핸들이 그 사이 게시했으면 제어 상태·빈 목록을 다시 읽고 캐시를 비우며 changed를 true로 알린다.

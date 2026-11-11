@@ -448,6 +448,8 @@ sqleval_memory_t eval_memory(database_t *db);
 bool compile_expr(database_t *db, const sqlexpr_t *expr, const resolver_t *resolver, sqleval_prog_t **prog,
                          database_exec_status_t *status);
 void where_clear(database_t *db, where_t *where);
+/* 저장할 행의 TEXT·BLOB 바이트 합이 DATABASE_MAX_ROW_VALUE_BYTES 이하인지 본다. 넘으면 *status에 LIMIT 오류 결과를 둔다 */
+bool row_fits_limit(database_t *db, const value_view_t *cells, size_t count, database_exec_status_t *status);
 bool cast_for_column(database_t *db, const value_view_t *source, const catalog_column_t *column,
                             value_t *target, database_exec_status_t *status);
 bool values_equal(const value_view_t *a, const value_view_t *b);

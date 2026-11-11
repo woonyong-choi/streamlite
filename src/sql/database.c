@@ -190,7 +190,7 @@ static database_status_t from_store(catalog_store_status_t status)
     }
 }
 
-/* 열기·생성이 쥐고 돌려준 잠금을 놓는다. 이후 잠금은 문장·작업 동안만 쥐며 기다리지 않는다(#199) */
+/* 열기(공유 잠금)·생성(writer 잠금)이 쥐고 돌려준 잠금을 놓는다. 이후 잠금은 문장·작업 동안만 쥐며 기다리지 않는다(#199) */
 static void release_open_lock(page_file_t *file)
 {
     page_file_set_lock_timeout(file, 0);
@@ -290,8 +290,13 @@ static database_status_t open_database_with(const char *path, bool writable, boo
                                             database_t **out)
 {
     page_file_t *file = NULL;
+    /*
+     * 쓰기 열기도 writer 잠금 없이 공유 잠금으로 한다(#283). 열기는 게시 상태를 읽기만 하므로 다른 핸들·프로세스의 쓰기
+     * 거래를 기다릴 까닭이 없다. 쓰기는 문장·작업마다 database_lock_file이 writer 잠금을 잡고 디스크와 다시 맞춘다.
+     */
     page_file_open_options_t options = {.writable = writable,
                                         .accept_lost_commit = accept_loss,
+                                        .shared_open = true,
                                         .admit = admission != NULL ? admit_file : NULL,
                                         .admit_ctx = admission};
     page_file_status_t opened = page_file_open_with(path, &options, &file, NULL);
@@ -402,6 +407,23 @@ void database_scan_stats(const database_t *db, database_scan_stats_t *out)
 size_t database_table_count(const database_t *db)
 {
     return db != NULL ? catalog_table_count(db->catalog) : 0;
+}
+
+bool database_has_index(const database_t *db, const char *table, const char *index)
+{
+    if (db == NULL || table == NULL || index == NULL) return false;
+    catalog_table_id_t id;
+    if (catalog_find(db->catalog, table, strlen(table), &id) != CATALOG_OK) return false;
+    size_t name_bytes = strlen(index);
+    size_t count = catalog_index_count(db->catalog, id);
+    for (size_t i = 0; i < count; i++) {
+        catalog_index_view_t view;
+        if (catalog_index_at(db->catalog, id, i, &view) == CATALOG_OK && view.name_bytes == name_bytes &&
+            memcmp(view.name, index, name_bytes) == 0) {
+            return true;
+        }
+    }
+    return false;
 }
 
 /* ── 상주 메모리 ── */
@@ -650,8 +672,8 @@ heap_status_t configure_secondary(heap_batch_t *batch, const catalog_t *catalog,
                                          catalog_table_id_t table_id)
 {
     size_t count = catalog_index_count(catalog, table_id);
-    if (count > CATALOG_MAX_INDEXES) return HEAP_CORRUPT;
-    heap_secondary_spec_t specs[CATALOG_MAX_INDEXES];
+    if (count > CATALOG_MAX_TABLE_INDEXES) return HEAP_CORRUPT;
+    heap_secondary_spec_t specs[CATALOG_MAX_TABLE_INDEXES];
     for (size_t i = 0; i < count; i++) {
         catalog_index_view_t view;
         if (catalog_index_at(catalog, table_id, i, &view) != CATALOG_OK) return HEAP_CORRUPT;

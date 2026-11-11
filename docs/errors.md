@@ -129,7 +129,9 @@ core의 `DATABASE_LOST_COMMIT`도 현재 이 값으로 나온다(대응하는 �
 
 #### `104` `STREAMLITE_DB_LOCKED`
 
-열기 잠금을 얻지 못했다. 다른 핸들의 사용을 확인한다.
+열기가 게시 상태를 읽을 공유 잠금을 5초(`PAGE_FILE_LOCK_TIMEOUT_MS`) 안에 얻지 못했다. 다른 핸들의 게시(commit의 제어 쓰기와 동기화)가 그보다 오래 걸릴 때만 생기며 다시 열면 된다. 같은 경로를 동시에 만드는 생성(`create`가 참이고 파일이 없을 때)도 이 상태일 수 있다.
+
+0.3.0부터(#283) 쓰기 가능한 열기도 writer 잠금이 아니라 읽기와 같은 공유 잠금으로 게시 상태를 읽는다. 그래서 다른 핸들·프로세스가 쓰기 거래를 쥐고 있어도 열기는 기다리지 않고 성공하며, 그 거래 때문에 이 상태가 되지 않는다. 열기가 하는 일(두 제어 페이지 중 현재 세대 고르기, 끝나지 않은 commit이면 이전 세대로 물러나기, 승인한 commit의 손실 판정과 쓰기 열기 거절, 빈 페이지 목록 적재, 카탈로그 적재)은 모두 게시 상태를 읽기만 한다. 공유 잠금을 쥔 동안에는 어떤 writer도 게시하지 못하고 손실 판정이 읽는 잠금 파일의 내구 확인 기록도 게시 잠금 안에서만 바뀌므로 writer 잠금 아래에서 연 것과 판정이 같다. writer 잠금은 첫 쓰기(`begin`, 변경 문장, 큐 변경 연산)가 잡고, 그때 디스크와 다시 맞추며 손실 판정도 다시 한다. 다른 writer가 쓰는 중이면 `begin`과 큐 변경 연산은 `STREAMLITE_BUSY`(Python `BusyError`)이고, 거래 없이 실행한 변경 문장(C `streamlite_exec`, Python `Database.execute`)은 BUSY 분류의 오류 결과(아래 `7, 29`, Python은 `error_class` 7·`error_code` 29의 `SqlError`)다. 어느 쪽이든 `busy_timeout_ms`·`busy_timeout_s`만큼 다시 시도한 뒤 돌려준다. 열기 대기를 열기 옵션의 busy timeout으로 받고 시간 초과를 BUSY로 돌려주는 방법은 고르지 않았다. 기다릴 까닭 자체가 없는데 소비자 재시작을 다른 writer의 거래 길이만큼 늦추기 때문이다.
 
 #### `105` `STREAMLITE_DB_UNSUPPORTED`
 
@@ -183,6 +185,7 @@ core의 `DATABASE_LOST_COMMIT`도 현재 이 값으로 나온다(대응하는 �
 | `3, 11` | 기본 키·유일 색인 검사 |
 | `3, 53` | ON CONFLICT 갱신 대상 검사 |
 | `4, 25` | SQL 입력 길이 검사 |
+| `4, 54` | 저장할 행의 TEXT·BLOB 합 검사 |
 | `5, 24` | 메모리 예산 검사 |
 | `6, 19` | poisoned 핸들의 SQL |
 | `6, 32` | 자동 commit 또는 SQL `COMMIT` |
@@ -278,6 +281,14 @@ core의 `DATABASE_LOST_COMMIT`도 현재 이 값으로 나온다(대응하는 �
 원인: 입력 실효 상한을 넘었다.
 
 대응: SQL 크기를 줄인다.
+
+#### `4, 54` 저장할 행의 TEXT·BLOB 합 검사
+
+메시지: `행의 TEXT·BLOB 값 합이 한도 %zu바이트를 넘습니다`
+
+원인: INSERT·UPDATE·`ON CONFLICT DO UPDATE`가 저장할 한 행의 TEXT·BLOB 바이트 합이 63MiB(`66060288`바이트)를 넘는다. 이 한도를 넘는 행은 저장해도 SELECT 결과 한도 때문에 돌려줄 수 없으므로 문장 전체를 반영하지 않는다([설정](configuration.md#sql-입력과-결과-한도)).
+
+대응: 값을 나눠 여러 행에 저장한다. 큐 payload도 같은 행에 저장되므로 이 한도 안이어야 한다(Python `LimitError`).
 
 #### `5, 24` 메모리 예산 검사
 

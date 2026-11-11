@@ -360,3 +360,83 @@ def test_writer_keeps_committing_while_readers_read_continuously(tmp_path: Path)
         stop.set()
         _finish_processes([writer, *readers])
         db.close()
+
+
+def _hold_transaction(path: str, held: multiprocessing.Event, release: multiprocessing.Event) -> None:
+    db = Database(path, create=False, busy_timeout_s=60)
+    with db.begin() as txn:
+        txn.execute("INSERT INTO t VALUES (100)")
+        held.set()
+        assert release.wait(timeout=60), "거래 해제 신호가 오지 않음"
+        txn.rollback()
+    db.close()
+
+
+def _start_holder(path: Path) -> tuple[multiprocessing.Process, multiprocessing.Event]:
+    held, release = SPAWN.Event(), SPAWN.Event()
+    holder = SPAWN.Process(target=_hold_transaction, args=(str(path), held, release))
+    holder.start()
+    assert held.wait(timeout=60), "다른 프로세스가 쓰기 거래를 잡지 못함"
+    return holder, release
+
+
+def _make_queue_file(path: Path) -> None:
+    db = Database(path)
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    Queue(db, "jobs").close()
+    db.close()
+
+
+def test_open_does_not_wait_for_another_process_writing(tmp_path: Path) -> None:
+    """다른 프로세스가 쓰기 거래를 쥔 동안에도 Database 열기는 writer를 기다리지 않는다(#283)."""
+    path = tmp_path / "open.streamlite"
+    _make_queue_file(path)
+    holder, release = _start_holder(path)
+    try:
+        started = time.monotonic()
+        db = Database(path, create=False, busy_timeout_s=30)
+        assert time.monotonic() - started < 1.0, "열기가 writer 잠금을 기다림"
+        assert db.execute("SELECT COUNT(*) FROM t").rows == ((0,),)
+        short = Database(path, create=False, busy_timeout_s=1)
+        started = time.monotonic()
+        with pytest.raises(BusyError):
+            short.begin()
+        waited = time.monotonic() - started
+        assert 0.8 <= waited < 5.0, f"쓰기는 busy_timeout_s만큼 기다린 뒤 BusyError여야 함({waited:.2f}s)"
+        release.set()
+        holder.join(timeout=60)
+        assert holder.exitcode == 0
+        db.execute("INSERT INTO t VALUES (1)")
+        assert short.execute("SELECT COUNT(*) FROM t").rows == ((1,),)
+        short.close()
+        db.close()
+    finally:
+        release.set()
+        _finish_processes([holder])
+
+
+def test_existing_queue_opens_with_install_while_another_process_writes(tmp_path: Path) -> None:
+    """이미 설치된 큐는 install=True(기본값)여도 쓰기 거래 없이 열린다(#283)."""
+    path = tmp_path / "install.streamlite"
+    _make_queue_file(path)
+    db = Database(path, create=False, busy_timeout_s=1)
+    holder, release = _start_holder(path)
+    try:
+        started = time.monotonic()
+        queue = Queue(db, "jobs")
+        assert time.monotonic() - started < 0.5, "이미 있는 큐의 install 열기가 writer를 기다림"
+        assert queue.stats().ready == 0
+        queue.close()
+        with pytest.raises(BusyError):
+            Queue(db, "other")
+        release.set()
+        holder.join(timeout=60)
+        assert holder.exitcode == 0
+        queue = Queue(db, "jobs")
+        queue.put(b"after")
+        assert queue.stats().ready == 1
+        queue.close()
+    finally:
+        release.set()
+        _finish_processes([holder])
+        db.close()

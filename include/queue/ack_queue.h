@@ -98,6 +98,14 @@
  */
 #define ACKQ_DEFAULT_MAX_PAYLOAD_BYTES ((size_t)1 << 20)
 #define ACKQ_MAX_PAYLOAD_LIMIT ((size_t)1 << 30)
+/*
+ * payload의 실효 상한(#283): 행 한도 DATABASE_MAX_ROW_VALUE_BYTES에서 가장 긴 idem key(ACKQ_IDEM_KEY_MAX)와 가장 긴
+ * note(ACKQ_NOTE_MAX)를 뺀 66059960바이트. 큐 행의 TEXT·BLOB 열은 idem·payload·note뿐이다. max_payload_bytes가 이보다
+ * 커도 열기·설치는 받아들이고(이미 있는 큐 파일을 그대로 연다) enqueue·update가 이 값으로 거절한다. put이 note 자리를
+ * 남기지 않으면 nack·fail의 reason이나 recover의 "max attempts exceeded"가 그 행을 한도 밖으로 밀어 전이가 영구히
+ * LIMIT이 된다. 이 값 이하의 payload는 어떤 key·note와도 행 한도 안에 든다.
+ */
+#define ACKQ_ROW_PAYLOAD_MAX (DATABASE_MAX_ROW_VALUE_BYTES - ACKQ_IDEM_KEY_MAX - ACKQ_NOTE_MAX)
 /* purge 뒤 idempotency key 보존 기간. 0이면 기본값(7일), ACKQ_RETENTION_NONE이면 남기지 않는다 */
 #define ACKQ_DEFAULT_IDEM_RETENTION_MS (7ull * 24ull * 3600ull * 1000ull)
 #define ACKQ_RETENTION_NONE UINT64_MAX
@@ -175,7 +183,8 @@ typedef struct {
 /*
  * enqueue. idem_key는 NULL이거나 1~ACKQ_IDEM_KEY_MAX바이트의 UTF-8이다. 같은 key와 같은 payload는 새 작업을 만들지
  * 않고 기존 id와 *duplicate=true를 돌려준다(작업이 이미 끝났어도 그대로). payload가 다르면 ACKQ_CONFLICT다.
- * payload는 큐의 max_payload_bytes 이하여야 하며 넘으면 자르지 않고 ACKQ_LIMIT이다. duplicate는 NULL 가능.
+ * payload는 큐의 max_payload_bytes와 ACKQ_ROW_PAYLOAD_MAX 중 작은 값 이하여야 하며 넘으면 자르지 않고 ACKQ_LIMIT이다.
+ * duplicate는 NULL 가능.
  */
 ackq_status_t ackq_enqueue(ackq_t *queue, session_t *session, const uint8_t *payload, size_t size,
                            const char *idem_key, uint64_t *id, bool *duplicate);
@@ -212,7 +221,12 @@ ackq_status_t ackq_ack(ackq_t *queue, session_t *session, uint64_t id, uint64_t 
  */
 ackq_status_t ackq_extend(ackq_t *queue, session_t *session, uint64_t id, uint64_t fence, uint64_t lease_ms,
                           uint64_t *lease_until);
-/* reason은 NULL 가능, ACKQ_NOTE_MAX바이트 이하의 UTF-8이며 넘으면 ACKQ_LIMIT이다. */
+/*
+ * reason은 NULL 가능, ACKQ_NOTE_MAX바이트 이하의 UTF-8이며 넘으면 ACKQ_LIMIT이다.
+ * note 대체 경로(#283): ACKQ_ROW_PAYLOAD_MAX를 두기 전에 들어가 note 자리가 없는 행이면 note를 쓰는 UPDATE가 행 한도로
+ * LIMIT이 된다. 자기 트랜잭션이면 rollback한 뒤 note를 비우고 상태만 바꾸는 UPDATE로 한 번 다시 한다(nack·recover·release도
+ * 같다). 호출자 트랜잭션 안에서는 그 문장 실패로 트랜잭션이 실패 상태가 되므로 다시 하지 않고 ACKQ_LIMIT이다.
+ */
 ackq_status_t ackq_fail(ackq_t *queue, session_t *session, uint64_t id, uint64_t fence, const char *reason);
 /*
  * 다시 claim할 수 있게 READY로 돌린다. retry_delay_ms 뒤부터 claim할 수 있다. 시도 횟수가 max_attempts에 닿았으면
@@ -232,7 +246,8 @@ ackq_status_t ackq_update(ackq_t *queue, session_t *session, uint64_t id, uint64
  * lease가 만료된 작업을 READY로(시도 횟수가 max_attempts에 닿았으면 FAILED로) 돌린다. 한 번에 최대 limit개를 처리하고
  * 처리한 수를 *recovered에 준다. claim도 만료된 lease를 직접 가져가므로 호출은 선택이다(통계와 FAILED 정리용).
  * 돌려놓은 작업의 fence를 1 올려 옛 claim을 끝낸다. 살아 있는(만료 전) lease는 건드리지 않으므로 여러 프로세스가
- * 같은 큐를 쓰는 중에 불러도 된다.
+ * 같은 큐를 쓰는 중에 불러도 된다. note 자리가 없는 행(ackq_fail의 대체 경로)은 note를 비우고 FAILED로 끝내므로 그 행 때문에
+ * 같은 호출의 다른 만료 작업이 막히지 않는다.
  */
 ackq_status_t ackq_recover(ackq_t *queue, session_t *session, size_t limit, size_t *recovered);
 /*

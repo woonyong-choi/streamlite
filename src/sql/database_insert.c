@@ -19,7 +19,7 @@ typedef struct {
 
 typedef struct {
     const sqlstmt_conflict_t *spec;
-    conflict_target_t targets[1 + CATALOG_MAX_INDEXES];
+    conflict_target_t targets[1 + CATALOG_MAX_TABLE_INDEXES];
     size_t target_count;
     source_ref_t sources[2];    /* 이미 있는 행, excluded */
     resolver_t existing;        /* sources[0]만. 바깥 열을 보는 서브쿼리가 쓴다 */
@@ -324,6 +324,12 @@ static database_exec_status_t conflict_update(database_t *db, conflict_t *c, hea
         if (cast && column->not_null && fresh[i].view.type == VALUE_NULL) status = not_null_violation(db, column);
     }
     if (status == DATABASE_EXEC_OK && apply) {
+        /* 바뀐 행이 저장 한도 안인지 먼저 본다(#283) */
+        for (size_t i = 0; i < n; i++) c->views[i] = existing[i].view;
+        for (size_t i = 0; i < count; i++) c->views[c->columns[i]] = fresh[i].view;
+        row_fits_limit(db, c->views, n, &status);
+    }
+    if (status == DATABASE_EXEC_OK && apply) {
         for (size_t i = 0; i < n; i++) c->views[i] = existing[i].view;
         heap_status_t changed = heap_batch_secondary_remove(batch, c->views, n, at);
         for (size_t i = 0; i < count; i++) c->views[c->columns[i]] = fresh[i].view;
@@ -532,6 +538,7 @@ database_exec_status_t exec_insert(database_t *db, const sqlstmt_insert_t *inser
             }
         }
         for (size_t i = 0; i < n; i++) views[i] = cells[i].view;
+        if (!row_fits_limit(db, views, n, &status)) goto done;
         heap_locator_t placed;
         heap_status_t inserted = heap_batch_insert(batch, views, n, &placed);
         if (inserted != HEAP_OK) {

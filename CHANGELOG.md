@@ -12,6 +12,7 @@
 
 ### 변경
 
+- INSERT·UPDATE·`ON CONFLICT DO UPDATE`가 저장할 한 행의 TEXT·BLOB 합을 63MiB(`66060288`바이트)로 제한: 넘으면 아무것도 반영하지 않고 `LIMIT`(분류 4, 코드 54) 오류다. 큐 payload의 실효 상한은 이 한도에서 가장 긴 idempotency key와 note 자리(328바이트)를 뺀 `66059960`바이트이고 넘는 `put`·`update`는 `LIMIT`(Python `LimitError`)이다. 그래서 상한 아래 작업의 reason을 준 `nack`·`fail`과 `recover`가 행 한도에 걸리지 않으며, 그 전에 들어간 한도 근처 행은 note 없이 상태만 바꾼다. 저장한 행 하나는 기본 결과 한도(64MiB) 안에서 언제나 SELECT로 돌아온다. 이전에는 64MiB 이상 값을 넣을 수 있었지만 읽을 수 없었다. ([#283](https://github.com/woonyong-choi/streamlite/issues/283))
 - 새로 설치하는 큐에 `due` 열과 색인을 두고 claim·purge가 그 색인 구간을 읽도록 변경: claim 비용이 만료 전 LEASED·지연 READY·ACKED·FAILED 수와 무관하다. claim 순서는 작은 id 대신 claim 가능해진 시각(READY는 `ready_at`, 만료 LEASED는 `lease_until`)이 이른 것부터, 같으면 작은 id부터다. 그래서 nack한 작업이 큐 머리를 막지 않는다. key 없는 작업의 `idem`은 `''` 대신 NULL이라 `idem` 색인에 들어가지 않는다. 이 형식의 큐를 이전 판 라이브러리와 함께 쓰지 않는다: 이전 판의 `put`은 실패하고, 그 밖의 연산은 성공하지만 `due`를 고치지 않는다. `get`은 상태도 확인하므로 그런 행 때문에 살아 있는 lease나 끝난 작업을 다시 주지 않지만, 이전 판이 끝낸 작업은 `purge`가 지우지 못한다(고침 문장은 [설계 문서](docs/design/transaction-queue.md#저장과-조회-비용)). ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - `recover`·`release_leases`가 `lease_until` 색인 구간으로 lease를 찾도록 변경: 새로 설치하는 큐는 이 색인을 함께 만들고, 이전 판이 설치한 큐와 이 색인 없이 만든 `due` 형식 큐는 열 때 만든다. 비용이 READY·끝난 작업 수와 무관하다(READY 4만 건에서 호출당 약 110ms → 1ms 이하). 열기는 먼저 읽기로 색인이 있는지 보고 있으면 쓰기 거래를 열지 않는다. 만들지 못하면(BUSY 등, 호출자 트랜잭션 안) 이전 경로를 쓰며 열기는 실패하지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 같은 핸들의 바로 앞 claim이 빈 결과였으면 다음 claim(`get`)이 writer 없이 후보를 먼저 읽어 보고, 없으면 쓰기 트랜잭션을 열지 않도록 변경: 쉬지 않고 묻는 빈 큐 소비자가 writer 잠금을 붙잡지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
@@ -40,6 +41,10 @@
 
 ### 수정
 
+- 다른 연결·프로세스가 쓰기 거래를 쥔 동안 DB 열기가 writer 잠금을 기다리다 5초 뒤 `DB_LOCKED`(Python `DatabaseOpenError`)로 실패하던 문제 수정: 쓰기 가능한 열기도 읽기와 같은 공유 잠금으로 게시 상태를 읽어 곧바로 열린다. 손실 판정과 쓰기 열기 거절(#271)은 같고, writer와의 경합은 첫 쓰기의 BUSY(`busy_timeout_ms`·`busy_timeout_s` 재시도)로 드러난다. ([#283](https://github.com/woonyong-choi/streamlite/issues/283))
+- 이미 있는 큐를 `install=True`(Python 기본값)로 열 때 색인을 만들려고 쓰기 거래를 열어 다른 writer가 쓰는 동안 `BusyError`로 실패하던 문제 수정: 큐 테이블과 색인이 모두 있으면 쓰기 거래 없이 연다. ([#283](https://github.com/woonyong-choi/streamlite/issues/283))
+- 보조 색인 한도가 DB 전체 64개라 큐를 16개까지만 만들 수 있고 그 뒤 사용자 `CREATE INDEX`도 실패하던 문제 수정: DB 전체 1024개, 테이블당 64개로 바꿈. 파일 형식은 같고, 전체 한도가 64개이던 빌드는 64개를 넘는 파일을 바꾸지 않고 `DB_CORRUPT`로 거절한다. ([#283](https://github.com/woonyong-choi/streamlite/issues/283))
+- 64MiB 이상 값의 INSERT·UPDATE가 성공하지만 SELECT가 결과 한도로 실패하던 문제 수정 ([#283](https://github.com/woonyong-choi/streamlite/issues/283))
 - 긴 큐 이름의 경계 처리 수정
 - free-list 경계 처리 수정
 - 음수이거나 범위를 넘는 시계 값에서 큐 연산이 모두 `LIMIT`이 되던 문제 수정: 유효한 값을 한 번도 읽지 못한 핸들만 1970년으로 진행하지 않고 `LIMIT`으로 거절한다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
