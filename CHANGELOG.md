@@ -18,7 +18,7 @@
 - 새 큐 이름이 `_due`·`_lease`로 끝나도 `INVALID`로 거절: 큐의 새 내부 색인 이름과 겹치기 때문이다. 이미 있는 큐는 그대로 열린다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 자동 commit `SELECT`가 쓰기 거래와 writer 잠금 없이 게시 상태를 공유 잠금으로 읽도록 변경: 쉬지 않고 조회하는 연결이 다른 연결·프로세스의 `begin`·변경 문장을 BUSY로 만들지 않는다. 결과는 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 거래 변경 누적(`TXN_WORKSPACE`)을 기본으로 켬: 한 거래가 바꾼 페이지를 commit까지 메모리 사본으로 모아 같은 페이지를 한 번만 쓴다. 사본이 8MiB 한도를 넘으면 모은 사본을 그때 파일에 쓰고 거래를 이어 가므로 큰 거래도 한도 때문에 실패하지 않는다. 파일 형식과 commit 순서는 같다. ([#262](https://github.com/woonyong-choi/streamlite/issues/262))
-- macOS의 기본 commit 동기화를 `F_FULLFSYNC`에서 `fsync(2)`(NORMAL)로 변경: 0.3.0 개발 중 `F_FULLFSYNC` 고정으로 자동 commit INSERT가 약 10배 느려졌다. 전원 차단 보장이 필요하면 FULL 단계를 고른다. 다른 플랫폼의 동작은 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+- macOS의 commit 동기화를 단계에 따라 나눔: 기본 NORMAL은 `fsync(2)`라 OS 장애에는 남지만 전원이 끊기면 최근 commit을 잃을 수 있다. FULL은 `F_FULLFSYNC`(지원하지 않는 파일 시스템은 `fsync(2)`)로 장치 쓰기 캐시까지 비우며 commit 지연이 늘어난다(측정 예: 자동 commit INSERT 평균 약 0.5~0.8ms에서 7~9ms). OFF는 commit에서 동기화하지 않고 정상 close에서 한 번 동기화한다. 0.3.0 개발 중 한때 모든 내구 동기화에 `F_FULLFSYNC`를 썼으나 자동 commit INSERT가 약 10배 느려져 그 동작은 FULL 단계로만 남겼다. 다른 플랫폼은 NORMAL·FULL 모두 `fsync(2)`다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260), [#271](https://github.com/woonyong-choi/streamlite/issues/271))
 
 - 공개 이름을 StreamLite로 변경: 배포·설치 이름과 Python import `streamlite`, C API `streamlite_*`, 공유 라이브러리 `libstreamlite`. 이전 이름의 별칭은 제공하지 않는다.
 - DB 파일 형식을 형식 4 하나로 정리: 16바이트 전체 magic과 SL codec을 쓰며, 이전 ToteDB 형식 파일을 읽는 reader는 제공하지 않는다.
@@ -33,7 +33,6 @@
 - 호출한 스레드가 같은 `Database`에 연 트랜잭션 때문에 막힌 Python 호출은 `busy_timeout_s`를 기다리지 않고 바로 `BusyError`(자동 commit SQL은 `SqlError`)로 변경 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 승인된 commit의 손실이 확정된 파일의 쓰기 열기를 거절: 공개 C API는 `101` `DB_INVALID`, Python은 `DatabaseOpenError`이며 읽기 열기는 이전 세대로 열린다. 손실을 받아들이고 이어 쓰는 열기는 내부 API(`database_open_accepting_loss`)에만 있다. ([#271](https://github.com/woonyong-choi/streamlite/issues/271))
 - `database_create`가 같은 경로를 만드는 다른 핸들이 있으면 `LOCKED`를 줄 수 있고, 게시 뒤 정리에 실패하면 게시한 이름을 거둠: 생성 도중 죽은 프로세스가 남긴 `.partial`은 다음 생성이 자동 정리한다. ([#271](https://github.com/woonyong-choi/streamlite/issues/271))
-- macOS에서 내구 동기화에 `F_FULLFSYNC` 사용: 장치 쓰기 캐시까지 비우므로 commit 지연이 늘어난다(측정 예: 자동 commit INSERT 평균 약 0.5~0.8ms에서 7~9ms). ([#271](https://github.com/woonyong-choi/streamlite/issues/271))
 - `SUBSTR`이 음수·0 시작과 음수 길이에서 SQLite와 같은 결과를 냄 ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
 - 기본 키를 옮기는 `UPDATE`(`SET id = id + 1` 등)가 다른 행의 옛 키를 받는 경우에도 적용: 수정 전에는 기본 키 중복 오류였다. ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
 - SQL 식 재귀 한도 도입: 식 트리 높이 512, 식 중첩 128, 질의 중첩 16, 결합 단계 64를 넘으면 `LIMIT`(분류 4, 코드 15) 오류다. 예전에 받던 일부 깊은 SQL(괄호 128단계 이상, 괄호와 연산자 사슬을 합친 높이가 512를 넘는 식)도 거절한다. ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
