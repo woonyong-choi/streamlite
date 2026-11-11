@@ -1101,9 +1101,13 @@ static void test_clock_unavailable_and_return(void)
     CHECK(count == 1 && g_items[0].id == after && until >= base + 1020 && until < base + 1020 + 5000,
           "돌아온 뒤의 lease는 실제 경과에 맞춰 잰다 (until=%llu)", (unsigned long long)until);
     ackq_claims_release(g_items, count);
+    /* after의 lease(base+1020)도 이미 지났으므로 두 건을 받는다. 순서는 claim 가능해진 시각순일 수 있어 id로 찾는다 */
     g_now = base + 10000;
-    CHECK(claim_n(q, db, 1, 1000) == 1 && g_items[0].id == held, "실제로 10초가 지나면 그 lease는 만료된다");
-    ackq_claims_release(g_items, 1);
+    count = claim_n(q, db, 2, 1000);
+    bool got_held = false;
+    for (size_t i = 0; i < count; i++) got_held = got_held || g_items[i].id == held;
+    CHECK(got_held, "실제로 10초가 지나면 그 lease는 만료된다");
+    ackq_claims_release(g_items, count);
     ackq_close(&other);
     ackq_close(&q);
     close_db(db);
