@@ -11,18 +11,73 @@
 static uint64_t wall_clock_ms(void)
 {
     struct timespec ts;
-    if (clock_gettime(CLOCK_REALTIME, &ts) != 0 || ts.tv_sec < 0) return 0;   /* 1970년 전의 시계는 0으로 읽는다 */
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0 || ts.tv_sec < 0) return UINT64_MAX;   /* 1970년 전의 시계는 범위 밖이다 */
     if ((uint64_t)ts.tv_sec > ACKQ_NOW_MAX / 1000u) return UINT64_MAX;       /* 곱셈이 넘치기 전에 범위 밖으로 표시한다 */
     return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* 벽시계와 따로 흐르는 단조 시각(밀리초). 절전 중에도 흐르는 시계를 고른다(macOS의 CLOCK_MONOTONIC은 절전 중에도 흐른다) */
+static uint64_t mono_clock_ms(void)
+{
+    struct timespec ts;
+#ifdef CLOCK_BOOTTIME
+    const clockid_t id = CLOCK_BOOTTIME;
+#else
+    const clockid_t id = CLOCK_MONOTONIC;
+#endif
+    if (clock_gettime(id, &ts) != 0 || ts.tv_sec < 0) return 0;   /* 읽지 못하면 경과 0으로 본다 */
+    return (uint64_t)ts.tv_sec * 1000u + (uint64_t)ts.tv_nsec / 1000000u;
+}
+
+/* at_mono에 at이던 시각이 mono에는 얼마인지. ACKQ_NOW_MAX에서 멈춘다 */
+static uint64_t advance(uint64_t at, uint64_t at_mono, uint64_t mono)
+{
+    uint64_t elapsed = mono > at_mono ? mono - at_mono : 0;
+    return elapsed > ACKQ_NOW_MAX - at ? ACKQ_NOW_MAX : at + elapsed;
+}
+
+/* clock_lock을 쥔 채 유효한 벽시계 값 raw(단조 시각 mono에 읽음)로 하한을 고친다 */
+static void observe_clock(ackq_t *queue, uint64_t raw, uint64_t mono)
+{
+    if (!queue->clock_valid) {
+        queue->clock_valid = true;
+        queue->clock_floor = raw;
+    } else {
+        uint64_t expected = advance(queue->clock_seen, queue->clock_seen_mono, mono);
+        if (expected < queue->clock_floor) expected = queue->clock_floor;
+        if (raw > expected && raw - expected > ACKQ_CLOCK_JUMP_MS) {
+            /* 앞으로 뛰었다. 실제 경과(절전 등)와 구분하지 못하므로 받아들이되 뛰기 직전의 예상 시각을 기억한다 */
+            if (!queue->clock_jumped) {
+                queue->clock_jumped = true;
+                queue->clock_prior = expected;
+                queue->clock_prior_mono = mono;
+            }
+        } else if (queue->clock_jumped && raw < queue->clock_floor && queue->clock_floor - raw > ACKQ_CLOCK_JUMP_MS) {
+            /* 뛴 시계가 돌아왔다. 하한을 뛰기 직전의 예상 시각 + 단조 경과까지만 남기고 뛴 값에 머물지 않는다 */
+            uint64_t prior = advance(queue->clock_prior, queue->clock_prior_mono, mono);
+            if (prior < queue->clock_floor) queue->clock_floor = prior > raw ? prior : raw;
+            queue->clock_jumped = false;
+        }
+        if (raw > queue->clock_floor) queue->clock_floor = raw;
+    }
+    queue->clock_seen = raw;
+    queue->clock_seen_mono = mono;
 }
 
 uint64_t ackq_now(ackq_t *queue)
 {
     uint64_t raw = queue->now_ms != NULL ? queue->now_ms(queue->clock_ctx) : wall_clock_ms();
-    if (raw > ACKQ_NOW_MAX) raw = 0;   /* 범위 밖 값을 하한으로 삼으면 되돌릴 수 없으므로 버린다 */
-    uint64_t floor = atomic_load(&queue->clock_floor);
-    while (raw > floor && !atomic_compare_exchange_weak(&queue->clock_floor, &floor, raw)) {}
-    return raw > floor ? raw : floor;
+    uint64_t mono = mono_clock_ms();
+    bool unlocked = false;
+    while (!atomic_compare_exchange_weak_explicit(&queue->clock_lock, &unlocked, true, memory_order_acquire,
+                                                  memory_order_relaxed)) {
+        unlocked = false;
+    }
+    /* 범위 밖 값을 하한으로 삼으면 되돌릴 수 없으므로 버린다 */
+    if (raw <= ACKQ_NOW_MAX) observe_clock(queue, raw, mono);
+    uint64_t now = queue->clock_valid ? queue->clock_floor : ACKQ_NOW_UNAVAILABLE;
+    atomic_store_explicit(&queue->clock_lock, false, memory_order_release);
+    return now;
 }
 
 value_view_t ackq_int(int64_t value)

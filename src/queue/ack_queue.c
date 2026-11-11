@@ -596,7 +596,9 @@ static ackq_status_t enqueue_in(ackq_t *queue, ackq_scope_t *scope, const uint8_
                                 const char *key, uint64_t *id, bool *duplicate)
 {
     char sql[ACKQ_SQL_MAX];
-    int64_t now = (int64_t)ackq_now(queue);
+    uint64_t clock = ackq_now(queue);
+    if (clock > ACKQ_NOW_MAX) return ACKQ_LIMIT;   /* 유효한 시각을 한 번도 읽지 못했다 */
+    int64_t now = (int64_t)clock;
     bool found = false;
     uint64_t existing = 0;
     ackq_status_t status = ACKQ_OK;
@@ -963,14 +965,17 @@ ackq_status_t ackq_update(ackq_t *queue, session_t *session, uint64_t id, uint64
 /*
  * LEASED 한 건의 claim을 끝낸다. fence를 1 올려 옛 claim의 ack·nack·fail·extend·update가 모두 STALE이 되게 한다
  * (READY로 돌아간 것만으로는 같은 claim의 중복 nack과 구분되지 않는다). 만료(expired)이고 시도 횟수가 max_attempts에
- * 닿았으면 FAILED로, 아니면 READY로 돌린다. 호출자의 판단으로 푸는 release는 작업의 실패가 아니므로 시도 횟수를 보지 않는다.
+ * 닿았으면 FAILED로, 아니면 READY로 돌린다. 호출자의 판단으로 푸는 release는 작업의 실패가 아니므로 한도에 닿은 작업도
+ * 한 번 더 전달하지만, 이미 한도를 넘긴 작업(그 한 번을 받은 작업)은 FAILED로 끝낸다. claim은 READY의 시도 횟수를 보지
+ * 않으므로 이렇게 하지 않으면 crash 뒤 release를 반복하는 루프에서 같은 작업이 끝없이 전달된다.
  */
 static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, bool expired)
 {
     char sql[ACKQ_SQL_MAX];
     if (meta->fence == INT64_MAX) return ACKQ_LIMIT;
     int64_t fence = meta->fence + 1;
-    if (expired && queue->max_attempts > 0 && meta->attempts >= (int64_t)queue->max_attempts) {
+    int64_t limit = (int64_t)queue->max_attempts;
+    if (limit > 0 && (expired ? meta->attempts >= limit : meta->attempts > limit)) {
         snprintf(sql, sizeof(sql), "UPDATE %s SET state = ?, lease_until = 0, fence = ?, note = ? WHERE id = ?", queue->table);
         value_view_t failed[4] = {ackq_int(ACKQ_STATE_FAILED), ackq_int(fence), ackq_text(NOTE_MAX_ATTEMPTS),
                                   ackq_int((int64_t)meta->id)};
@@ -986,7 +991,9 @@ static ackq_status_t return_leases(ackq_t *queue, session_t *session, size_t lim
 {
     if (processed != NULL) *processed = 0;
     if (queue == NULL || limit == 0 || limit > ACKQ_MAX_CLAIM_BATCH) return ACKQ_INVALID;
-    int64_t now = (int64_t)ackq_now(queue);
+    uint64_t clock = ackq_now(queue);
+    if (clock > ACKQ_NOW_MAX) return ACKQ_LIMIT;   /* 유효한 시각을 한 번도 읽지 못했다 */
+    int64_t now = (int64_t)clock;
     topk_t top = {calloc(limit, sizeof(meta_t)), 0, limit};
     if (top.items == NULL) return ACKQ_NOMEM;
     ackq_scope_t scope;
@@ -1070,8 +1077,10 @@ static ackq_status_t expire_keys(ackq_t *queue, ackq_scope_t *scope, size_t limi
 {
     char sql[ACKQ_SQL_MAX];
     result_t *result = NULL;
+    uint64_t clock = ackq_now(queue);
+    if (clock > ACKQ_NOW_MAX) return ACKQ_LIMIT;   /* 유효한 시각을 한 번도 읽지 못했다 */
     snprintf(sql, sizeof(sql), "SELECT seq FROM %s WHERE expires_at <= ? ORDER BY seq LIMIT ?", queue->keys);
-    value_view_t params[2] = {ackq_int((int64_t)ackq_now(queue)), ackq_int((int64_t)limit)};
+    value_view_t params[2] = {ackq_int((int64_t)clock), ackq_int((int64_t)limit)};
     ackq_status_t status = ackq_run(queue, scope, false, sql, params, 2, &result, NULL);
     if (status != ACKQ_OK) return status;
     int64_t *expired = calloc(limit, sizeof(*expired));

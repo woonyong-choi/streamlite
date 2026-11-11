@@ -17,6 +17,10 @@
 
 /* 시계 값의 상한. 이보다 작은 시각에 lease·지연·보존 기간을 더해도 INT64_MAX를 넘지 않는다 */
 #define ACKQ_NOW_MAX ((uint64_t)INT64_MAX - ACKQ_MAX_RETENTION_MS)
+/* ackq_now가 유효한 시각을 한 번도 읽지 못한 핸들에서 돌려주는 값. ACKQ_NOW_MAX보다 크므로 호출자는 LIMIT으로 거절한다 */
+#define ACKQ_NOW_UNAVAILABLE UINT64_MAX
+/* 단조 시계로 잰 경과보다 이만큼(밀리초) 넘게 앞선 벽시계 값을 앞으로 뛴 것으로 본다 */
+#define ACKQ_CLOCK_JUMP_MS 1000u
 
 #ifndef STREAMLITE_ACKQ_CONDITIONAL
 #define STREAMLITE_ACKQ_CONDITIONAL 0
@@ -34,7 +38,13 @@ struct ackq {
     uint64_t (*now_ms)(void *ctx);
     void *clock_ctx;
     bool conditional_enabled;
-    _Atomic uint64_t clock_floor;    /* 이 핸들이 읽은 가장 늦은 시각. ackq_now만 바꾼다 */
+    /* 시각 하한과 그 판단에 쓰는 관측. ackq_now만 clock_lock을 쥐고 읽고 바꾼다(calloc의 0이 초기 상태다) */
+    _Atomic bool clock_lock;
+    bool clock_valid;                /* 유효한 벽시계 값을 한 번이라도 읽었다 */
+    bool clock_jumped;               /* 앞으로 뛴 값을 받아들였고 아직 돌아오지 않았다 */
+    uint64_t clock_floor;            /* 돌려준 시각의 하한. 뒤로 간 벽시계는 이 값으로 읽는다 */
+    uint64_t clock_seen, clock_seen_mono;   /* 마지막으로 읽은 유효한 벽시계 값과 그때의 단조 시각 */
+    uint64_t clock_prior, clock_prior_mono; /* 앞으로 뛰기 직전의 예상 시각과 그때의 단조 시각 */
 };
 
 /* 한 연산이 문장을 실행하는 세션. 세션에 열려 있던 트랜잭션(호출자의 것)이면 own이 false이고 commit하지 않는다. */
@@ -63,8 +73,10 @@ ackq_status_t ackq_conditional_finish(ackq_t *queue, ackq_scope_t *scope, const 
                                        bool *matched);
 
 /*
- * 지금 시각(밀리초). 시계가 준 값이 ACKQ_NOW_MAX를 넘으면(음수가 uint64로 감긴 값 포함) 읽지 못한 것으로 보고, 이 핸들이
- * 읽은 가장 늦은 시각보다 과거이면 그 시각을 돌려준다. 그래서 돌려주는 값은 핸들 안에서 줄지 않고 INT64 범위 안이다.
+ * 지금 시각(밀리초). 시계가 준 값이 ACKQ_NOW_MAX를 넘으면(음수가 uint64로 감긴 값 포함) 읽지 못한 것으로 보고 하한을
+ * 돌려준다. 유효한 값을 한 번도 읽지 못했으면 ACKQ_NOW_UNAVAILABLE이다. 하한보다 과거인 값은 하한으로 읽는다. 단,
+ * 앞으로 뛴 값을 받아들인 뒤 뒤로 간 값이면 하한을 "뛰기 직전의 예상 시각 + 그 뒤의 단조 경과"까지 낮춘다(뒤로 간 값보다
+ * 낮추지는 않는다). 그 밖에는 돌려주는 값이 핸들 안에서 줄지 않는다. 돌려주는 시각은 ACKQ_NOW_MAX 이하다.
  */
 uint64_t ackq_now(ackq_t *queue);
 

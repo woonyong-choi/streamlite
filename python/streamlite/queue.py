@@ -288,7 +288,8 @@ class Queue:
         """worker가 모두 죽었다고 아는 호출자가 모든 처리 중 작업을 만료와 무관하게 대기로 돌린다.
 
         살아 있는 worker가 있으면 그 claim이 끝나 ack가 StaleError가 되고 작업이 중복 전달된다. 해제는 실패가 아니므로
-        시도 횟수를 다 쓴 작업도 terminal이 아닌 대기로 돌아가 한 번 더 전달된다.
+        시도 횟수를 다 쓴 작업도 terminal이 아닌 대기로 돌아가 한 번 더 전달된다. 그 한 번을 받은 작업은 다음 해제에서
+        FAILED가 되므로 재시작마다 해제해도 끝없이 전달되지 않는다.
         """
         return self._count_call(_lib.streamlite_queue_release_leases, limit)
 

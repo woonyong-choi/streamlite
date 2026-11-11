@@ -9,9 +9,9 @@
 - 공개 이름을 StreamLite로 변경: 배포·설치 이름과 Python import `streamlite`, C API `streamlite_*`, 공유 라이브러리 `libstreamlite`. 이전 이름의 별칭은 제공하지 않는다.
 - DB 파일 형식을 형식 4 하나로 정리: 16바이트 전체 magic과 SL codec을 쓰며, 이전 ToteDB 형식 파일을 읽는 reader는 제공하지 않는다.
 - `recover`·`release_leases`가 돌려놓은 작업의 fence를 1 올림: 재획득 전이어도 옛 claim의 ack·nack·fail·extend·update는 모두 `STALE`이다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
-- `release_leases`가 시도 한도에 닿은 작업을 `FAILED`가 아닌 `READY`로 되돌림: 해제는 작업의 실패로 세지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- `release_leases`가 시도 한도에 닿은 작업을 `FAILED`가 아닌 `READY`로 되돌림: 해제는 작업의 실패로 세지 않는다. 그렇게 한 번 더 전달된 작업은 다음 해제에서 `FAILED`가 된다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 새 큐 이름이 `_keys`·`_state`·`_idem`으로 끝나거나 다른 큐의 내부 이름과 겹치면 `INVALID`로 거절: 이미 있는 큐는 그대로 열린다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
-- 큐 핸들이 뒤로 간 시계를 자기가 읽은 가장 늦은 시각으로 읽음: lease를 일찍 만료시키거나 줄여서 연장하지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 큐 핸들이 뒤로 간 시계를 자기가 읽은 가장 늦은 시각으로 읽음: lease를 일찍 만료시키거나 줄여서 연장하지 않는다. 앞으로 뛰었다 돌아온 시계는 단조 시계로 잰 경과로 판별해 뛴 시각에 머물지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - Python `Queue`의 `idem_retention_ms=0`이 C와 같이 기본 7일을 뜻하도록 변경: 키를 남기지 않으려면 `None`을 준다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - `persistqueue_compat.SQLiteAckQueue`의 `auto_resume`이 만료된 lease만 되돌리도록 변경: 다른 프로세스가 처리 중인 작업을 풀지 않는다. 재시작 때 모두 되돌리려면 `resume_live_leases=True`를 준다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - `persistqueue_compat`의 `get(id=...)`이 이미 끝났거나 지워진 작업이면 block이어도 바로 `Empty`로 변경 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
@@ -22,7 +22,7 @@
 
 - 긴 큐 이름의 경계 처리 수정
 - free-list 경계 처리 수정
-- 음수이거나 범위를 넘는 시계 값에서 큐 연산이 모두 `LIMIT`이 되던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 음수이거나 범위를 넘는 시계 값에서 큐 연산이 모두 `LIMIT`이 되던 문제 수정: 유효한 값을 한 번도 읽지 못한 핸들만 1970년으로 진행하지 않고 `LIMIT`으로 거절한다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 보존 기간이 긴 멱등성 키 뒤의 만료된 키가 purge에서 정리되지 않던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - commit·rollback 없이 참조를 잃은 Python `Transaction`이 writer를 쥔 채 남던 문제 수정: 수거 때 rollback하고 `Database`·`Queue`는 수거나 인터프리터 종료 때 닫는다. 인터프리터 종료 때는 다른 스레드가 쓰고 있을 수 있어 트랜잭션을 rollback하지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 종료자가 끝낸 Python `Transaction`의 다음 `execute`·큐 호출이 자동 commit으로 실행되던 문제 수정: 값이 NULL인 트랜잭션·DB·큐 핸들을 끝난 상태로 보고 `InvalidArgumentError`(큐는 `ValueError`)로 거절한다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))

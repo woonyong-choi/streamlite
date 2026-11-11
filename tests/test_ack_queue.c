@@ -1007,6 +1007,9 @@ static void test_clock_guard(void)
     ackq_t *q;
     assert(ackq_install(db, &o, &q) == ACKQ_OK);
     uint64_t id;
+    /* 유효한 시각을 한 번 읽은 핸들은 그 뒤의 범위 밖 값을 그 시각으로 읽는다 */
+    g_now = 10000;
+    assert(enq(q, db, "seed", NULL, &id, NULL) == ACKQ_OK);
     /* 음수 시각이 uint64로 감긴 값 */
     g_now = (uint64_t)-5000;
     ackq_status_t st = enq(q, db, "neg", NULL, &id, NULL);
@@ -1014,10 +1017,16 @@ static void test_clock_guard(void)
     size_t count = 0;
     st = ackq_claim(q, db, 1, 100, g_items, &count);
     CHECK(st == ACKQ_OK && count == 1, "감긴 시계에서도 claim은 LIMIT이 아니다 (%s)", ackq_status_name(st));
-    CHECK(count == 1 && g_items[0].lease_until_ms <= (uint64_t)INT64_MAX, "lease 만료 시각이 범위 안이다");
+    CHECK(count == 1 && g_items[0].lease_until_ms == 10100, "lease는 읽은 시각 10000에서 잰다");
     uint64_t fence = count == 1 ? g_items[0].fence : 1;
+    uint64_t first = count == 1 ? g_items[0].id : 0;
     ackq_claims_release(g_items, count);
-    CHECK(ackq_ack(q, db, id, fence) == ACKQ_OK, "ack");
+    CHECK(ackq_ack(q, db, first, fence) == ACKQ_OK, "ack");
+    assert(claim_n(q, db, 1, 100) == 1);
+    first = g_items[0].id;
+    fence = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    assert(ackq_ack(q, db, first, fence) == ACKQ_OK);
 
     /* 뒤로 간 시계는 이 핸들이 본 가장 늦은 시각으로 읽는다: lease가 줄지도, 일찍 만료되지도 않는다 */
     g_now = 10000;
@@ -1030,12 +1039,104 @@ static void test_clock_guard(void)
     uint64_t until = 0;
     CHECK(ackq_extend(q, db, id, fence, 1000, &until) == ACKQ_OK && until == 11000,
           "뒤로 간 시계로 연장해도 lease가 줄지 않는다 (until=%llu)", (unsigned long long)until);
+    CHECK(ackq_extend(q, db, id, fence, 1000, &until) == ACKQ_OK && until == 11000,
+          "뒤로 간 채로 다시 연장해도 줄지 않는다 (until=%llu)", (unsigned long long)until);
     CHECK(claim_n(q, db, 1, 1000) == 0, "뒤로 간 시계에서 만료되지 않는다");
     g_now = 10999;
     CHECK(claim_n(q, db, 1, 1000) == 0, "따라잡기 전에도 만료되지 않는다");
     g_now = 11000;
     CHECK(claim_n(q, db, 1, 1000) == 1 && g_items[0].fence == fence + 1, "실제로 지나면 만료된다");
     ackq_claims_release(g_items, 1);
+    ackq_close(&q);
+    close_db(db);
+}
+
+/* ── #273: 유효한 시각을 읽지 못한 핸들, 앞으로 뛰었다 돌아온 시계 ── */
+
+static void test_clock_unavailable_and_return(void)
+{
+    printf("\n[#273 첫 시계 값이 범위 밖인 핸들과 앞으로 뛰었다 돌아온 시계]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 0);
+    ackq_t *q, *other;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    uint64_t id = 0;
+    size_t count = 0, n = 0;
+    ackq_stats_t stats;
+
+    /* 유효한 값을 한 번도 읽지 못한 핸들은 1970년(0)으로 진행하지 않고 LIMIT으로 거절한다 */
+    g_now = (uint64_t)-5000;
+    ackq_status_t st = enq(q, db, "first", NULL, &id, NULL);
+    CHECK(st == ACKQ_LIMIT, "첫 시계 값이 범위 밖이면 enqueue는 LIMIT (%s)", ackq_status_name(st));
+    st = ackq_claim(q, db, 1, 100, g_items, &count);
+    CHECK(st == ACKQ_LIMIT && count == 0, "첫 시계 값이 범위 밖이면 claim은 LIMIT (%s)", ackq_status_name(st));
+    st = ackq_recover(q, db, 10, &n);
+    CHECK(st == ACKQ_LIMIT, "첫 시계 값이 범위 밖이면 recover는 LIMIT (%s)", ackq_status_name(st));
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.ready + stats.leased == 0, "아무것도 넣지 않았다");
+
+    ackq_close(&q);
+
+    /* 다른 worker가 10초 lease를 잡은 뒤 이 핸들의 시계가 앞으로 1시간 뛰었다 돌아온다 */
+    const uint64_t base = 1000000, hour = 3600000;
+    g_now = base;
+    o = qopts("jump", 0);
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    uint64_t held;
+    assert(enq(q, db, "held", NULL, &held, NULL) == ACKQ_OK);
+    assert(ackq_open(db, &o, &other) == ACKQ_OK);
+    assert(ackq_claim(other, db, 1, 10000, g_items, &count) == ACKQ_OK && count == 1 && g_items[0].id == held);
+    ackq_claims_release(g_items, 1);
+    g_now = base + hour;
+    assert(enq(q, db, "during", NULL, &id, NULL) == ACKQ_OK);
+    g_now = base + 10;
+    count = claim_n(q, db, 1, 1000);
+    CHECK(count == 0, "돌아온 뒤에는 다른 worker의 살아 있는 lease를 만료로 보지 않는다");
+    ackq_claims_release(g_items, count);
+    g_now = base + 20;
+    uint64_t after;
+    assert(enq(q, db, "after", NULL, &after, NULL) == ACKQ_OK);
+    count = claim_n(q, db, 1, 1000);
+    uint64_t until = count == 1 ? g_items[0].lease_until_ms : 0;
+    CHECK(count == 1 && g_items[0].id == after && until >= base + 1020 && until < base + 1020 + 5000,
+          "돌아온 뒤의 lease는 실제 경과에 맞춰 잰다 (until=%llu)", (unsigned long long)until);
+    ackq_claims_release(g_items, count);
+    g_now = base + 10000;
+    CHECK(claim_n(q, db, 1, 1000) == 1 && g_items[0].id == held, "실제로 10초가 지나면 그 lease는 만료된다");
+    ackq_claims_release(g_items, 1);
+    ackq_close(&other);
+    ackq_close(&q);
+    close_db(db);
+}
+
+/* ── #273: crash 뒤 release를 반복해도 시도 한도에서 끝난다 ── */
+
+static void test_release_loop_reaches_attempt_limit(void)
+{
+    printf("\n[#273 release를 반복하는 독 작업은 시도 한도에서 FAILED]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("poison", 2);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    uint64_t id;
+    assert(enq(q, db, "poison", NULL, &id, NULL) == ACKQ_OK);
+    size_t claims = 0, n = 0;
+    ackq_stats_t stats = {0};
+    for (int round = 0; round < 10; round++) {
+        size_t count = claim_n(q, db, 1, 60000);
+        if (count == 0) break;
+        claims++;
+        ackq_claims_release(g_items, count);
+        CHECK(ackq_release_leases(q, db, 10, &n) == ACKQ_OK && n == 1, "release");
+        assert(ackq_stats(q, db, &stats) == ACKQ_OK);
+        if (stats.failed == 1) break;
+    }
+    CHECK(stats.failed == 1 && stats.ready == 0 && stats.leased == 0,
+          "release 반복이 유한 횟수 안에 FAILED로 끝난다 (ready=%llu failed=%llu)",
+          (unsigned long long)stats.ready, (unsigned long long)stats.failed);
+    CHECK(claims == 3, "한도 2에 닿은 뒤 release로 한 번 더 전달하고 끝난다 (claims=%zu)", claims);
     ackq_close(&q);
     close_db(db);
 }
@@ -1141,6 +1242,8 @@ int main(void)
     test_session_contract_db_and_queue();
     test_recover_release_revoke_claim();
     test_clock_guard();
+    test_clock_unavailable_and_return();
+    test_release_loop_reaches_attempt_limit();
     test_key_expiry_order();
     test_name_collision();
     printf("\ntest_ack_queue: %d checks, %d failed\n", g_run, g_fail);
