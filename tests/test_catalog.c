@@ -195,14 +195,18 @@ static void invalid_specs_keep_catalog(void)
     assert(catalog_create_table(catalog, &spec, NULL) == CATALOG_INVALID);
     assert_same(catalog, &before);
 
-    /* 이름 255바이트와 컬럼 1024개 경계는 허용한다. */
-    static catalog_column_spec_t many[1024];
-    static char names[1024][8];
-    for (size_t i = 0; i < 1024; i++) {
+    /* 이름 255바이트와 컬럼 CATALOG_MAX_CREATE_COLUMNS개 경계는 허용하고 한 개 더는 거절한다(#270). */
+    enum { WIDEST = CATALOG_MAX_CREATE_COLUMNS };
+    static catalog_column_spec_t many[WIDEST + 1];
+    static char names[WIDEST + 1][8];
+    for (size_t i = 0; i <= WIDEST; i++) {
         snprintf(names[i], sizeof(names[i]), "c%zu", i);
         many[i] = column(names[i], VALUE_BLOB, true);
     }
-    assert(create(catalog, "wide", many, 1024, 1023, false, &id) == CATALOG_OK);
+    id = 99;
+    assert(create(catalog, "wider", many, WIDEST + 1, 0, false, &id) == CATALOG_INVALID && id == 99);
+    assert_same(catalog, &before);
+    assert(create(catalog, "wide", many, WIDEST, WIDEST - 1, false, &id) == CATALOG_OK);
     assert(catalog_describe(catalog, id, &(catalog_table_view_t){0}) == CATALOG_OK);
     assert(create(catalog, long_name + 1, good, 2, 0, false, &id) == CATALOG_OK);
     free(before.bytes);
@@ -531,9 +535,10 @@ static void encoded_size_cap_is_enforced(void)
 {
     catalog_t *catalog;
     assert(catalog_open_empty(&catalog) == CATALOG_OK);
-    static catalog_column_spec_t columns[1024];
-    static char names[1024][256];
-    for (size_t i = 0; i < 1024; i++) {
+    enum { WIDEST = CATALOG_MAX_CREATE_COLUMNS };
+    static catalog_column_spec_t columns[WIDEST];
+    static char names[WIDEST][256];
+    for (size_t i = 0; i < WIDEST; i++) {
         memset(names[i], 'x', 255);
         snprintf(names[i], 8, "c%04zu", i);
         names[i][strlen(names[i])] = 'x';
@@ -546,7 +551,7 @@ static void encoded_size_cap_is_enforced(void)
         snprintf(table, sizeof(table), "table%zu", created);
         catalog_table_id_t id = 0;
         snapshot_t before = snapshot(catalog);
-        status = create(catalog, table, columns, 1024, 0, false, &id);
+        status = create(catalog, table, columns, WIDEST, 0, false, &id);
         if (status != CATALOG_OK) {
             assert(status == CATALOG_LIMIT && id == 0);
             assert_same(catalog, &before);
@@ -563,6 +568,62 @@ static void encoded_size_cap_is_enforced(void)
     assert_same(back, &shot);
     free(shot.bytes);
     catalog_close(back);
+    catalog_close(catalog);
+}
+
+/* 컬럼 count개짜리 테이블 하나를 담은 인코딩을 손으로 만든다. base는 컬럼 두 개짜리 인코딩, record는 컬럼 기록 하나의 크기다. */
+static snapshot_t widen(const snapshot_t *base, size_t record, size_t count)
+{
+    size_t prefix = base->size - 8 - 2 * record;  /* 머리와 테이블 고정부·이름. 뒤 8바이트는 색인 수와 checksum */
+    snapshot_t wide = {NULL, prefix + count * record + 8};
+    wide.bytes = malloc(wide.size);
+    assert(wide.bytes != NULL);
+    memcpy(wide.bytes, base->bytes, prefix);
+    for (size_t i = 0; i < count; i++) {
+        uint8_t *at = wide.bytes + prefix + i * record;
+        char name[8];
+        memcpy(at, base->bytes + prefix, record);
+        snprintf(name, sizeof(name), "c%04zu", i);
+        memcpy(at + record - 5, name, 5);
+    }
+    memcpy(wide.bytes + wide.size - 8, base->bytes + base->size - 8, 8);
+    poke(wide.bytes, 8, 4, wide.size);
+    poke(wide.bytes, HEADER + 8, 2, count);
+    seal(wide.bytes, wide.size);
+    return wide;
+}
+
+/* #270: 예전 한도로 저장된 넓은 테이블은 새로 만들 수는 없어도 계속 읽히고 같은 바이트로 다시 쓰인다. */
+static void stored_wide_tables_still_decode(void)
+{
+    catalog_column_spec_t columns[] = {column("c0000", VALUE_INTEGER, false), column("c0001", VALUE_INTEGER, false)};
+    catalog_t *narrow, *catalog;
+    catalog_table_id_t id;
+    assert(catalog_open_empty(&narrow) == CATALOG_OK && catalog_open_empty(&catalog) == CATALOG_OK);
+    assert(create(narrow, "t", columns, 1, CATALOG_NO_COLUMN, false, &id) == CATALOG_OK);
+    assert(create(catalog, "t", columns, 2, CATALOG_NO_COLUMN, false, &id) == CATALOG_OK);
+    snapshot_t one = snapshot(narrow), two = snapshot(catalog);
+    size_t record = two.size - one.size;
+
+    snapshot_t same = widen(&two, record, 2);
+    assert(same.size == two.size && memcmp(same.bytes, two.bytes, two.size) == 0);  /* 손으로 만든 형식이 맞는지 */
+    free(same.bytes);
+
+    snapshot_t wide = widen(&two, record, CATALOG_MAX_COLUMNS);
+    catalog_t *back;
+    assert(catalog_decode(wide.bytes, wide.size, &back) == CATALOG_OK);
+    assert(catalog_find(back, "t", 1, &id) == CATALOG_OK);
+    assert(describe(back, id).column_count == CATALOG_MAX_COLUMNS);
+    assert_same(back, &wide);
+    catalog_close(back);
+    free(wide.bytes);
+
+    wide = widen(&two, record, CATALOG_MAX_COLUMNS + 1);
+    assert(decode_marker(wide.bytes, wide.size) == CATALOG_CORRUPT);
+    free(wide.bytes);
+    free(one.bytes);
+    free(two.bytes);
+    catalog_close(narrow);
     catalog_close(catalog);
 }
 
@@ -840,6 +901,7 @@ int main(void)
     semantic_corruption_is_rejected();
     decode_argument_and_size_limits();
     encoded_size_cap_is_enforced();
+    stored_wide_tables_still_decode();
     index_metadata_survives_restart();
     puts("catalog: independent tables, stable IDs, preserved failures, strict encode/decode");
     return 0;
