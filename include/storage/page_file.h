@@ -67,7 +67,11 @@ typedef enum {
     PAGE_FILE_LOST_COMMIT   /* 쓰기 열기: 성공을 돌려준 최신 commit이 손상돼 이전 세대로만 열 수 있다. 파일을 바꾸지 않았다 */
 } page_file_status_t;
 
-/* 테스트가 실패를 주입하는 자리. 기본값은 libc다. */
+/*
+ * 테스트가 실패를 주입하는 자리. 기본값은 libc다. 다만 기본 fsync는 Apple 플랫폼에서 fcntl(F_FULLFSYNC)를 먼저 쓴다.
+ * 그 플랫폼의 fsync(2)는 저장 장치의 쓰기 캐시를 비우지 않기 때문이다. 파일 시스템이 F_FULLFSYNC를 지원하지 않으면
+ * (ENOTSUP·EINVAL·ENOTTY·ENODEV) fsync로 물러나고, 그 밖의 실패는 그대로 실패다. 끄는 설정은 없다.
+ */
 typedef struct {
     ssize_t (*pread)(int fd, void *buf, size_t size, off_t offset);
     ssize_t (*pwrite)(int fd, const void *buf, size_t size, off_t offset);

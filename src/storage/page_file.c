@@ -127,8 +127,23 @@ static ssize_t libc_pwrite(int fd, const void *buf, size_t size, off_t offset)
     return pwrite(fd, buf, size, offset);
 }
 
-static const page_file_io_t LIBC_IO = {libc_pread, libc_pwrite, fsync, link, unlink};
-static page_file_io_t g_default_io = {libc_pread, libc_pwrite, fsync, link, unlink};
+/*
+ * 내구 동기화. Apple 플랫폼의 fsync(2)는 저장 장치의 쓰기 캐시를 비우지 않아 전원이 끊기면 성공한 commit이 사라질 수
+ * 있다. 그래서 F_FULLFSYNC를 쓰고, 파일 시스템이 지원하지 않을 때만 fsync로 물러난다. 그 밖의 실패(EIO 등)를 fsync로
+ * 다시 시도해 성공으로 바꾸지 않는다. STREAMLITE_TEST_PLAIN_FSYNC는 시험 바이너리 빌드 전용이다(Makefile). commit을
+ * 수천 번 하는 시험이 commit마다 장치 캐시를 비우지 않게 한다. 배포하는 라이브러리는 이 매크로 없이 빌드한다.
+ */
+static int libc_sync(int fd)
+{
+#if defined(__APPLE__) && defined(F_FULLFSYNC) && !defined(STREAMLITE_TEST_PLAIN_FSYNC)
+    if (fcntl(fd, F_FULLFSYNC) == 0) return 0;
+    if (errno != ENOTSUP && errno != EOPNOTSUPP && errno != EINVAL && errno != ENOTTY && errno != ENODEV) return -1;
+#endif
+    return fsync(fd);
+}
+
+static const page_file_io_t LIBC_IO = {libc_pread, libc_pwrite, libc_sync, link, unlink};
+static page_file_io_t g_default_io = {libc_pread, libc_pwrite, libc_sync, link, unlink};
 static size_t g_default_cache_pages = PAGE_FILE_CACHE_PAGES;
 static uint32_t g_default_lock_timeout_ms = PAGE_FILE_LOCK_TIMEOUT_MS;
 static uint32_t g_default_publish_timeout_ms = PAGE_FILE_PUBLISH_TIMEOUT_MS;

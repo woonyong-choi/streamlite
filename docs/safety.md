@@ -228,6 +228,7 @@ python3 bench/sqlite_workload.py --analyze
 ## 검증하지 않은 것
 
 - 전원 차단. 시험은 프로세스 종료와 I/O 오류만 다룬다. 저장 장치가 `fsync` 성공을 돌려준 뒤 최신 제어 쓰기를 통째로 버리면(lost write) 이전 세대가 정상으로 열리며 탐지하지 못한다. 손상 흔적이 남은 경우의 판정과 한계는 [이전 세대로 물러난 열기](#이전-세대로-물러난-열기)에 있다.
+- 동기화의 실제 내구성. Apple 플랫폼에서는 `fsync(2)`가 저장 장치의 쓰기 캐시를 비우지 않으므로 기본 동기화가 `fcntl(F_FULLFSYNC)`를 쓰고, 파일 시스템이 지원하지 않을 때(`ENOTSUP`·`EINVAL`·`ENOTTY`·`ENODEV`)만 `fsync`로 물러난다. 공유 라이브러리에는 끄는 설정이 없다. 그 밖의 플랫폼은 `fsync`다. 장치가 이 요청을 지키는지는 시험하지 않았다. C 시험 바이너리는 `STREAMLITE_TEST_PLAIN_FSYNC`로 빌드해 기본 동기화가 `fsync`이고, 시험이 주입한 I/O 진입점(`page_file_set_default_io`)도 이 경로를 거치지 않는다. 그래서 위 종료·I/O 실패 수치는 `F_FULLFSYNC` 경로의 결과가 아니다. 그 경로는 [test_page_file_durable.c](../tests/test_page_file_durable.c)가 매크로 없이 빌드한 page_file로 생성·commit·게시·재개방만 확인하고, 공유 라이브러리를 쓰는 Python 시험이 함께 거친다.
 - 네트워크 파일 시스템. 잠금은 로컬 파일 시스템의 `flock`을 전제로 한다.
 - 여러 writer의 동시 commit. 쓰기 트랜잭션은 파일 전체에서 하나씩 직렬로 실행한다.
 - 다른 운영체제·sanitizer 조합의 전수 검증. 과거 Linux 기록과 현재 macOS undefined 실행만 구분해 적었으며, 이번에 Linux ASan·TSan을 다시 실행하지 않았다.
