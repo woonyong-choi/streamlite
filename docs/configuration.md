@@ -70,13 +70,14 @@ Python `list_items`는 큰 limit을 1024로 줄인다. `recover`, `release_lease
 | 항목 | 기본값 또는 고정값 | 공개 설정 |
 |---|---|---|
 | SQL 입력 실효 한도 | 1MiB, UTF-8 바이트 | Flat C·Python 변경 옵션 없음 |
+| SQL 식·질의 재귀 | 식 트리 높이 512, 식 중첩 128, 질의 중첩 16, 결합 단계 64 | 없음 |
 | C 인코딩 결과 전체 | 64MiB, `67108864`바이트 | `streamlite_set_max_result_bytes(size_t)` |
 | 내부 결과 행 | 기본 64MiB, 셀 배열과 값 바이트 합 | Flat C·Python 변경 옵션 없음 |
 | 내부 builder 결과 | 기본 256MiB, metadata와 행 합 | Flat C·Python 변경 옵션 없음 |
 | 결과 열 수·이름 | 최대 1024개·이름 256바이트 | 없음 |
 | 명령 tag·오류 메시지 | 최대 32바이트·1024바이트 | 없음 |
 
-SQL 입력은 [database.c](../src/sql/database.c)의 bounded 기본값을 적용한다. Lexer 자체의 16MiB 한도가 flat API의 실효 기본값은 아니다. 세션 풀의 무제한 설정도 SQL 입력이나 결과를 무제한으로 만들지 않는다. 내부 결과 한도는 [result.h](../include/sql/result.h)에 있다.
+재귀 한도를 넘는 문장은 실행 전에 `LIMIT`(분류 4, 코드 15) 오류다. 0.3.0부터 괄호 128단계 이상이나 괄호와 연산자 사슬을 합친 높이가 512를 넘는 식처럼 예전에 받던 일부 깊은 SQL도 거절하며 값의 근거는 [sql_statement.h](../include/sql/sql_statement.h)에 있다. SQL 입력은 [database.c](../src/sql/database.c)의 bounded 기본값을 적용한다. Lexer 자체의 16MiB 한도가 flat API의 실효 기본값은 아니다. 세션 풀의 무제한 설정도 SQL 입력이나 결과를 무제한으로 만들지 않는다. 내부 결과 한도는 [result.h](../include/sql/result.h)에 있다.
 
 C 결과 cap은 DB별이 아닌 프로세스 전역 atomic 값이다. 결과를 만들기 전에 설정하고 `streamlite_max_result_bytes()`로 읽는다. `SIZE_MAX/2`보다 큰 값은 그 값으로 줄이며 `0`은 무제한이 아니라 0바이트 cap이다. Python 공개 생성자에는 대응 옵션이 없다. Cap은 전체 프로세스 메모리 상한이 아니며, 실패가 commit 뒤에도 발생할 수 있다는 점은 [오류](errors.md#실패-뒤-상태)에 있다.
 

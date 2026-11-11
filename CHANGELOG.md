@@ -17,6 +17,13 @@
 - `persistqueue_compat`의 `get(id=...)`이 이미 끝났거나 지워진 작업이면 block이어도 바로 `Empty`로 변경 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - `persistqueue_compat`이 ack를 기다리며 기억하는 claim을 10000개로 제한: 넘으면 만료된 것부터 잊고 그 claim의 ack는 `UnknownClaimError`다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 호출한 스레드가 같은 `Database`에 연 트랜잭션 때문에 막힌 Python 호출은 `busy_timeout_s`를 기다리지 않고 바로 `BusyError`(자동 commit SQL은 `SqlError`)로 변경 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 승인된 commit의 손실이 확정된 파일의 쓰기 열기를 거절: 공개 C API는 `101` `DB_INVALID`, Python은 `DatabaseOpenError`이며 읽기 열기는 이전 세대로 열린다. 손실을 받아들이고 이어 쓰는 열기는 내부 API(`database_open_accepting_loss`)에만 있다. ([#271](https://github.com/woonyong-choi/streamlite/issues/271))
+- `database_create`가 같은 경로를 만드는 다른 핸들이 있으면 `LOCKED`를 줄 수 있고, 게시 뒤 정리에 실패하면 게시한 이름을 거둠: 생성 도중 죽은 프로세스가 남긴 `.partial`은 다음 생성이 자동 정리한다. ([#271](https://github.com/woonyong-choi/streamlite/issues/271))
+- macOS에서 내구 동기화에 `F_FULLFSYNC` 사용: 장치 쓰기 캐시까지 비우므로 commit 지연이 늘어난다(측정 예: 자동 commit INSERT 평균 약 0.5~0.8ms에서 7~9ms). ([#271](https://github.com/woonyong-choi/streamlite/issues/271))
+- `SUBSTR`이 음수·0 시작과 음수 길이에서 SQLite와 같은 결과를 냄 ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
+- 기본 키를 옮기는 `UPDATE`(`SET id = id + 1` 등)가 다른 행의 옛 키를 받는 경우에도 적용: 수정 전에는 기본 키 중복 오류였다. ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
+- SQL 식 재귀 한도 도입: 식 트리 높이 512, 식 중첩 128, 질의 중첩 16, 결합 단계 64를 넘으면 `LIMIT`(분류 4, 코드 15) 오류다. 예전에 받던 일부 깊은 SQL(괄호 128단계 이상, 괄호와 연산자 사슬을 합친 높이가 512를 넘는 식)도 거절한다. ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
+- 식 평가의 중간 TEXT·BLOB 값과 작업 buffer를 질의 메모리 한도에 계상: 큰 중간값을 만드는 문장은 메모리 예산 오류(분류 5, 코드 24)가 될 수 있다. ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
 
 ### 수정
 
@@ -29,6 +36,13 @@
 - Python `Queue.put`·`update`가 `bytearray`·`memoryview`를 받고 `str`은 `TypeError`로 거절하도록 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - `persistqueue_compat`의 `clear_acked_data`가 `clear_ack_failed`일 때 `keep_latest`를 무시하고 1024를 넘는 `max_delete`에서 실패하던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 - 끝낸 C 핸들을 표시 검사로 잠그기 전에 `INVALID`로 거절하고 `streamlite_txn_failed`가 mutex 안에서 읽도록 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 죽은 writer가 남긴 게시 표시 때문에 읽기가 게시 timeout까지 기다리던 문제 수정 ([#271](https://github.com/woonyong-choi/streamlite/issues/271))
+- 512개 이상 컬럼의 `CREATE TABLE`이 게시된 뒤 열리지 않던 문제 수정: 새 테이블은 511컬럼까지 만들고 넘으면 거절한다. ([#270](https://github.com/woonyong-choi/streamlite/issues/270))
+- `DROP TABLE`의 페이지 수집이 긴 overflow 체인에서 목록 범위를 넘겨 쓰던 문제와 손상된 overflow 크기로 큰 메모리를 선할당하던 문제 수정 ([#270](https://github.com/woonyong-choi/streamlite/issues/270))
+- 유일 색인 위반을 기본 키 중복과 구분해 "유일 색인의 값이 중복됩니다"로 알림(코드 11 유지) ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
+- 기본 키에 `NULL`을 대입하는 `UPDATE`를 NOT NULL 위반으로 거절 ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
+- `CREATE INDEX`의 닫는 괄호 뒤에 남은 토큰을 문법 오류로 거절 ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
+- `GROUP BY`의 식 대응이 서로 다른 서브쿼리를 같은 식으로 보던 문제 수정 ([#272](https://github.com/woonyong-choi/streamlite/issues/272))
 
 ### 제거
 
