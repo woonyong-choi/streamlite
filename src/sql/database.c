@@ -190,7 +190,7 @@ static database_status_t from_store(catalog_store_status_t status)
     }
 }
 
-/* 열기·생성이 쥐고 돌려준 잠금을 놓는다. 이후 잠금은 문장·작업 동안만 쥐며 기다리지 않는다(#199) */
+/* 열기(공유 잠금)·생성(writer 잠금)이 쥐고 돌려준 잠금을 놓는다. 이후 잠금은 문장·작업 동안만 쥐며 기다리지 않는다(#199) */
 static void release_open_lock(page_file_t *file)
 {
     page_file_set_lock_timeout(file, 0);
@@ -290,8 +290,13 @@ static database_status_t open_database_with(const char *path, bool writable, boo
                                             database_t **out)
 {
     page_file_t *file = NULL;
+    /*
+     * 쓰기 열기도 writer 잠금 없이 공유 잠금으로 한다(#283). 열기는 게시 상태를 읽기만 하므로 다른 핸들·프로세스의 쓰기
+     * 거래를 기다릴 까닭이 없다. 쓰기는 문장·작업마다 database_lock_file이 writer 잠금을 잡고 디스크와 다시 맞춘다.
+     */
     page_file_open_options_t options = {.writable = writable,
                                         .accept_lost_commit = accept_loss,
+                                        .shared_open = true,
                                         .admit = admission != NULL ? admit_file : NULL,
                                         .admit_ctx = admission};
     page_file_status_t opened = page_file_open_with(path, &options, &file, NULL);

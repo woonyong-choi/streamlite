@@ -265,7 +265,10 @@ static void test_failed_opens_release_everything(void)
     CHECK(t.used == 0, "손상 파일 뒤 reserve %zu", t.used);
     CHECK(audit_live == 0, "손상 파일 뒤 살아 있는 할당 %zu", audit_live);
 
-    /* 다른 핸들이 쓰기 작업(배타 잠금) 중이면 대기 상한 뒤 LOCKED이고 reserve는 돌아온다 */
+    /*
+     * 다른 핸들이 쓰기 작업(writer 잠금) 중이어도 쓰기 열기는 공유 잠금으로 하므로 기다리지 않고 열린다(#283). 대기 상한이
+     * 0이어도 열리며, 닫으면 reserve는 모두 돌아온다.
+     */
     const char *path = DIR_NAME "/lock.streamlite";
     make_fixture(path, 2);
     database_t *first = NULL;
@@ -273,11 +276,13 @@ static void test_failed_opens_release_everything(void)
     assert(database_work_begin(first) == DATABASE_OK);
     page_file_set_default_lock_timeout(0);
     watch(&t);
-    database_status_t locked = database_open_bounded(path, true, &ledger, &db);
-    unwatch(&t);
+    database_status_t during = database_open_bounded(path, true, &ledger, &db);
     page_file_set_default_lock_timeout(PAGE_FILE_LOCK_TIMEOUT_MS);
-    CHECK(locked == DATABASE_LOCKED && db == NULL, "잠긴 파일 %d", (int)locked);
-    CHECK(t.used == 0, "잠긴 파일 뒤 reserve %zu", t.used);
+    CHECK(during == DATABASE_OK && db != NULL, "다른 핸들의 쓰기 작업 중 열기 %d", (int)during);
+    if (db != NULL) database_close(db);
+    db = NULL;
+    unwatch(&t);
+    CHECK(t.used == 0, "작업 중 연 핸들을 닫은 뒤 reserve %zu", t.used);
     database_work_end(first, DATABASE_WORK_NOT_APPLIED);
     /* 작업이 끝나면 쓰기 핸들이 열려 있어도 두 번째 핸들이 열린다(#199) */
     database_t *second = NULL;

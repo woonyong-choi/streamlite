@@ -89,6 +89,9 @@ typedef struct database database_t;
 database_status_t database_create(const char *path, database_t **out);
 /*
  * 게시된 파일을 연다. writable이 아니면 SELECT만 실행된다. 열기는 파일을 바꾸지 않는다.
+ * 쓰기 열기도 writer 잠금이 아니라 읽기와 같은 공유 잠금으로 게시 상태를 읽으므로 다른 핸들·프로세스의 쓰기 거래를
+ * 기다리지 않는다(#283). 게시하는 순간(commit의 제어 쓰기와 동기화)만 비켜 주며 그 대기가 PAGE_FILE_LOCK_TIMEOUT_MS를
+ * 넘으면 DATABASE_LOCKED다. 아래 손실 판정과 거절은 공유 잠금 아래에서도 같다(내구 확인 기록은 게시 잠금 안에서만 바뀐다).
  *
  * 최신 세대를 읽을 수 없어(제어 페이지 손상, 그 commit이 쓴 페이지·파일 길이 불일치) 이전 세대로 물러난 열기는
  * database_open_report로 확인한다. 물러난 까닭이 "fsync 전에 전원이 끊긴 commit"인지 "성공을 돌려준 commit의 손상"인지는

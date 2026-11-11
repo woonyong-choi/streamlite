@@ -54,7 +54,7 @@
 #define STREAMLITE_DB_INVALID 101   /* database 열기 인자 오류 */
 #define STREAMLITE_DB_IO 102
 #define STREAMLITE_DB_CORRUPT 103
-#define STREAMLITE_DB_LOCKED 104
+#define STREAMLITE_DB_LOCKED 104    /* 열기가 게시 중인 다른 핸들을 5초 넘게 기다렸다. 다른 writer의 쓰기 거래로는 생기지 않는다(streamlite_open) */
 #define STREAMLITE_DB_UNSUPPORTED 105
 #define STREAMLITE_DB_NOMEM 106
 #define STREAMLITE_DB_NOT_FOUND 107 /* create가 0인데 파일이 없다 */
@@ -120,7 +120,16 @@ typedef struct {
     uint32_t busy_timeout_ms;
 } streamlite_open_options_t;
 
-/* path의 DB를 연다. create가 0이 아니면 없을 때 만든다. 동기화 단계는 NORMAL, busy_timeout_ms는 0이다. */
+/*
+ * path의 DB를 연다. create가 0이 아니면 없을 때 만든다. 동기화 단계는 NORMAL, busy_timeout_ms는 0이다.
+ * 열기는 다른 writer를 기다리지 않는다(#283). 쓰기 가능한 핸들도 writer 잠금 없이 읽기와 같은 공유 잠금으로 게시 상태를
+ * 읽는다. 열 때 하는 일(현재 세대 고르기, 끝나지 않은 commit의 이전 세대 판정, 승인한 commit의 손실 판정과 거절, 빈 페이지
+ * 목록·카탈로그 적재)은 모두 읽기이고, 공유 잠금을 쥔 동안에는 게시가 없으며 손실 판정이 읽는 기록도 게시 잠금 안에서만
+ * 바뀌므로 writer 잠금 아래와 판정이 같다. 그래서 다른 프로세스가 쓰기 거래를 쥐고 있어도 곧바로 열리고, 그 writer와의
+ * 경합은 첫 쓰기의 STREAMLITE_BUSY(busy_timeout_ms만큼 재시도)로 드러난다. 열기 대기를 busy_timeout_ms로 받는 방식은
+ * 기다릴 까닭이 없는 열기를 다른 거래 길이만큼 늦추므로 고르지 않았다. 게시하는 순간(commit의 제어 쓰기와 동기화)만
+ * 비켜 주며 그 대기가 5초를 넘으면 STREAMLITE_DB_LOCKED다. 새 파일 생성은 이전처럼 writer 잠금을 쥐고 한다.
+ */
 int streamlite_open(const char *path, int create, streamlite_db_t **out);
 /*
  * 옵션을 주는 열기. options가 NULL이면 streamlite_open과 같다. 새로 만드는 파일의 생성·게시·디렉터리 동기화는 단계와
