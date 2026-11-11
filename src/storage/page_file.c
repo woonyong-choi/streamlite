@@ -1432,6 +1432,27 @@ page_file_status_t page_file_read(page_file_t *file, uint32_t page_id, page_kind
     return PAGE_FILE_OK;
 }
 
+static page_file_status_t flush_image(void *ctx, uint32_t id, page_kind_t kind, uint32_t table,
+                                      const uint8_t body[PAGE_BODY_BYTES]);
+
+static page_file_status_t flush_workspace(page_file_t *file)
+{
+    page_workspace_t *workspace = file->workspace;
+    if (workspace == NULL) return PAGE_FILE_OK;
+    file->workspace = NULL;
+    page_file_status_t status = page_workspace_flush(workspace, flush_image, file);
+    file->workspace = workspace;
+    return status;
+}
+
+/* 모은 사본을 파일에 쓰고 비운다. 실패하면 사본을 남긴다(거래는 실패로 끝난다) */
+static page_file_status_t spill_workspace(page_file_t *file)
+{
+    page_file_status_t status = flush_workspace(file);
+    if (status == PAGE_FILE_OK) page_workspace_clear(file->workspace);
+    return status;
+}
+
 page_file_status_t page_file_write(page_file_t *file, uint32_t page_id, page_kind_t kind,
                                    uint32_t table_id, const uint8_t body[PAGE_BODY_BYTES])
 {
@@ -1449,7 +1470,14 @@ page_file_status_t page_file_write(page_file_t *file, uint32_t page_id, page_kin
     if (file->workspace != NULL) {
         if (!page_file_is_fresh(file, page_id)) return PAGE_FILE_INVALID;
         page_cache_drop(file->cache, page_id);
-        return page_workspace_write(file->workspace, page_id, kind, table_id, body);
+        page_file_status_t kept = page_workspace_write(file->workspace, page_id, kind, table_id, body);
+        if (kept != PAGE_FILE_NOMEM) return kept;
+        /*
+         * 사본 예산(또는 메모리)을 넘었다. 모은 사본을 지금 파일에 쓰고 비운 뒤 이 페이지도 바로 쓴다. 모두 새 페이지라
+         * 사본 없이 쓰는 경로와 같은 쓰기이며 commit 전 실패는 그대로 되돌릴 수 있다. 그 뒤의 쓰기는 다시 사본으로 모은다.
+         */
+        page_file_status_t spilled = spill_workspace(file);
+        if (spilled != PAGE_FILE_OK) return spilled;
     }
     uint8_t page[PAGE_FILE_PAGE_BYTES];
     encode_page(page, kind, page_id, table_id, PAGE_BODY_BYTES, body);
@@ -1746,6 +1774,13 @@ page_file_status_t page_file_workspace_begin(page_file_t *file, page_workspace_t
     return PAGE_FILE_OK;
 }
 
+page_file_status_t page_file_workspace_spill(page_file_t *file)
+{
+    if (file == NULL || file->workspace == NULL) return PAGE_FILE_INVALID;
+    page_file_status_t access = check_access(file, PAGE_FILE_LOCK_EXCLUSIVE);
+    return access != PAGE_FILE_OK ? access : spill_workspace(file);
+}
+
 void page_file_workspace_end(page_file_t *file)
 {
     file->workspace = NULL;
@@ -1757,15 +1792,6 @@ static page_file_status_t flush_image(void *ctx, uint32_t id, page_kind_t kind, 
     return page_file_write(ctx, id, kind, table, body);
 }
 
-static page_file_status_t flush_workspace(page_file_t *file)
-{
-    page_workspace_t *workspace = file->workspace;
-    if (workspace == NULL) return PAGE_FILE_OK;
-    file->workspace = NULL;
-    page_file_status_t status = page_workspace_flush(workspace, flush_image, file);
-    file->workspace = workspace;
-    return status;
-}
 
 page_file_status_t page_file_commit(page_file_t *file)
 {

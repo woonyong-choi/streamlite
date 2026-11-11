@@ -12,7 +12,7 @@ StreamLite는 SQL, 영속 이벤트 스트림, ACK 작업 처리를 각각 선�
 
 새 엔진의 기본 방향은 page/redo WAL, bytes 상한이 있는 buffer pool, MVCC, 조기 key 잠금으로 권고한다. 작은 상태의 잦은 변경을 durable commit과 본문 page 반영으로 분리하고, 같은 leaf의 다른 행을 쓰는 거래가 매번 옛 root를 병합하지 않게 하기 위해서다. 선택 근거와 반증 조건은 [성능과 안전을 함께 고르는 순서](#성능과-안전을-함께-고르는-순서)에 있다. 이는 현재 요구에서 도출한 설계 권고이며 새 backend의 구현·동등 조건 실측·제품 전환 승인은 아니다.
 
-기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache와 transaction workspace는 기본 OFF인 내부 비교 경로로 분리하며 성능 채택은 측정 전이다. Python의 큐 등록부는 첫 명시 사용 때 생성하며 수명·실패 회귀를 검증했다. 영속 fanout 스트림·새 backend·실제 동시 writer는 구현 완료가 아니다. 배포·설치 이름과 Python import는 `streamlite`, C API는 `streamlite_*`, 공유 라이브러리는 `libstreamlite`다. DB 파일은 `STREAMLITE` 16바이트 magic·형식 4·`SLPG` envelope 하나만 읽고 쓰며 이전 이름의 별칭이나 이전 형식 reader·변환기는 두지 않는다.
+기본 실행 경로는 SQL 부분집합·단일 writer·선택형 ACK다. 문장 cache는 기본 OFF인 내부 비교 경로다. transaction workspace는 #262 측정 뒤 기본 ON이다. Python의 큐 등록부는 첫 명시 사용 때 생성하며 수명·실패 회귀를 검증했다. 영속 fanout 스트림·새 backend·실제 동시 writer는 구현 완료가 아니다. 배포·설치 이름과 Python import는 `streamlite`, C API는 `streamlite_*`, 공유 라이브러리는 `libstreamlite`다. DB 파일은 `STREAMLITE` 16바이트 magic·형식 4·`SLPG` envelope 하나만 읽고 쓰며 이전 이름의 별칭이나 이전 형식 reader·변환기는 두지 않는다.
 
 ### 하지 않는 것
 
@@ -177,7 +177,7 @@ workspace의 문장 밖 보유량은 현재 작업 catalog와 같은 DB resident
 
 내부 [workspace 경로](../../src/sql/database_workspace.c)는 첫 문장의 private catalog를 다음 문장에서 재사용한다. [페이지 사본](../../src/storage/page_workspace.c)은 작업이 새로 할당한 COW page만 보유한다. 다음 문장이 대체하거나 삭제한 사본은 놓고, 살아 있는 최종 사본을 기존 게시 절차 전에 encode·write한다. 읽기는 자기 private 사본을 우선하며 작업 밖의 catalog는 미확정 page를 가리키지 않는다. 문장별 heap·색인 계산과 root restamp는 남으며, 최종 사본의 목록 탐색·복사·메모리 보유 비용도 든다. 이 경로를 새 WAL·buffer pool이나 실제 동시 writer 완료로 쓰지 않는다.
 
-사본·catalog·회수 목록은 작업 한도와 resident/shared 예산을 함께 검사한다. 파일의 할당 목록이 커질 때도 할당 전에 그 상주 몫을 확보하며, 실패 뒤 남는 목록은 DB 소유로 계속 계상한다. 작업 중 resident ledger를 새로 붙이는 일은 거절하므로 bounded 열기나 작업 시작 전에 연결한다. 논리 오류·취소·할당 거절은 실패 거래와 명시적 rollback을 유지한다. commit에서 최종 page 쓰기에 실패하면 기존 NOT_APPLIED·UNKNOWN 경계로 정리하며, UNKNOWN의 디스크 page는 재사용하지 않는다. [회귀 시험](../../tests/test_database_workspace.c)은 cache/workspace 네 조건의 SQLite 결과, 자기 변경·미확정 비노출, 큰 값·초과 거절, 할당/I/O 실패, 삭제·재사용과 보유 결과의 수명을 검사한다. [내부 설정](../build-and-test.md#transaction-workspace)은 기본 OFF이며 비계측 처리량·tail·전체 RSS와 채택은 별도 수집 대상이다.
+사본·catalog·회수 목록은 작업 한도와 resident/shared 예산을 함께 검사한다. 파일의 할당 목록이 커질 때도 할당 전에 그 상주 몫을 확보하며, 실패 뒤 남는 목록은 DB 소유로 계속 계상한다. 작업 중 resident ledger를 새로 붙이는 일은 거절하므로 bounded 열기나 작업 시작 전에 연결한다. 논리 오류·취소·할당 거절은 실패 거래와 명시적 rollback을 유지한다. commit에서 최종 page 쓰기에 실패하면 기존 NOT_APPLIED·UNKNOWN 경계로 정리하며, UNKNOWN의 디스크 page는 재사용하지 않는다. 작업 한도를 넘으면 모은 page 사본을 그때 파일에 쓰고(사본 없는 경로와 같은 새 page 쓰기) 비운 뒤 이어 가므로 한도는 거래 크기 제한이 아니다. [회귀 시험](../../tests/test_database_workspace.c)은 cache/workspace 네 조건의 SQLite 결과, 자기 변경·미확정 비노출, 큰 값과 한도 초과의 사본 비우기, 할당/I/O 실패, 삭제·재사용과 보유 결과의 수명을 검사한다. [빌드 설정](../build-and-test.md#transaction-workspace)은 기본 ON(#262)이다.
 
 ### 공통 개선의 시험용 한도
 
@@ -186,7 +186,7 @@ workspace의 문장 밖 보유량은 현재 작업 catalog와 같은 DB resident
 | 대상 | 초기 시험 설정 | 이유와 한도 도달 동작 |
 |---|---|---|
 | cache | handle당 64항목·총 1MiB, 원 SQL 16KiB 이하만 admission | 반복 짧은 문장과 eviction을 함께 검증하는 출발값이며, 큰 SQL이나 예산 부족은 지원을 줄이지 않고 uncached 실행 |
-| transaction workspace | 작업당 요청 bytes 8MiB와 기존 shared 예산을 모두 적용 | 작은 commit group과 초과 거절을 검증하는 출발값이며, 부족하면 NOMEM·실패 상태와 명시적 rollback |
+| transaction workspace | 작업당 요청 bytes 8MiB와 기존 shared 예산을 모두 적용 | 넘으면 모은 page 사본을 파일에 먼저 쓰고 이어 간다. 그래도 catalog·목록이 모자라면 NOMEM·실패 상태와 명시적 rollback |
 | scope와 최고치 | resident cache/workspace + 실행 query + 보유 result를 중복 없이 합산 | 재할당 old+new·퇴출 대기·동시 결과를 포함하며, 예약 실패 뒤 카운터와 소유권 보존 |
 
 실제 부하에서 miss·admission 거절·NOMEM·추가 복제·처리량·tail·전체 메모리가 불리하면 한도나 cache 공유 방식을 독립 가설로 다시 검토한다. 수집 뒤 목표를 맞추려고 실패 표본을 버리거나 한도를 바꾸지 않는다. G5의 실제 workload·수치 판정 기준은 수집기 사전 계획에서 따로 고정한다. [현재 C API](../../src/capi/streamlite.c#L119-L142)의 무제한 pool 설정을 이 시험값으로 바꿨다거나, 여러 pool의 프로세스 전체 상한을 구현했다고 주장하지 않는다.

@@ -4,7 +4,7 @@
 #include "sql/database.h"
 
 #ifndef STREAMLITE_TXN_WORKSPACE
-#define STREAMLITE_TXN_WORKSPACE 0
+#define STREAMLITE_TXN_WORKSPACE 1
 #endif
 #define DATABASE_WORKSPACE_BYTES (8u * 1024u * 1024u)
 

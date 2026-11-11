@@ -26,6 +26,8 @@ void page_workspace_drop(page_workspace_t *workspace, uint32_t id);
 void page_workspace_clear(page_workspace_t *workspace);
 page_file_status_t page_workspace_flush(page_workspace_t *workspace, page_workspace_write_fn write, void *ctx);
 page_file_status_t page_file_workspace_begin(page_file_t *file, page_workspace_t *workspace);
+/* 모은 사본을 지금 파일에 쓰고 비운다. 사본 예산이 모자랄 때 쓴다. 실패하면 사본이 남고 거래는 실패로 끝내야 한다 */
+page_file_status_t page_file_workspace_spill(page_file_t *file);
 void page_file_workspace_end(page_file_t *file);
 
 #endif

@@ -11,6 +11,7 @@
 
 ### 변경
 
+- 거래 변경 누적(`TXN_WORKSPACE`)을 기본으로 켬: 한 거래가 바꾼 페이지를 commit까지 메모리 사본으로 모아 같은 페이지를 한 번만 쓴다. 사본이 8MiB 한도를 넘으면 모은 사본을 그때 파일에 쓰고 거래를 이어 가므로 큰 거래도 한도 때문에 실패하지 않는다. 파일 형식과 commit 순서는 같다. ([#262](https://github.com/woonyong-choi/streamlite/issues/262))
 - macOS의 기본 commit 동기화를 `F_FULLFSYNC`에서 `fsync(2)`(NORMAL)로 변경: 0.3.0 개발 중 `F_FULLFSYNC` 고정으로 자동 commit INSERT가 약 10배 느려졌다. 전원 차단 보장이 필요하면 FULL 단계를 고른다. 다른 플랫폼의 동작은 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 
 - 공개 이름을 StreamLite로 변경: 배포·설치 이름과 Python import `streamlite`, C API `streamlite_*`, 공유 라이브러리 `libstreamlite`. 이전 이름의 별칭은 제공하지 않는다.
