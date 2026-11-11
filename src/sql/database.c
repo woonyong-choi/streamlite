@@ -219,7 +219,15 @@ database_status_t database_create(const char *path, database_t **out)
         status = from_store(saved);
         if (status == DATABASE_OK) {
             page_file_status_t published = page_file_publish(db->file);
-            /* PUBLISHED_DIRTY는 파일이 열리지만 이름의 내구성을 주장할 수 없다 */
+            /*
+             * PUBLISHED_DIRTY는 파일이 열리지만 이름의 내구성을 주장할 수 없어 실패로 돌려준다. 실패한 생성이 게시된
+             * 파일을 남기면 다시 만들 때 EXISTS가 되므로 이름을 거둔다. 거두지 못하면 게시된 빈 DB가 남는다.
+             */
+            if (published == PAGE_FILE_PUBLISHED_DIRTY) {
+                int dirty = errno;
+                page_file_retract(db->file);
+                errno = dirty;
+            }
             status = published == PAGE_FILE_OK ? DATABASE_OK : from_page_file(published);
         }
     }
@@ -259,12 +267,20 @@ static bool admit_catalog(void *ctx, size_t catalog_bytes)
     return true;
 }
 
-static database_status_t open_database(const char *path, bool writable, admission_t *admission,
-                                       database_t **out)
+/*
+ * accept_loss는 쓰기 열기에서 성공한 최신 commit의 손상을 받아들이고 이전 세대에서 이어 쓴다는 뜻이다. 열 때의 판정은
+ * page_file 핸들이 보관하며 database_open_report로 읽는다.
+ */
+static database_status_t open_database_with(const char *path, bool writable, bool accept_loss, admission_t *admission,
+                                            database_t **out)
 {
     page_file_t *file = NULL;
-    page_file_status_t opened = page_file_open_admitted(path, writable, &file, NULL,
-                                                        admission != NULL ? admit_file : NULL, admission);
+    page_file_open_options_t options = {.writable = writable,
+                                        .accept_lost_commit = accept_loss,
+                                        .admit = admission != NULL ? admit_file : NULL,
+                                        .admit_ctx = admission};
+    page_file_status_t opened = page_file_open_with(path, &options, &file, NULL);
+    if (opened == PAGE_FILE_LOST_COMMIT) return DATABASE_LOST_COMMIT;
     if (opened != PAGE_FILE_OK) return from_page_file(opened);
     database_t *db = calloc(1, sizeof(*db));
     if (db == NULL) {
@@ -287,10 +303,36 @@ static database_status_t open_database(const char *path, bool writable, admissio
     return DATABASE_OK;
 }
 
+static database_status_t open_database(const char *path, bool writable, admission_t *admission,
+                                       database_t **out)
+{
+    return open_database_with(path, writable, false, admission, out);
+}
+
 database_status_t database_open(const char *path, bool writable, database_t **out)
 {
     if (path == NULL || out == NULL) return DATABASE_INVALID;
     return open_database(path, writable, NULL, out);
+}
+
+database_status_t database_open_accepting_loss(const char *path, database_t **out)
+{
+    if (path == NULL || out == NULL) return DATABASE_INVALID;
+    return open_database_with(path, true, true, NULL, out);
+}
+
+void database_open_report(const database_t *db, database_open_report_t *out)
+{
+    if (out == NULL) return;
+    *out = (database_open_report_t){0};
+    if (db == NULL) return;
+    page_file_open_info_t info = page_file_open_info(db->file);
+    out->damaged_slots = info.damaged_slots;
+    out->rolled_back = info.rolled_back != 0;
+    out->fell_back = info.loss != PAGE_FILE_LOSS_NONE;
+    out->loss = info.loss == PAGE_FILE_LOSS_CONFIRMED  ? DATABASE_LOSS_CONFIRMED
+                : info.loss == PAGE_FILE_LOSS_POSSIBLE ? DATABASE_LOSS_POSSIBLE
+                                                       : DATABASE_LOSS_NONE;
 }
 
 database_status_t database_close(database_t *db)

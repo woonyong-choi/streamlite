@@ -110,6 +110,11 @@ struct page_file {
     page_file_t *next_open; /* 열린 핸들 목록(fork한 자식에서 fd 사본을 닫는다) */
     page_file_t *prev_open;
     bool stale;             /* 버린 변경이 남았다. 다음 잠금에서 디스크의 게시 상태로 다시 읽는다 */
+    bool created;           /* page_file_create로 만든 핸들 */
+    bool made_lock;         /* 생성하며 잠금 파일을 새로 만들었다. 게시하지 않고 닫으면 지운다 */
+    bool accept_loss;       /* 성공한 commit의 손상을 받아들이고 이어 쓰기로 열었다 */
+    uint64_t inode;         /* DB 파일의 inode. 잠금 파일의 내구 확인 기록이 이 파일의 것인지 본다. 모르면 0 */
+    page_file_open_info_t open_info;  /* 열 때의 판정 */
 };
 
 static ssize_t libc_pread(int fd, void *buf, size_t size, off_t offset)
@@ -122,8 +127,23 @@ static ssize_t libc_pwrite(int fd, const void *buf, size_t size, off_t offset)
     return pwrite(fd, buf, size, offset);
 }
 
-static const page_file_io_t LIBC_IO = {libc_pread, libc_pwrite, fsync, link, unlink};
-static page_file_io_t g_default_io = {libc_pread, libc_pwrite, fsync, link, unlink};
+/*
+ * 내구 동기화. Apple 플랫폼의 fsync(2)는 저장 장치의 쓰기 캐시를 비우지 않아 전원이 끊기면 성공한 commit이 사라질 수
+ * 있다. 그래서 F_FULLFSYNC를 쓰고, 파일 시스템이 지원하지 않을 때만 fsync로 물러난다. 그 밖의 실패(EIO 등)를 fsync로
+ * 다시 시도해 성공으로 바꾸지 않는다. STREAMLITE_TEST_PLAIN_FSYNC는 시험 바이너리 빌드 전용이다(Makefile). commit을
+ * 수천 번 하는 시험이 commit마다 장치 캐시를 비우지 않게 한다. 배포하는 라이브러리는 이 매크로 없이 빌드한다.
+ */
+static int libc_sync(int fd)
+{
+#if defined(__APPLE__) && defined(F_FULLFSYNC) && !defined(STREAMLITE_TEST_PLAIN_FSYNC)
+    if (fcntl(fd, F_FULLFSYNC) == 0) return 0;
+    if (errno != ENOTSUP && errno != EOPNOTSUPP && errno != EINVAL && errno != ENOTTY && errno != ENODEV) return -1;
+#endif
+    return fsync(fd);
+}
+
+static const page_file_io_t LIBC_IO = {libc_pread, libc_pwrite, libc_sync, link, unlink};
+static page_file_io_t g_default_io = {libc_pread, libc_pwrite, libc_sync, link, unlink};
 static size_t g_default_cache_pages = PAGE_FILE_CACHE_PAGES;
 static uint32_t g_default_lock_timeout_ms = PAGE_FILE_LOCK_TIMEOUT_MS;
 static uint32_t g_default_publish_timeout_ms = PAGE_FILE_PUBLISH_TIMEOUT_MS;
@@ -425,6 +445,8 @@ static page_file_t *new_handle(int fd, bool writable)
     file->publish_timeout_ms = g_default_publish_timeout_ms;
     file->writer_fd = -1;
     file->gate_fd = -1;
+    struct stat st;
+    if (fstat(fd, &st) == 0) file->inode = (uint64_t)st.st_ino;
     remember_handle(file);
     return file;
 }
@@ -520,13 +542,44 @@ static page_file_status_t lock_writer(const char *db_path, int *writer_fd, uint3
 /*
  * 게시 대기 표시(writer 우선). writer는 게시 잠금을 기다리기 전에 잠금 파일 첫 바이트를 1로, 게시가 끝나면 0으로 쓴다.
  * reader는 공유 잠금을 잡기 전에 표시를 보고 1이면 기다린다. 쉬지 않고 읽는 reader들 사이에서 게시할 틈이 없어 writer가
- * 굶지 않게 하기 위해서다. 표시를 남긴 writer가 죽었으면 writer 잠금이 비어 있으므로 그 표시는 무시한다.
+ * 굶지 않게 하기 위해서다. 표시는 writer 잠금을 쥔 writer만 쓴다. 그래서 writer 잠금이 비어 있거나 다른 핸들이 writer
+ * 잠금을 새로 얻었으면 남아 있는 표시는 죽은 writer의 것이다. writer 잠금을 얻은 핸들이 지우고(clear_stale_intent),
+ * 공유 잠금을 잡으려는 핸들은 writer 잠금이 비어 있으면 무시한다(wait_for_publisher).
+ *
+ * 잠금 파일 배치: 0 게시 대기 표시 u8, 1..7 0, 8 "SLCG", 12 내구 확인 세대 u64, 20 DB 파일 inode u64,
+ * 28 CRC32C u32(8..27). 내구 확인 기록은 commit의 마지막 fsync가 성공한 뒤 게시 잠금을 쥔 채 쓴다. 이전 세대로 물러난
+ * 열기가 "건너뛴 세대는 성공을 돌려준 commit이었다"를 확정하는 근거다(page_file_loss_t). 이 기록은 fsync하지 않는다.
+ * 기록이 없거나 낡았으면 아무것도 확정하지 않을 뿐 틀린 판정을 만들지 않는다.
  */
+#define LOCK_RECORD_BYTES 32u
+static const uint8_t LOCK_RECORD_MAGIC[4] = {'S', 'L', 'C', 'G'};
+
 static void set_publish_intent(const page_file_t *file, bool pending)
 {
     uint8_t mark = pending ? 1 : 0;
     if (file->writer_fd >= 0 && pwrite(file->writer_fd, &mark, 1, 0) != 1) {
         /* 표시는 공정성만 돕는다. 쓰지 못해도 게시 잠금이 정확성을 지킨다 */
+    }
+}
+
+/* writer 잠금을 얻은 직후에 부른다. 표시가 남아 있으면 그것을 쓴 writer는 죽었다 */
+static void clear_stale_intent(const page_file_t *file)
+{
+    uint8_t mark = 0;
+    if (file->writer_fd >= 0 && pread(file->writer_fd, &mark, 1, 0) == 1 && mark != 0) set_publish_intent(file, false);
+}
+
+/* generation의 fsync가 끝났음을 적고 게시 대기 표시를 내린다. 쓰지 못해도 commit의 결과는 바뀌지 않는다 */
+static void record_confirmed(const page_file_t *file, uint64_t generation)
+{
+    uint8_t record[LOCK_RECORD_BYTES] = {0};
+    memcpy(record + 8, LOCK_RECORD_MAGIC, sizeof(LOCK_RECORD_MAGIC));
+    le_put_u64(record + 12, generation);
+    le_put_u64(record + 20, file->inode);
+    le_put_u32(record + 28, crc32c(0, record + 8, 20));
+    if (file->writer_fd >= 0 && pwrite(file->writer_fd, record, sizeof(record), 0) != (ssize_t)sizeof(record)) {
+        /* 기록이 없으면 물러난 열기가 손실을 확정하지 못할 뿐이다 */
+        set_publish_intent(file, false);
     }
 }
 
@@ -542,7 +595,25 @@ static int gate_of(page_file_t *file)
     return file->gate_fd;
 }
 
-/* 게시 대기 표시가 있으면 deadline까지 기다린다. 표시를 쓴 writer가 없으면(잠금이 비어 있으면) 곧바로 돌아간다 */
+/* 이 DB 파일에 대한 내구 확인 기록을 읽는다. 없거나 깨졌거나 다른 파일의 것이면 false */
+static bool read_confirmed(page_file_t *file, uint64_t *generation)
+{
+    int gate = gate_of(file);
+    uint8_t record[LOCK_RECORD_BYTES];
+    if (gate < 0 || file->inode == 0 || pread(gate, record, sizeof(record), 0) != (ssize_t)sizeof(record)) return false;
+    if (memcmp(record + 8, LOCK_RECORD_MAGIC, sizeof(LOCK_RECORD_MAGIC)) != 0 ||
+        le_get_u32(record + 28) != crc32c(0, record + 8, 20) || le_get_u64(record + 20) != file->inode) {
+        return false;
+    }
+    *generation = le_get_u64(record + 12);
+    return true;
+}
+
+/*
+ * 게시 대기 표시가 있으면 deadline까지 기다린다. 표시를 쓴 writer가 없으면(잠금이 비어 있으면) 곧바로 돌아간다.
+ * 쓰기 핸들도 이 시점에는 writer 잠금을 쥐지 않으므로 같은 fd로 확인한다. 공유로 잡힌 동안에는 어떤 writer도 표시를
+ * 쓸 수 없으므로, 쓸 수 있는 fd(쓰기 핸들)면 남은 표시를 지워 다음 잠금이 다시 확인하지 않게 한다.
+ */
 static void wait_for_publisher(page_file_t *file, uint32_t timeout_ms)
 {
     int gate = gate_of(file);
@@ -552,8 +623,10 @@ static void wait_for_publisher(page_file_t *file, uint32_t timeout_ms)
     for (;;) {
         uint8_t mark = 0;
         if (pread(gate, &mark, 1, 0) != 1 || mark == 0) return;
-        if (gate != file->writer_fd && flock(gate, LOCK_SH | LOCK_NB) == 0) {
-            flock(gate, LOCK_UN);  /* writer 잠금이 비어 있다. 죽은 writer가 남긴 표시다 */
+        if (flock(gate, LOCK_SH | LOCK_NB) == 0) {
+            /* writer 잠금이 비어 있다. 죽은 writer가 남긴 표시다 */
+            if (gate == file->writer_fd) set_publish_intent(file, false);
+            flock(gate, LOCK_UN);
             return;
         }
         if (monotonic_us() >= deadline) return;
@@ -596,36 +669,70 @@ page_file_status_t page_file_create(const char *path, page_file_t **out)
         free(final_path);
         return PAGE_FILE_NOMEM;
     }
-    int fd = open(partial, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
-    if (fd < 0) {
-        int err = errno;
-        free(partial);
-        free(final_path);
-        errno = err;
-        return err == EEXIST ? PAGE_FILE_EXISTS : PAGE_FILE_IO;
+    /*
+     * 만드는 동안 writer 잠금을 쥔다(기다리지 않는다). 생성자는 모두 이 잠금을 쥐므로 잠금을 얻었는데 partial이 남아
+     * 있으면 그것을 만들던 프로세스는 죽었다. 얻지 못했고 partial이 있으면 다른 핸들이 만드는 중이다.
+     */
+    char lock_path[PATH_MAX];
+    snprintf(lock_path, sizeof(lock_path), "%s%s", path, WRITER_LOCK_SUFFIX);
+    bool made_lock = access(lock_path, F_OK) != 0;
+    int writer_fd = -1;
+    int fd = -1;
+    page_file_status_t status = lock_writer(path, &writer_fd, 0);
+    bool holds = status == PAGE_FILE_OK;
+    if (!holds) {
+        if (status == PAGE_FILE_LOCKED && lstat(partial, &existing) == 0) {
+            errno = EEXIST;
+            status = PAGE_FILE_EXISTS;
+        }
+    } else if (lstat(path, &existing) == 0) {
+        /* 잠금을 얻기 전에 다른 핸들이 게시했다 */
+        errno = EEXIST;
+        status = PAGE_FILE_EXISTS;
+    } else {
+        fd = open(partial, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+        /* 죽은 생성자가 남긴 partial은 지우고 다시 만든다. 다른 이름과 묶인 파일(게시 뒤 정리 실패의 흔적)은 그대로 둔다 */
+        if (fd < 0 && errno == EEXIST && lstat(partial, &existing) == 0 && S_ISREG(existing.st_mode) &&
+            existing.st_nlink == 1 && g_default_io.unlink(partial) == 0) {
+            fd = open(partial, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
+        }
+        if (fd < 0) status = errno == EEXIST ? PAGE_FILE_EXISTS : PAGE_FILE_IO;
     }
-    page_file_t *file = new_handle(fd, true);
-    if (file == NULL) {
+    page_file_t *file = NULL;
+    if (status == PAGE_FILE_OK && (file = new_handle(fd, true)) == NULL) {
         close(fd);
         unlink(partial);
-        free(partial);
-        free(final_path);
-        return PAGE_FILE_NOMEM;
+        status = PAGE_FILE_NOMEM;
     }
-    file->path = final_path;
-    file->partial_path = partial;
-    /* 게시 전 파일은 이 핸들만 안다. writer 잠금은 게시 직전에 잡는다(page_file_publish) */
-    file->lock = PAGE_FILE_LOCK_EXCLUSIVE;
-    page_file_status_t status = PAGE_FILE_OK;
-    uint8_t zero[PAGE_FILE_PAGE_BYTES] = {0};
-    for (uint32_t slot = 0; status == PAGE_FILE_OK && slot < PAGE_FILE_CONTROL_PAGES; slot++) {
-        status = write_full(file, zero, sizeof(zero), (uint64_t)slot * PAGE_FILE_PAGE_BYTES);
+    if (status == PAGE_FILE_OK) {
+        file->path = final_path;
+        file->partial_path = partial;
+        file->writer_fd = writer_fd;
+        file->created = true;
+        file->made_lock = made_lock;
+        clear_stale_intent(file);
+        /* 게시 전 파일은 이 핸들만 안다. writer 잠금은 게시한 뒤에도 그대로 쥔다 */
+        file->lock = PAGE_FILE_LOCK_EXCLUSIVE;
+        uint8_t zero[PAGE_FILE_PAGE_BYTES] = {0};
+        for (uint32_t slot = 0; status == PAGE_FILE_OK && slot < PAGE_FILE_CONTROL_PAGES; slot++) {
+            status = write_full(file, zero, sizeof(zero), (uint64_t)slot * PAGE_FILE_PAGE_BYTES);
+        }
     }
     if (status != PAGE_FILE_OK) {
         int err = errno;
-        close(fd);
-        file->io.unlink(partial);
-        free_handle(file);
+        /* 이번에 만든 잠금 파일은 잠금을 쥔 채, 목적지가 없을 때만 지운다. 얻지 못한 잠금 파일은 다른 핸들의 것이다 */
+        if (holds && made_lock && lstat(path, &existing) != 0) unlink(lock_path);
+        if (file != NULL) {
+            close(fd);
+            file->io.unlink(partial);
+            file->writer_fd = -1;
+            file->path = NULL;
+            file->partial_path = NULL;
+            free_handle(file);
+        }
+        if (writer_fd >= 0) close(writer_fd);
+        free(partial);
+        free(final_path);
         errno = err;
         return status;
     }
@@ -675,20 +782,12 @@ page_file_status_t page_file_publish(page_file_t *file)
     page_file_status_t status = sync_file(file);
     if (status != PAGE_FILE_OK) return status;
     /*
-     * 이름이 보이는 순간부터 이 핸들이 writer다. 다른 writer가 그 사이 끼어들지 않게 link 전에 writer 잠금을 잡는다.
-     * 게시에 실패하면 이번에 만든 잠금 파일은 지운다. 그 사이 다른 핸들이 열었어도 lock_writer가 경로를 다시 확인한다.
+     * 이름이 보이는 순간부터 이 핸들이 writer다. writer 잠금은 생성할 때부터 쥐고 있어 그 사이 다른 writer가 끼어들지
+     * 않는다. 게시에 실패해도 partial이 남아 있는 동안은 잠금을 놓지 않는다(close가 놓고 이번에 만든 잠금 파일을 지운다).
+     * link는 목적지가 이미 있으면 실패한다. rename은 조용히 덮어쓰므로 쓰지 않는다.
      */
-    char lock_path[PATH_MAX];
-    snprintf(lock_path, sizeof(lock_path), "%s%s", file->path, WRITER_LOCK_SUFFIX);
-    bool made_lock = access(lock_path, F_OK) != 0;
-    status = lock_writer(file->path, &file->writer_fd, file->lock_timeout_ms);
-    if (status != PAGE_FILE_OK) return status;
-    /* link는 목적지가 이미 있으면 실패한다. rename은 조용히 덮어쓰므로 쓰지 않는다. */
     if (file->io.link(file->partial_path, file->path) != 0) {
         int err = errno;
-        if (made_lock) unlink(lock_path);
-        close(file->writer_fd);
-        file->writer_fd = -1;
         if (err == EEXIST) return PAGE_FILE_EXISTS;
         if (err == ENOTSUP || err == EPERM || err == EXDEV || err == ENOSYS) {
             errno = err;
@@ -698,12 +797,49 @@ page_file_status_t page_file_publish(page_file_t *file)
         return PAGE_FILE_IO;
     }
     file->published = true;
+    record_confirmed(file, file->committed.generation);
     page_file_status_t result = PAGE_FILE_OK;
     if (file->io.unlink(file->partial_path) != 0) result = PAGE_FILE_PUBLISHED_DIRTY;
     if (sync_directory(file, file->path) != PAGE_FILE_OK) result = PAGE_FILE_PUBLISHED_DIRTY;
     free(file->partial_path);
     file->partial_path = NULL;
     return result;
+}
+
+/* path가 이 핸들의 파일을 가리키면 지운다. 이름이 없거나 지웠으면 true, 다른 파일이거나 지우지 못했으면 false */
+static bool unlink_own(const page_file_t *file, const char *path)
+{
+    struct stat named;
+    if (lstat(path, &named) != 0) return errno == ENOENT;
+    if (file->inode == 0 || (uint64_t)named.st_ino != file->inode) return false;
+    return file->io.unlink(path) == 0;
+}
+
+page_file_status_t page_file_retract(page_file_t *file)
+{
+    if (file == NULL || !file->created || !file->published || file->committed.generation != 1 ||
+        file->lock != PAGE_FILE_LOCK_EXCLUSIVE) {
+        return PAGE_FILE_INVALID;
+    }
+    if (forked(file)) return PAGE_FILE_FORKED;
+    char partial[PATH_MAX];
+    if (snprintf(partial, sizeof(partial), "%s%s", file->path, PARTIAL_SUFFIX) >= (int)sizeof(partial)) {
+        return PAGE_FILE_INVALID;
+    }
+    /* 목적지 이름을 먼저 거둔다. 남은 partial은 다음 생성이 죽은 생성자의 것처럼 정리할 수 있다 */
+    bool gone = unlink_own(file, file->path);
+    int err = errno;
+    if (gone && !unlink_own(file, partial)) {
+        gone = false;
+        err = errno;
+    }
+    if (!gone) {
+        errno = err;
+        return PAGE_FILE_IO;
+    }
+    file->published = false;
+    sync_directory(file, file->path);
+    return PAGE_FILE_OK;
 }
 
 /* ── 열기·닫기 ── */
@@ -730,7 +866,8 @@ static page_file_status_t commit_complete(const page_file_t *file, const uint8_t
     return PAGE_FILE_OK;
 }
 
-static page_file_status_t load_free_list(page_file_t *file, const uint8_t *control_page, const free_header_t *header);
+static page_file_status_t load_free_list(page_file_t *file, const uint8_t *control_page, const free_header_t *header,
+                                         uint64_t file_bytes);
 
 /* exclude가 0 또는 1이면 그 슬롯을 손상으로 본다(끝나지 않은 commit) */
 static page_file_status_t pick_control(const uint8_t pages[2][PAGE_FILE_PAGE_BYTES], int exclude,
@@ -812,7 +949,10 @@ static page_file_status_t read_controls(page_file_t *file, uint8_t pages[2][PAGE
     return status;
 }
 
-/* 고른 commit이 끝나지 않았으면(fsync 전에 멈춤) 이전 세대로 바꾼다. 이전 세대도 끝나지 않았으면 손상이다 */
+/*
+ * 고른 commit이 끝나지 않았으면 이전 세대로 바꾸고 info->rolled_back으로 알린다. 이전 세대도 끝나지 않았으면 손상이다.
+ * 끝나지 않은 까닭이 fsync 전에 멈춘 commit인지, 끝났던 commit의 손상인지는 여기서 가리지 못한다(judge_fallback).
+ */
 static page_file_status_t verify_published(page_file_t *file, const uint8_t pages[2][PAGE_FILE_PAGE_BYTES],
                                            page_file_control_t *chosen, free_header_t *chosen_free,
                                            page_file_open_info_t *info, uint64_t file_bytes)
@@ -821,9 +961,24 @@ static page_file_status_t verify_published(page_file_t *file, const uint8_t page
     page_file_status_t status = commit_complete(file, pages[newest], chosen, chosen_free, file_bytes);
     if (status != PAGE_FILE_CORRUPT) return status;
     status = pick_control(pages, newest, chosen, chosen_free, info);
+    info->rolled_back = 1;
     if (status == PAGE_FILE_NO_CONTROL) return PAGE_FILE_CORRUPT;
     if (status != PAGE_FILE_OK) return status;
     return commit_complete(file, pages[chosen->generation % 2], chosen, chosen_free, file_bytes);
+}
+
+/*
+ * 이전 세대로 물러났으면(손상 슬롯 또는 끝나지 않은 commit) 성공을 돌려준 commit을 잃었는지 판정한다. 내구 확인 기록이
+ * "고른 세대 + 1"을 말하면 건너뛴 세대는 fsync까지 끝났던 commit이다. 그 밖에는 알 수 없다. 읽기 핸들은 공유 잠금을,
+ * 쓰기 핸들은 writer 잠금을 쥐고 부르므로 기록은 그동안 바뀌지 않는다.
+ */
+static void judge_fallback(page_file_t *file, const page_file_control_t *chosen, page_file_open_info_t *info)
+{
+    info->loss = PAGE_FILE_LOSS_NONE;
+    if (info->damaged_slots == 0 && info->rolled_back == 0) return;
+    uint64_t confirmed = 0;
+    info->loss = read_confirmed(file, &confirmed) && confirmed == chosen->generation + 1 ? PAGE_FILE_LOSS_CONFIRMED
+                                                                                         : PAGE_FILE_LOSS_POSSIBLE;
 }
 
 static void adopt_published(page_file_t *file, const page_file_control_t *chosen, uint64_t file_bytes)
@@ -860,7 +1015,24 @@ page_file_status_t page_file_open_admitted(const char *path, bool writable, page
                                            page_file_open_info_t *info, page_file_admit_fn admit,
                                            void *ctx)
 {
+    page_file_open_options_t options = {.writable = writable, .admit = admit, .admit_ctx = ctx};
+    return page_file_open_with(path, &options, out, info);
+}
+
+page_file_open_info_t page_file_open_info(const page_file_t *file)
+{
+    return file != NULL ? file->open_info : (page_file_open_info_t){0};
+}
+
+page_file_status_t page_file_open_with(const char *path, const page_file_open_options_t *options,
+                                       page_file_t **out, page_file_open_info_t *info)
+{
     if (path == NULL || out == NULL) return PAGE_FILE_INVALID;
+    static const page_file_open_options_t READ_ONLY = {0};
+    if (options == NULL) options = &READ_ONLY;
+    bool writable = options->writable;
+    page_file_admit_fn admit = options->admit;
+    void *ctx = options->admit_ctx;
     int fd = open(path, (writable ? O_RDWR : O_RDONLY) | O_CLOEXEC);
     if (fd < 0) return PAGE_FILE_IO;
     /*
@@ -905,24 +1077,35 @@ page_file_status_t page_file_open_admitted(const char *path, bool writable, page
         return PAGE_FILE_NOMEM;
     }
     file->writer_fd = writer_fd;
+    file->accept_loss = writable && options->accept_lost_commit;
     file->path = copy_string(path, NULL);
     if (file->path == NULL) {
         close(fd);
         free_handle(file);
         return PAGE_FILE_NOMEM;
     }
+    if (writable) clear_stale_intent(file);
 
     uint8_t pages[2][PAGE_FILE_PAGE_BYTES];
     page_file_control_t chosen;
     free_header_t chosen_free;
-    page_file_open_info_t local_info;
+    page_file_open_info_t local_info = {0};
     uint64_t file_bytes = 0;
     status = read_controls(file, pages, &chosen, &chosen_free, &local_info, &file_bytes);
     if (status == PAGE_FILE_OK) status = verify_published(file, pages, &chosen, &chosen_free, &local_info, file_bytes);
+    if (status == PAGE_FILE_OK) {
+        judge_fallback(file, &chosen, &local_info);
+        if (info != NULL) *info = local_info;
+        /* 이어 쓰면 손상된 세대의 제어 슬롯과 페이지를 덮어쓴다. 받아들인다고 밝힌 열기만 통과한다 */
+        if (writable && local_info.loss == PAGE_FILE_LOSS_CONFIRMED && !file->accept_loss) {
+            errno = EBADMSG;
+            status = PAGE_FILE_LOST_COMMIT;
+        }
+    }
     if (status == PAGE_FILE_OK && writable) {
         /* 빈 목록은 쓰기 핸들만 쓴다. 읽기 핸들은 읽지 않는다 */
         file->page_count = chosen.page_count;
-        status = load_free_list(file, pages[chosen.generation % 2], &chosen_free);
+        status = load_free_list(file, pages[chosen.generation % 2], &chosen_free, file_bytes);
     }
     if (status != PAGE_FILE_OK) {
         int err = errno;
@@ -934,7 +1117,7 @@ page_file_status_t page_file_open_admitted(const char *path, bool writable, page
     adopt_published(file, &chosen, file_bytes);
     file->published = true;
     file->lock = writable ? PAGE_FILE_LOCK_EXCLUSIVE : PAGE_FILE_LOCK_SHARED;
-    if (info != NULL) *info = local_info;
+    file->open_info = local_info;
     *out = file;
     return PAGE_FILE_OK;
 }
@@ -944,7 +1127,22 @@ page_file_status_t page_file_close(page_file_t *file)
     if (file == NULL) return PAGE_FILE_INVALID;
     page_file_status_t status = PAGE_FILE_OK;
     /* fork한 자식의 close는 부모가 만드는 partial을 지우지 않는다. fd만 닫아 부모의 잠금도 그대로다 */
-    if (!file->published && file->partial_path != NULL && !forked(file)) file->io.unlink(file->partial_path);
+    if (!forked(file)) {
+        if (!file->published && file->partial_path != NULL) file->io.unlink(file->partial_path);
+        if (!file->published && file->created && file->made_lock && file->writer_fd >= 0 && file->path != NULL) {
+            /* 게시하지 못한 생성이 만든 잠금 파일. writer 잠금을 쥔 채 지운다 */
+            char lock_path[PATH_MAX];
+            if (snprintf(lock_path, sizeof(lock_path), "%s%s", file->path, WRITER_LOCK_SUFFIX) < (int)sizeof(lock_path)) {
+                unlink(lock_path);
+            }
+        }
+        /*
+         * 잠금을 명시적으로 푼다. flock은 열린 파일 설명에 걸려 있어 그 설명을 가리키는 fd 사본이 다른 곳에 남으면
+         * (atfork를 거치지 않고 만들어진 자식 등) close만으로는 풀리지 않는다.
+         */
+        if (file->fd >= 0) flock(file->fd, LOCK_UN);
+        if (file->writer_fd >= 0) flock(file->writer_fd, LOCK_UN);
+    }
     if (file->fd >= 0 && close(file->fd) != 0) status = PAGE_FILE_IO;
     free_handle(file);
     return status;
@@ -972,17 +1170,27 @@ static page_file_status_t sync_published(page_file_t *file, bool *changed)
     uint8_t pages[2][PAGE_FILE_PAGE_BYTES];
     page_file_control_t chosen;
     free_header_t chosen_free;
-    page_file_open_info_t info;
+    page_file_open_info_t info = {0};
     uint64_t file_bytes = 0;
     page_file_status_t status = read_controls(file, pages, &chosen, &chosen_free, &info, &file_bytes);
     if (status != PAGE_FILE_OK) return status;
     /* 이 핸들이 쓰거나 확인한 세대 그대로면 manifest 대조 없이 쓴다. 문장마다 manifest 페이지를 다시 읽지 않기 위해서다 */
-    if (!file->stale && chosen.generation == file->committed.generation) {
+    bool known = !file->stale && chosen.generation == file->committed.generation;
+    if (known && info.damaged_slots == 0) {
         file->file_bytes = file_bytes;
         return PAGE_FILE_OK;
     }
-    status = verify_published(file, pages, &chosen, &chosen_free, &info, file_bytes);
+    if (!known) status = verify_published(file, pages, &chosen, &chosen_free, &info, file_bytes);
     if (status != PAGE_FILE_OK) return status;
+    /*
+     * 물러난 채로 배타 잠금을 쥐면 다음 commit이 손상된 세대를 덮어쓴다. 그 세대가 성공을 돌려준 commit이었으면
+     * 열기와 같이 거절한다. 공유 잠금은 물러난 세대를 읽는다.
+     */
+    judge_fallback(file, &chosen, &info);
+    if (file->lock == PAGE_FILE_LOCK_EXCLUSIVE && info.loss == PAGE_FILE_LOSS_CONFIRMED && !file->accept_loss) {
+        errno = EBADMSG;
+        return PAGE_FILE_CORRUPT;
+    }
     if (!file->stale && chosen.generation == file->committed.generation) {
         /* 더 새 세대는 끝나지 않은 commit이었다(쓰던 핸들이 멈춤). 아는 세대가 여전히 게시 상태다 */
         file->file_bytes = file_bytes;
@@ -992,7 +1200,7 @@ static page_file_status_t sync_published(page_file_t *file, bool *changed)
     if (file->writable) {
         reset_free_state(file);
         file->page_count = chosen.page_count;
-        status = load_free_list(file, pages[chosen.generation % 2], &chosen_free);
+        status = load_free_list(file, pages[chosen.generation % 2], &chosen_free, file_bytes);
         if (status != PAGE_FILE_OK) return status;
     }
     adopt_published(file, &chosen, file_bytes);
@@ -1031,6 +1239,7 @@ page_file_status_t page_file_lock(page_file_t *file, page_file_lock_t mode, bool
                                     : lock_writer(file->path, &file->writer_fd, file->lock_timeout_ms);
     if (status != PAGE_FILE_OK) return status;
     file->lock = mode;
+    if (mode == PAGE_FILE_LOCK_EXCLUSIVE) clear_stale_intent(file);
     status = sync_published(file, changed);
     if (status != PAGE_FILE_OK) {
         int err = errno;
@@ -1377,8 +1586,14 @@ size_t page_file_reusable_count(const page_file_t *file)
  * 열 때 제어 페이지와 사슬에서 빈 목록을 읽는다. 번호마다 범위와 중복을 확인한다(사슬 페이지는 읽는 동안
  * PS_FRESH로 표시해 빈 목록과 겹치면 거절하고 끝나면 PS_USED로 돌린다).
  */
-static page_file_status_t load_free_list(page_file_t *file, const uint8_t *control_page, const free_header_t *header)
+static page_file_status_t load_free_list(page_file_t *file, const uint8_t *control_page, const free_header_t *header,
+                                         uint64_t file_bytes)
 {
+    /* 상태 배열과 목록은 page_count에 비례해 미리 잡는다. 파일이 준 값을 믿기 전에 실제 파일 길이로 상한을 둔다 */
+    if ((uint64_t)file->page_count * PAGE_FILE_PAGE_BYTES > file_bytes) {
+        errno = EBADMSG;
+        return PAGE_FILE_CORRUPT;
+    }
     if (!ensure_capacity(file, file->page_count) || !list_grow(&file->chain, header->chain_count)) {
         return PAGE_FILE_NOMEM;
     }
@@ -1587,7 +1802,10 @@ page_file_status_t page_file_commit(page_file_t *file)
     uint64_t needed = (uint64_t)file->page_count * PAGE_FILE_PAGE_BYTES;
     if (status == PAGE_FILE_OK && needed > file->file_bytes) {
         /* 할당만 하고 쓰지 않은 페이지도 파일 길이 안에 두어 다시 열 때 잘린 파일로 보이지 않게 한다. */
-        if (ftruncate(file->fd, (off_t)needed) != 0) status = PAGE_FILE_IO;
+        int eintr = 0, grown;
+        while ((grown = ftruncate(file->fd, (off_t)needed)) != 0 && errno == EINTR && ++eintr <= EINTR_RETRY_MAX) {
+        }
+        if (grown != 0) status = PAGE_FILE_IO;
         else file->file_bytes = needed;
     }
     /* manifest로 끝남을 확인할 수 있으면 데이터 fsync를 제어 쓰기 뒤의 fsync 하나로 합친다 */
@@ -1632,8 +1850,10 @@ page_file_status_t page_file_commit(page_file_t *file)
     if (status != PAGE_FILE_OK) file->poisoned = true;
     if (status == PAGE_FILE_OK) status = sync_file(file);
     int err = errno;
+    /* 내구 확인 기록은 게시 잠금을 쥔 채 쓴다. reader가 제어 페이지와 어긋난 기록을 보지 않는다 */
+    if (status == PAGE_FILE_OK) record_confirmed(file, next.generation);
+    else set_publish_intent(file, false);
     flock(file->fd, LOCK_UN);
-    set_publish_intent(file, false);
     errno = err;
     if (status != PAGE_FILE_OK) {
         free(next_chain.items);
