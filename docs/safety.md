@@ -166,6 +166,16 @@ writer는 게시 잠금을 기다리는 동안 잠금 파일 첫 바이트에 �
 test_stale_publish_mark_does_not_stall_readers
 ```
 
+### 생성 도중 종료
+
+생성하는 핸들은 partial 파일을 만들기 전부터 게시하거나 닫을 때까지 writer 잠금을 쥔다. writer 잠금을 얻었는데 `<db>.partial`이 남아 있으면 그것을 만들던 프로세스는 죽은 것이므로 지우고 새로 만든다. 다른 이름과 hard link로 묶인 partial은 지우지 않는다. 게시 뒤 partial 삭제나 디렉터리 `fsync`가 실패하면 `database_create`는 실패를 돌려주고 게시한 이름을 거둔다. 거두지도 못하면 게시된 빈 DB가 남고 다음 생성은 `DATABASE_EXISTS`다.
+
+```text
+test_stale_partial_does_not_block_create
+test_dirty_publish_can_be_retracted
+test_create_is_retryable
+```
+
 ### 큐 실패 주입과 worker 종료
 
 큐 연산의 I/O·할당 실패 검사는 [test_ack_queue_fault.c](../tests/test_ack_queue_fault.c)에 있다.

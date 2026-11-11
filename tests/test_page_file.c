@@ -1795,6 +1795,134 @@ static void test_stale_publish_mark_does_not_stall_readers(void)
     clean_dir();
 }
 
+/* 생성 도중 죽은 프로세스가 남긴 partial은 다음 생성을 막지 않는다. 살아 있는 생성자의 partial은 그대로 둔다 */
+static void test_stale_partial_does_not_block_create(void)
+{
+    printf("\n[test_stale_partial_does_not_block_create]\n");
+    fresh_dir();
+    hooks_reset();
+    int ready[2];
+    assert(pipe(ready) == 0);
+    pid_t child = fork();
+    assert(child >= 0);
+    if (child == 0) {
+        page_file_t *made;
+        if (page_file_create(DB_PATH, &made) != PAGE_FILE_OK) _exit(2);
+        if (page_file_commit(made) != PAGE_FILE_OK) _exit(3);
+        char ok = 1;
+        if (write(ready[1], &ok, 1) != 1) _exit(3);
+        for (;;) pause();
+    }
+    char ok = 0;
+    assert(read(ready[0], &ok, 1) == 1 && ok == 1);
+    page_file_t *file = NULL;
+    CHECK(page_file_create(DB_PATH, &file) == PAGE_FILE_EXISTS && exists(PARTIAL_PATH), "살아 있는 생성자의 partial은 EXISTS");
+    kill(child, SIGKILL);
+    int wait_status;
+    waitpid(child, &wait_status, 0);
+    CHECK(exists(PARTIAL_PATH) && !exists(DB_PATH), "죽은 생성자의 partial이 남음");
+    page_file_status_t status = page_file_create(DB_PATH, &file);
+    CHECK(status == PAGE_FILE_OK, "죽은 생성자의 partial을 정리하고 생성 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) {
+        CHECK(page_file_commit(file) == PAGE_FILE_OK && page_file_control(file)->generation == 1 &&
+                  page_file_publish(file) == PAGE_FILE_OK, "남은 partial의 옛 세대를 잇지 않고 세대 1로 게시");
+        CHECK(page_file_close(file) == PAGE_FILE_OK && !exists(PARTIAL_PATH), "게시 뒤 partial 없음");
+        CHECK(page_file_open(DB_PATH, false, &file, NULL) == PAGE_FILE_OK, "게시된 파일이 열림");
+        page_file_close(file);
+    }
+    close(ready[0]);
+    close(ready[1]);
+
+    /* 잠금 파일 없이 남은 partial(옛 판이 남긴 흔적)도 생성자가 없으므로 정리한다 */
+    fresh_dir();
+    spit(PARTIAL_PATH, (const uint8_t *)"leftover", 8);
+    status = page_file_create(DB_PATH, &file);
+    CHECK(status == PAGE_FILE_OK, "잠금 파일 없는 partial 정리 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) page_file_close(file);
+    CHECK(inventory() == 0, "게시하지 않고 닫으면 partial과 이번에 만든 잠금 파일이 없음 (%d)", inventory());
+
+    /* 다른 이름과 hard link로 묶인 partial은 게시된 파일일 수 있어 지우지 않는다 */
+    spit(PARTIAL_PATH, (const uint8_t *)"linked", 6);
+    assert(link(PARTIAL_PATH, DIR_NAME "/elsewhere") == 0);
+    uint64_t linked = file_hash(PARTIAL_PATH);
+    CHECK(page_file_create(DB_PATH, &file) == PAGE_FILE_EXISTS && file_hash(PARTIAL_PATH) == linked &&
+              file_hash(DIR_NAME "/elsewhere") == linked && inventory() == 2, "묶인 partial은 EXISTS이고 그대로");
+    clean_dir();
+}
+
+/* 게시는 됐지만 정리가 실패한(PUBLISHED_DIRTY) 생성을 거두면 같은 경로로 다시 만들 수 있다 */
+static void test_dirty_publish_can_be_retracted(void)
+{
+    printf("\n[test_dirty_publish_can_be_retracted]\n");
+    fresh_dir();
+    hooks_reset();
+    int fd_base = next_fd();
+    page_file_t *file, *other = NULL;
+    assert(page_file_create(DB_PATH, &file) == PAGE_FILE_OK);
+    CHECK(page_file_retract(file) == PAGE_FILE_INVALID, "게시 전에는 거둘 것이 없음");
+    assert(page_file_commit(file) == PAGE_FILE_OK);
+    g_hooks.unlink_fail = true;
+    assert(page_file_publish(file) == PAGE_FILE_PUBLISHED_DIRTY);
+    CHECK(page_file_create(DB_PATH, &other) == PAGE_FILE_EXISTS, "거두기 전에는 다시 만들 수 없음");
+    CHECK(page_file_retract(file) == PAGE_FILE_IO && page_file_is_published(file) && exists(DB_PATH),
+          "이름을 지우지 못하면 IO이고 게시된 채");
+    g_hooks.unlink_fail = false;
+    CHECK(page_file_retract(file) == PAGE_FILE_OK && !page_file_is_published(file) && !exists(DB_PATH) &&
+              !exists(PARTIAL_PATH), "거두면 목적지와 partial이 없음");
+    CHECK(page_file_close(file) == PAGE_FILE_OK && inventory() == 0, "닫으면 디렉터리가 비어 있음 (%d)", inventory());
+    page_file_status_t status = page_file_create(DB_PATH, &file);
+    CHECK(status == PAGE_FILE_OK, "같은 경로로 다시 생성 (%d)", (int)status);
+    if (status == PAGE_FILE_OK) {
+        CHECK(page_file_commit(file) == PAGE_FILE_OK && page_file_publish(file) == PAGE_FILE_OK, "다시 게시");
+        /* 그 뒤 commit한 파일은 거두지 않는다 */
+        CHECK(page_file_commit(file) == PAGE_FILE_OK && page_file_retract(file) == PAGE_FILE_INVALID && exists(DB_PATH),
+              "commit이 이어진 파일은 거두지 않음");
+        page_file_close(file);
+    }
+    CHECK(next_fd() == fd_base, "fd 누수 없음");
+    clean_dir();
+}
+
+/*
+ * close는 잠금을 명시적으로 푼다. 같은 열린 파일 설명을 가리키는 fd 사본이 남아도(atfork를 거치지 않은 자식 등)
+ * 닫은 핸들의 잠금이 남지 않는다. fd 사본은 dup으로 만든다.
+ */
+static void test_close_releases_locks_despite_fd_copies(void)
+{
+    printf("\n[test_close_releases_locks_despite_fd_copies]\n");
+    fresh_dir();
+    hooks_reset();
+    build_fixture();
+    int base = next_fd();
+    page_file_t *file, *reader;
+    assert(page_file_open(DB_PATH, true, &file, NULL) == PAGE_FILE_OK);
+    int copies[2] = {dup(base), dup(base + 1)};   /* DB 파일과 writer 잠금 파일 */
+    assert(copies[0] >= 0 && copies[1] >= 0);
+    CHECK(page_file_close(file) == PAGE_FILE_OK, "쓰기 핸들 닫기");
+    page_file_status_t status = page_file_open(DB_PATH, true, &file, NULL);
+    CHECK(status == PAGE_FILE_OK, "fd 사본이 남아도 닫은 핸들의 writer 잠금이 풀림 (%d)", (int)status);
+    close(copies[0]);
+    close(copies[1]);
+
+    base = next_fd();
+    assert(page_file_open(DB_PATH, false, &reader, NULL) == PAGE_FILE_OK);
+    copies[0] = dup(base);
+    assert(copies[0] >= 0);
+    CHECK(page_file_close(reader) == PAGE_FILE_OK, "읽기 핸들 닫기");
+    if (status == PAGE_FILE_OK) {
+        page_file_set_default_publish_timeout(0);
+        page_file_t *quick;
+        page_file_close(file);
+        assert(page_file_open(DB_PATH, true, &quick, NULL) == PAGE_FILE_OK);
+        page_file_set_default_publish_timeout(PAGE_FILE_PUBLISH_TIMEOUT_MS);
+        status = page_file_commit(quick);
+        CHECK(status == PAGE_FILE_OK, "fd 사본이 남아도 닫은 읽기 핸들의 공유 잠금이 풀려 게시함 (%d)", (int)status);
+        page_file_close(quick);
+    }
+    close(copies[0]);
+    clean_dir();
+}
+
 int main(void)
 {
     /* 잠금 충돌은 기다리지 않고 곧바로 LOCKED로 확인한다 */
@@ -1818,6 +1946,9 @@ int main(void)
     test_fresh_releases_one_past_control_reopen();
     test_acknowledged_commit_damage_is_not_overwritten();
     test_stale_publish_mark_does_not_stall_readers();
+    test_stale_partial_does_not_block_create();
+    test_close_releases_locks_despite_fd_copies();
+    test_dirty_publish_can_be_retracted();
     page_file_set_default_io(NULL);
     clean_dir();
     printf("\n%s: %d/%d\n", g_fail == 0 ? "ALL PASSED" : "FAILED", g_run - g_fail, g_run);

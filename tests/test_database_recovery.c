@@ -5,6 +5,7 @@
  *   이전 세대로 열리고 database_open_report로 그 사실을 알린다. 받아들인다고 밝힌 열기만 이어 쓴다.
  * - 내구 확인 기록이 없으면(전원 차단 뒤의 끝나지 않은 commit과 구분되지 않음) 쓰기 열기가 스스로 복구하고 보고로 알린다.
  * - 이미 열린 쓰기 핸들도 손상된 세대를 덮어쓰지 않는다.
+ * - 생성 도중 죽은 흔적(.partial)과 게시 뒤 정리 실패가 다음 생성을 막지 않는다.
  * 손상은 파일 바이트를 직접 바꿔 만든다. 실제 전원 차단은 시험하지 않는다.
  */
 
@@ -25,6 +26,7 @@
 #define DIR_NAME "build/test_database_recovery_dir"
 #define DB_PATH DIR_NAME "/db.streamlite"
 #define LOCK_PATH DB_PATH "-lock"
+#define PARTIAL_PATH DB_PATH ".partial"
 
 static int g_run = 0;
 static int g_fail = 0;
@@ -60,6 +62,12 @@ static void fresh_dir(void)
 {
     clean_dir();
     assert(mkdir(DIR_NAME, 0700) == 0);
+}
+
+static bool exists(const char *path)
+{
+    struct stat st;
+    return lstat(path, &st) == 0;
 }
 
 static uint8_t *slurp(const char *path, size_t *size)
@@ -288,6 +296,61 @@ static void test_open_handle_does_not_overwrite_lost_commit(void)
     clean_dir();
 }
 
+/* ── 생성 ── */
+
+static int g_unlink_fail_left;
+static int g_unlink_calls;
+
+static int failing_unlink(const char *path)
+{
+    g_unlink_calls++;
+    if (g_unlink_fail_left > 0) {
+        g_unlink_fail_left--;
+        errno = EIO;
+        return -1;
+    }
+    return unlink(path);
+}
+
+static void test_create_is_retryable(void)
+{
+    printf("\n[test_create_is_retryable]\n");
+    fresh_dir();
+    database_t *db = NULL;
+
+    /* 생성 도중 죽은 프로세스가 남긴 partial */
+    spit(PARTIAL_PATH, (const uint8_t *)"leftover", 8);
+    database_status_t status = database_create(DB_PATH, &db);
+    CHECK(status == DATABASE_OK && !exists(PARTIAL_PATH), "남은 partial이 생성을 막지 않음 (%d)", (int)status);
+    if (status == DATABASE_OK) assert(database_close(db) == DATABASE_OK);
+
+    /* 게시 뒤 partial 삭제가 한 번 실패: 실패로 돌려주되 게시한 이름을 거둬 다시 만들 수 있다 */
+    fresh_dir();
+    page_file_io_t io = page_file_default_io();
+    io.unlink = failing_unlink;
+    page_file_set_default_io(&io);
+    g_unlink_fail_left = 1;
+    status = database_create(DB_PATH, &db);
+    CHECK(status == DATABASE_IO, "정리가 실패한 생성은 실패 (%d)", (int)status);
+    CHECK(!exists(DB_PATH) && !exists(PARTIAL_PATH), "실패한 생성은 게시된 파일을 남기지 않음");
+    status = database_create(DB_PATH, &db);
+    CHECK(status == DATABASE_OK, "같은 경로로 다시 생성 (%d)", (int)status);
+    if (status == DATABASE_OK) assert(database_close(db) == DATABASE_OK);
+
+    /* 거두지도 못하면 게시된 빈 DB가 남는다. 다음 생성은 EXISTS이고 그 파일은 열린다 */
+    fresh_dir();
+    g_unlink_fail_left = 1000;
+    status = database_create(DB_PATH, &db);
+    CHECK(status == DATABASE_IO && exists(DB_PATH), "거두지 못한 생성은 실패이고 파일이 남음 (%d)", (int)status);
+    g_unlink_fail_left = 0;
+    page_file_set_default_io(NULL);
+    CHECK(database_create(DB_PATH, &db) == DATABASE_EXISTS, "남은 파일 위에 다시 만들지 않음");
+    status = database_open(DB_PATH, true, &db);
+    CHECK(status == DATABASE_OK && database_table_count(db) == 0, "남은 파일은 빈 DB로 열림 (%d)", (int)status);
+    if (status == DATABASE_OK) assert(database_close(db) == DATABASE_OK);
+    clean_dir();
+}
+
 int main(void)
 {
     mkdir("build", 0755);
@@ -295,6 +358,7 @@ int main(void)
     test_lost_commit_refuses_writable_open(damage_newest_control, "최신 제어 페이지 손상");
     test_unconfirmed_fallback_recovers_and_reports();
     test_open_handle_does_not_overwrite_lost_commit();
+    test_create_is_retryable();
     clean_dir();
     printf("\n%s: %d/%d\n", g_fail == 0 ? "ALL PASSED" : "FAILED", g_run - g_fail, g_run);
     return g_fail == 0 ? 0 : 1;

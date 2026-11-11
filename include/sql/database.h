@@ -74,7 +74,12 @@ typedef enum {
 
 typedef struct database database_t;
 
-/* 새 파일을 만들어 빈 카탈로그를 commit하고 게시한다. 목적지가 있으면 DATABASE_EXISTS다. */
+/*
+ * 새 파일을 만들어 빈 카탈로그를 commit하고 게시한다. 목적지가 있으면 DATABASE_EXISTS, 다른 핸들이 같은 경로를 만드는
+ * 중이면 DATABASE_EXISTS나 DATABASE_LOCKED다. 생성 도중 죽은 프로세스가 남긴 "<path>.partial"은 정리하고 만든다.
+ * 게시 뒤 정리나 디렉터리 fsync가 실패하면 DATABASE_IO이며 게시한 이름을 거둔다(다시 만들 수 있다). 거두지도 못하면
+ * 게시된 빈 DB가 남아 다음 생성은 DATABASE_EXISTS다.
+ */
 database_status_t database_create(const char *path, database_t **out);
 /*
  * 게시된 파일을 연다. writable이 아니면 SELECT만 실행된다. 열기는 파일을 바꾸지 않는다.

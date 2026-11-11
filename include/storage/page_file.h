@@ -136,10 +136,13 @@ typedef struct {
 } page_file_open_info_t;
 
 /*
- * 새 파일을 만든다. 목적지는 path이고 실제 쓰기는 "path.partial"에 한다. partial은 O_EXCL로 만든
- * 뒤 배타 잠금을 잡고, 제어 페이지 두 장을 0으로 채운다. 첫 commit 전에는 어떤 열기도 성공하지
- * 않는다. 목적지나 partial이 이미 있으면 PAGE_FILE_EXISTS이며 어느 쪽도 바꾸지 않는다.
- * publish 전에 close하면 partial을 지운다.
+ * 새 파일을 만든다. 목적지는 path이고 실제 쓰기는 "path.partial"에 한다. 먼저 writer 잠금(<path>-lock)을 기다리지
+ * 않고 잡은 뒤 partial을 O_EXCL로 만들고 제어 페이지 두 장을 0으로 채운다. 생성하는 핸들은 게시하거나 닫을 때까지
+ * writer 잠금을 쥔다. 첫 commit 전에는 어떤 열기도 성공하지 않는다. 목적지가 이미 있거나 다른 핸들이 만드는 중이면
+ * (writer 잠금을 얻지 못했고 partial이 있음) PAGE_FILE_EXISTS이며 어느 쪽도 바꾸지 않는다. writer 잠금을 얻었는데
+ * partial이 남아 있으면 살아 있는 생성자가 없다는 뜻이므로(생성 중 종료) 그 partial을 지우고 새로 만든다. 다만 남은
+ * partial이 일반 파일이 아니거나 다른 이름과 hard link로 묶여 있으면(게시 뒤 정리가 실패한 흔적) 지우지 않고 EXISTS다.
+ * publish 전에 close하면 partial과, 이 핸들이 만든 잠금 파일을 지운다.
  */
 page_file_status_t page_file_create(const char *path, page_file_t **out);
 
@@ -151,6 +154,13 @@ page_file_status_t page_file_create(const char *path, page_file_t **out);
  * 실패했다는 뜻이며 이름의 내구성을 주장할 수 없다.
  */
 page_file_status_t page_file_publish(page_file_t *file);
+/*
+ * PAGE_FILE_PUBLISHED_DIRTY로 끝난 게시를 거둔다. 이 핸들이 만들어 방금 게시했고 그 뒤 commit하지 않은(세대 1) 파일만
+ * 대상이다(아니면 INVALID). 목적지 이름과 남은 partial이 이 핸들의 파일일 때만 지운다. 둘 다 사라지면 OK이고 핸들은
+ * 게시 전처럼 close만 할 수 있다. 하나라도 남으면 IO이며 목적지는 여전히 게시된 채다. 생성 실패를 돌려주는 호출자가
+ * 같은 경로로 다시 만들 수 있게 하려는 것이다.
+ */
+page_file_status_t page_file_retract(page_file_t *file);
 
 /*
  * 게시된 파일을 연다. 쓰기 전에는 아무것도 쓰지 않으며 version·길이·header가 맞지 않으면
@@ -322,6 +332,7 @@ page_file_open_info_t page_file_open_info(const page_file_t *file);
  * - 게시 대기 표시는 writer 잠금을 쥔 writer만 쓴다. writer 잠금을 얻은 핸들은 남아 있는 표시를 죽은 writer의 것으로 보고
  *   지우며, 공유 잠금을 잡으려는 핸들은 writer 잠금이 비어 있으면 표시를 무시한다(쓰기 핸들은 지운다). 그래서 죽은
  *   writer의 표시 때문에 게시 대기 상한만큼 기다리지 않는다.
+ * - close는 쥔 잠금을 명시적으로 푼 뒤 fd를 닫는다. 같은 열린 파일 설명의 fd 사본이 다른 곳에 남아 있어도 잠금이 남지 않는다.
  * - 잠금이 없으면 읽기도 INVALID다. 할당·해제·쓰기·카탈로그 지정·commit은 EXCLUSIVE가 있어야 한다.
  * - 배타 잠금을 놓을 때 commit하지 않은 변경이 남았으면 버린 것으로 보고 다음 page_file_lock이 디스크 상태로 다시 읽는다.
  * - 핸들은 연 프로세스에서만 쓴다. fork한 자식이 물려받은 핸들은 close 말고 모든 연산이 PAGE_FILE_FORKED이며 파일을

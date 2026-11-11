@@ -219,7 +219,15 @@ database_status_t database_create(const char *path, database_t **out)
         status = from_store(saved);
         if (status == DATABASE_OK) {
             page_file_status_t published = page_file_publish(db->file);
-            /* PUBLISHED_DIRTY는 파일이 열리지만 이름의 내구성을 주장할 수 없다 */
+            /*
+             * PUBLISHED_DIRTY는 파일이 열리지만 이름의 내구성을 주장할 수 없어 실패로 돌려준다. 실패한 생성이 게시된
+             * 파일을 남기면 다시 만들 때 EXISTS가 되므로 이름을 거둔다. 거두지 못하면 게시된 빈 DB가 남는다.
+             */
+            if (published == PAGE_FILE_PUBLISHED_DIRTY) {
+                int dirty = errno;
+                page_file_retract(db->file);
+                errno = dirty;
+            }
             status = published == PAGE_FILE_OK ? DATABASE_OK : from_page_file(published);
         }
     }
