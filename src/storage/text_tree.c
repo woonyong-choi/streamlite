@@ -3,6 +3,8 @@
 #include "storage/text_tree.h"
 #include "storage/le.h"
 
+#include "index_tree_internal.h"
+
 #define LEVEL_ANY (-1)
 #define ENTRY_FIXED_BYTES 8u
 #define MAX_ENTRIES ((PAGE_BODY_BYTES - TEXT_TREE_HEADER_BYTES) / (ENTRY_FIXED_BYTES + 2u))
@@ -111,20 +113,7 @@ static pk_status_t store_node(const pk_tree_io_t *io, uint32_t table_id, node_t 
     le_put_u32(node->body + 12, node->count);
     le_put_u32(node->body + 16, node->stamp);
     le_put_u32(node->body + 20, 0);
-    uint32_t target = old_page;
-    bool in_place = old_page != PAGE_FILE_NO_PAGE && io->is_fresh(io->context, old_page);
-    if (!in_place) {
-        pk_status_t allocated = io->allocate(io->context, &target);
-        if (allocated != PK_OK) return allocated;
-    }
-    pk_status_t written = io->write(io->context, target, node->body);
-    if (written != PK_OK) return written;
-    if (!in_place && old_page != PAGE_FILE_NO_PAGE) {
-        pk_status_t released = io->release(io->context, old_page);
-        if (released != PK_OK) return released;
-    }
-    *page = target;
-    return PK_OK;
+    return index_tree_write_node(io, node->body, old_page, page);
 }
 
 static void copy_entries(const node_t *node, entry_t *entries)
