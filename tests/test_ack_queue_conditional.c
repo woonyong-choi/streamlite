@@ -125,12 +125,14 @@ static void test_minimum_and_terminal(unsigned condition, bool candidate)
     g_now = 1000;
     uint64_t id;
     for (int i = 0; i < 6; i++) assert(enq(queue, db, "payload", NULL, &id, NULL) == ACKQ_OK);
-    update(db, queue, "SET ready_at = 2000 WHERE id = 1");
-    update(db, queue, "SET state = 1, lease_until = 1100, fence = 1, attempts = 1 WHERE id = 2");
+    /* due 형식(#260)은 상태를 바꿀 때 due도 같은 규칙으로 맞춘다(ack_queue_internal.h의 구간) */
+    assert(queue->due_column);
+    update(db, queue, "SET ready_at = 2000, due = 2000 WHERE id = 1");
+    update(db, queue, "SET state = 1, lease_until = 1100, fence = 1, attempts = 1, due = 1100 WHERE id = 2");
     update(db, queue, "SET attempts = 3 WHERE id = 3");
-    update(db, queue, "SET state = 1, lease_until = 1100, attempts = 3 WHERE id = 4");
-    update(db, queue, "SET state = 2 WHERE id = 5");
-    update(db, queue, "SET state = 3, fence = 9 WHERE id = 6");
+    update(db, queue, "SET state = 1, lease_until = 1100, attempts = 3, due = -2305843009213693948 WHERE id = 4");
+    update(db, queue, "SET state = 2, due = -4611686018427387899 WHERE id = 5");
+    update(db, queue, "SET state = 3, fence = 9, due = -3458764513820540922 WHERE id = 6");
     g_now = 1100;
     ackq_claim_t items[4] = {0};
     size_t count = 0;
@@ -138,8 +140,9 @@ static void test_minimum_and_terminal(unsigned condition, bool candidate)
     database_scan_stats(raw_db(db), &before);
     reset_observation();
     CHECK(ackq_claim(queue, db, 4, 1000, items, &count) == ACKQ_OK && count == 2, "two eligible items only");
-    CHECK(items[0].id == 2 && items[1].id == 3, "minimum eligible IDs merge READY and expired LEASED");
-    CHECK(items[0].fence == 2 && items[0].attempts == 2 && items[1].attempts == 4, "lease fence and READY attempt semantics");
+    /* due 순서: READY 3(ready_at 1000) 다음 만료 LEASED 2(lease_until 1100) */
+    CHECK(items[0].id == 3 && items[1].id == 2, "earliest due merges READY and expired LEASED");
+    CHECK(items[1].fence == 2 && items[1].attempts == 2 && items[0].attempts == 4, "lease fence and READY attempt semantics");
     observation("partial_batch", candidate, before, db);
     ackq_claims_release(items, count);
 
@@ -147,7 +150,7 @@ static void test_minimum_and_terminal(unsigned condition, bool candidate)
     database_scan_stats(raw_db(db), &before);
     reset_observation();
     CHECK(ackq_claim(queue, db, 1, 1000, items, &count) == ACKQ_OK && count == 1 && items[0].id == id, "normal claim");
-    CHECK(sql_calls == (candidate ? 1u : 3u), "normal claim execution boundaries");
+    CHECK(sql_calls == (candidate ? 1u : 2u), "normal claim execution boundaries");
     observation("normal_claim", candidate, before, db);
     uint64_t fence = items[0].fence;
     ackq_claims_release(items, count);
@@ -172,7 +175,7 @@ static void test_minimum_and_terminal(unsigned condition, bool candidate)
     database_scan_stats(raw_db(db), &before);
     reset_observation();
     CHECK(ackq_claim(queue, db, 1, 10, items, &count) == ACKQ_OK && count == 0, "empty eligible set");
-    CHECK(sql_calls == (candidate ? 3u : 2u) && writes == 0 && syncs == 0, "empty claim readback never publishes");
+    CHECK(sql_calls == (candidate ? 2u : 1u) && writes == 0 && syncs == 0, "empty claim readback never publishes");
     observation("empty_claim", candidate, before, db);
     ackq_close(&queue);
     CHECK(close_db(db), "close after terminal checks");

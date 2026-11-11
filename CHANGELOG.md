@@ -12,6 +12,10 @@
 
 ### 변경
 
+- 새로 설치하는 큐에 `due` 열과 색인을 두고 claim·recover·purge가 그 색인 구간을 읽도록 변경: claim 비용이 만료 전 LEASED·지연 READY·ACKED·FAILED 수와 무관하다. claim 순서는 작은 id 대신 claim 가능해진 시각(READY는 `ready_at`, 만료 LEASED는 `lease_until`)이 이른 것부터, 같으면 작은 id부터다. 그래서 nack한 작업이 큐 머리를 막지 않는다. key 없는 작업의 `idem`은 `''` 대신 NULL이라 `idem` 색인에 들어가지 않는다. 이 형식의 큐는 이전 판 라이브러리로 쓰지 못한다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+- 이전 판이 설치한 큐는 그대로 열고, 열 때 `lease_until` 색인을 하나 더 만들어 만료 lease를 그 색인으로 찾도록 변경: 만들지 못하면(BUSY 등, 호출자 트랜잭션 안) 이전 경로를 쓰며 열기는 실패하지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+- 같은 핸들의 바로 앞 claim이 빈 결과였으면 다음 claim(`get`)이 writer 없이 후보를 먼저 읽어 보고, 없으면 쓰기 트랜잭션을 열지 않도록 변경: 쉬지 않고 묻는 빈 큐 소비자가 writer 잠금을 붙잡지 않는다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
+- 새 큐 이름이 `_due`·`_lease`로 끝나도 `INVALID`로 거절: 큐의 새 내부 색인 이름과 겹치기 때문이다. 이미 있는 큐는 그대로 열린다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 자동 commit `SELECT`가 쓰기 거래와 writer 잠금 없이 게시 상태를 공유 잠금으로 읽도록 변경: 쉬지 않고 조회하는 연결이 다른 연결·프로세스의 `begin`·변경 문장을 BUSY로 만들지 않는다. 결과는 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 거래 변경 누적(`TXN_WORKSPACE`)을 기본으로 켬: 한 거래가 바꾼 페이지를 commit까지 메모리 사본으로 모아 같은 페이지를 한 번만 쓴다. 사본이 8MiB 한도를 넘으면 모은 사본을 그때 파일에 쓰고 거래를 이어 가므로 큰 거래도 한도 때문에 실패하지 않는다. 파일 형식과 commit 순서는 같다. ([#262](https://github.com/woonyong-choi/streamlite/issues/262))
 - macOS의 기본 commit 동기화를 `F_FULLFSYNC`에서 `fsync(2)`(NORMAL)로 변경: 0.3.0 개발 중 `F_FULLFSYNC` 고정으로 자동 commit INSERT가 약 10배 느려졌다. 전원 차단 보장이 필요하면 FULL 단계를 고른다. 다른 플랫폼의 동작은 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))

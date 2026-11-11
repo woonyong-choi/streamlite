@@ -36,6 +36,11 @@ value_view_t ackq_text(const char *text)
     return (value_view_t){VALUE_TEXT, 0, 0.0, size > 0 ? (const uint8_t *)text : NULL, size};
 }
 
+value_view_t ackq_null(void)
+{
+    return (value_view_t){VALUE_NULL, 0, 0.0, NULL, 0};
+}
+
 value_view_t ackq_blob(const uint8_t *bytes, size_t size)
 {
     return (value_view_t){VALUE_BLOB, 0, 0.0, size > 0 ? bytes : NULL, size};

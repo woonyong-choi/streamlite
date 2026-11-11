@@ -169,7 +169,7 @@ typedef struct {
 
 /*
  * 큐 이름 name을 연다. install이 0이 아니면 없을 때 만든다. options가 NULL이면 모두 기본값이다. 새로 만드는 이름이
- * _keys·_state·_idem으로 끝나거나 이미 있는 큐의 내부 테이블·색인 이름과 겹치면 STREAMLITE_INVALID이고 아무것도 만들지
+ * _keys·_state·_idem·_due·_lease로 끝나거나 이미 있는 큐의 내부 테이블·색인 이름과 겹치면 STREAMLITE_INVALID이고 아무것도 만들지
  * 않는다(ack_queue.h의 이름 규칙). 이미 있는 큐는 이름과 무관하게 열린다.
  */
 int streamlite_queue_open(streamlite_db_t *db, const char *name, int install, const streamlite_queue_options_t *options,
@@ -187,7 +187,10 @@ typedef struct {
 
 int streamlite_queue_put(streamlite_queue_t *queue, streamlite_txn_t *txn, const uint8_t *payload, size_t size, const char *idem_key, uint64_t *id,
              int *duplicate);
-/* id가 0이면 다음 작업, 아니면 그 작업을 claim한다. 가져올 것이 없으면 STREAMLITE_EMPTY(id 지정이 불가하면 STREAMLITE_STALE). */
+/*
+ * id가 0이면 다음 작업, 아니면 그 작업을 claim한다. 가져올 것이 없으면 STREAMLITE_EMPTY(id 지정이 불가하면 STREAMLITE_STALE).
+ * 다음 작업의 순서와, 빈 결과 다음 호출이 writer 없이 먼저 확인하는 동작은 ack_queue.h의 ackq_claim과 같다.
+ */
 int streamlite_queue_get(streamlite_queue_t *queue, streamlite_txn_t *txn, uint64_t id, uint64_t lease_ms, streamlite_queue_item_t *item);
 void streamlite_queue_item_free(streamlite_queue_item_t *item);
 int streamlite_queue_ack(streamlite_queue_t *queue, streamlite_txn_t *txn, uint64_t id, uint64_t fence);
