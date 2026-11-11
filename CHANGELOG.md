@@ -11,6 +11,7 @@
 
 ### 변경
 
+- 자동 commit `SELECT`가 쓰기 거래와 writer 잠금 없이 게시 상태를 공유 잠금으로 읽도록 변경: 쉬지 않고 조회하는 연결이 다른 연결·프로세스의 `begin`·변경 문장을 BUSY로 만들지 않는다. 결과는 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 - 거래 변경 누적(`TXN_WORKSPACE`)을 기본으로 켬: 한 거래가 바꾼 페이지를 commit까지 메모리 사본으로 모아 같은 페이지를 한 번만 쓴다. 사본이 8MiB 한도를 넘으면 모은 사본을 그때 파일에 쓰고 거래를 이어 가므로 큰 거래도 한도 때문에 실패하지 않는다. 파일 형식과 commit 순서는 같다. ([#262](https://github.com/woonyong-choi/streamlite/issues/262))
 - macOS의 기본 commit 동기화를 `F_FULLFSYNC`에서 `fsync(2)`(NORMAL)로 변경: 0.3.0 개발 중 `F_FULLFSYNC` 고정으로 자동 commit INSERT가 약 10배 느려졌다. 전원 차단 보장이 필요하면 FULL 단계를 고른다. 다른 플랫폼의 동작은 같다. ([#260](https://github.com/woonyong-choi/streamlite/issues/260))
 

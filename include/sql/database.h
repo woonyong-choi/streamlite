@@ -41,7 +41,8 @@
  *
  * 여러 프로세스(#199, #200): 같은 파일을 여러 핸들(다른 프로세스 포함)이 함께 연다. SELECT는 문장 동안 읽기 잠금을,
  * 변경 문장과 쓰기 작업은 그동안 writer 잠금을 쥔다(page_file.h). 잠금을 얻을 때 다른 핸들이 게시했으면 카탈로그를 다시 읽는다.
- * SELECT는 다른 핸들의 쓰기 거래를 기다리지 않고 마지막 게시 상태를 읽으며, 게시하는 순간(제어 쓰기와 fsync)만 기다린다.
+ * SELECT는 다른 핸들의 쓰기 거래를 기다리지 않고 마지막 게시 상태를 읽으며, 게시하는 순간(제어 쓰기와 동기화)만 기다린다.
+ * 트랜잭션 계층(database_txn.h)을 붙인 핸들의 자동 commit SELECT도 writer 잠금을 잡지 않는다.
  * writer 잠금은 기다리지 않는다. 다른 핸들이 쓰는 중이면 변경 문장은 RESULT_E_BUSY(DATABASE_CODE_FILE_LOCKED) 오류 결과, 작업
  * 시작은 DATABASE_LOCKED이며 아무것도 반영하지 않았다. 열기는 page_file 잠금 대기 상한까지 기다린다. fork한 자식이 부모의 핸들을 쓰면 문장은
  * DATABASE_CODE_FORKED 오류 결과, 그 밖은 DATABASE_FORKED이며 파일을 바꾸지 않는다. 자식은 파일을 새로 연다.

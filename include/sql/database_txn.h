@@ -22,8 +22,9 @@
  *    게시된 상태와 자기 변경만 본다. 읽기 전용 트랜잭션 handle은 지원하지 않는다(TXN_UNSUPPORTED).
  *  - 문장 하나가 오류 결과로 끝나면 그 트랜잭션은 실패 상태다. 이후 문장은 DATABASE_CODE_WORK_FAILED 오류 결과로
  *    거절되고 commit은 TXN_INVALID이므로 명시적 rollback이 필요하다. database_txn_failed로 확인한다.
- *  - 트랜잭션 밖의 database_exec는 문장마다 자동 commit이다. 다른 트랜잭션이 쓰는 중이면 SELECT는 게시된
- *    상태(미확정 변경 없음)를 읽고 변경 문장은 RESULT_E_BUSY 오류 결과다.
+ *  - 트랜잭션 밖의 database_exec는 문장마다 자동 commit이다. SELECT로 시작하는 문장은 쓰기 거래와 writer 잠금 없이
+ *    게시된 상태(미확정 변경 없음)를 공유 잠금으로 읽는다(#260). 그래서 자동 commit 조회가 다른 writer를 BUSY로 만들지
+ *    않는다. 변경 문장은 쓰기 거래로 실행하며 다른 트랜잭션이 쓰는 중이면 RESULT_E_BUSY 오류 결과다.
  *  - 외부 HTTP·파일 부작용의 원자성은 제공하지 않는다.
  *
  * commit과 재시작

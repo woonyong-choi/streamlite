@@ -43,12 +43,49 @@ static database_exec_status_t error_from_txn(database_t *db, const database_exec
     }
 }
 
-/* 트랜잭션 밖에서 들어온 문장. 문장마다 자동 commit이다 */
+/*
+ * 문장이 SELECT로 시작하는지. 앞의 공백과 주석(-- 줄, 블록)은 건너뛴다. 확실하지 않으면(괄호로 시작하는 문장 등) false라
+ * 이전처럼 쓰기 거래로 실행한다. SELECT만 고르므로 잘못 골라도 읽기 실행이 변경 문장을 BUSY로 거절할 뿐 반영하지 않는다.
+ */
+static bool starts_with_select(const uint8_t *sql, size_t size)
+{
+    size_t i = 0;
+    for (;;) {
+        while (i < size && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r' || sql[i] == '\f')) i++;
+        if (i + 1 < size && sql[i] == '-' && sql[i + 1] == '-') {
+            while (i < size && sql[i] != '\n') i++;
+            continue;
+        }
+        if (i + 1 < size && sql[i] == '/' && sql[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < size && !(sql[i] == '*' && sql[i + 1] == '/')) i++;
+            if (i + 1 >= size) return false;
+            i += 2;
+            continue;
+        }
+        break;
+    }
+    static const char WORD[] = "select";
+    for (size_t k = 0; k < sizeof(WORD) - 1; k++) {
+        if (i + k >= size || (sql[i + k] | 0x20) != WORD[k]) return false;
+    }
+    size_t end = i + sizeof(WORD) - 1;
+    if (end == size) return true;
+    uint8_t next = sql[end];
+    return !((next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9') || next == '_' ||
+             next >= 0x80);
+}
+
+/*
+ * 트랜잭션 밖에서 들어온 문장. 문장마다 자동 commit이다. SELECT는 쓰기 거래와 writer 잠금 없이 게시된 상태를 공유
+ * 잠금으로 읽는다(읽기 스냅샷). 그래서 자동 commit 조회가 다른 핸들·프로세스의 쓰기를 막지 않는다.
+ */
 static database_exec_status_t layer_exec(void *ctx, database_t *db, const database_exec_options_t *opts,
                                          const uint8_t *sql, size_t size, const lexer_binding_t *binding,
                                          result_t **out)
 {
     layer_t *l = ctx;
+    if (sql != NULL && starts_with_select(sql, size)) return database_exec_read_only(db, opts, sql, size, binding, out);
     txn_begin_options_t begin = {TXN_ACCESS_READ_WRITE, TXN_ISOLATION_SNAPSHOT, layer_guarantee(l),
                                  l->autocommit_timeout_ms, NULL};
     txn_t *txn = NULL;
