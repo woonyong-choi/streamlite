@@ -551,11 +551,6 @@ uint64_t catalog_generation(const catalog_t *catalog)
     return catalog == NULL ? 0 : catalog->generation;
 }
 
-static void put_u16(uint8_t *bytes, uint16_t value)
-{
-    for (unsigned i = 0; i < 2; i++) bytes[i] = (uint8_t)(value >> (i * 8));
-}
-
 static uint32_t checksum(const uint8_t *bytes, size_t size)
 {
     uint32_t hash = 2166136261u;
@@ -566,9 +561,9 @@ static uint32_t checksum(const uint8_t *bytes, size_t size)
 static uint8_t *encode_table(uint8_t *at, const table_t *table)
 {
     le_put_u32(at, table->id);
-    put_u16(at + 4, (uint16_t)table->name_bytes);
-    put_u16(at + 6, table->primary_key_column);
-    put_u16(at + 8, (uint16_t)table->column_count);
+    le_put_u16(at + 4, (uint16_t)table->name_bytes);
+    le_put_u16(at + 6, table->primary_key_column);
+    le_put_u16(at + 8, (uint16_t)table->column_count);
     at[10] = table->has_identity ? FLAG_IDENTITY : 0;
     le_put_u64(at + 11, table->row_count);
     le_put_u64(at + 19, table->next_identity);
@@ -581,7 +576,7 @@ static uint8_t *encode_table(uint8_t *at, const table_t *table)
         const catalog_column_t *column = &table->columns[i];
         at[0] = (uint8_t)column->type;
         at[1] = (uint8_t)((column->not_null ? FLAG_NOT_NULL : 0) | (column->has_default ? FLAG_DEFAULT : 0));
-        put_u16(at + 2, (uint16_t)column->name_bytes);
+        le_put_u16(at + 2, (uint16_t)column->name_bytes);
         memcpy(at + COLUMN_FIXED_BYTES, column->name, column->name_bytes);
         at += COLUMN_FIXED_BYTES + column->name_bytes;
         if (!column->has_default) continue;
@@ -611,8 +606,8 @@ catalog_status_t catalog_encode(const catalog_t *catalog, uint8_t **bytes, size_
     uint8_t *buffer = malloc(total);
     if (buffer == NULL) return CATALOG_NOMEM;
     memcpy(buffer, "SLCT", 4);
-    put_u16(buffer + 4, FORMAT_VERSION);
-    put_u16(buffer + 6, 0);
+    le_put_u16(buffer + 4, FORMAT_VERSION);
+    le_put_u16(buffer + 6, 0);
     le_put_u32(buffer + 8, (uint32_t)total);
     le_put_u64(buffer + 12, catalog->generation);
     le_put_u32(buffer + 20, catalog->next_table_id);
@@ -624,8 +619,8 @@ catalog_status_t catalog_encode(const catalog_t *catalog, uint8_t **bytes, size_
     for (size_t i = 0; i < catalog->index_count; i++) {
         const index_t *index = &catalog->indexes[i];
         le_put_u32(at, index->table_id);
-        put_u16(at + 4, index->column);
-        put_u16(at + 6, (uint16_t)index->name_bytes);
+        le_put_u16(at + 4, index->column);
+        le_put_u16(at + 6, (uint16_t)index->name_bytes);
         at[8] = (uint8_t)((index->unique ? INDEX_UNIQUE : 0) | (index->ordered ? INDEX_ORDERED : 0));
         le_put_u32(at + 9, index->root);
         memcpy(at + INDEX_FIXED_BYTES, index->name, index->name_bytes);
@@ -651,19 +646,12 @@ static bool take(reader_t *reader, size_t count, const uint8_t **out)
     return true;
 }
 
-static uint64_t get_le(const uint8_t *bytes, unsigned width)
-{
-    uint64_t value = 0;
-    for (unsigned i = 0; i < width; i++) value |= (uint64_t)bytes[i] << (i * 8);
-    return value;
-}
-
 /* 컬럼 하나를 읽어 spec에 옮긴다. 이름·기본값 바이트는 입력 buffer를 빌리고 기본값은 *value에 둔다. */
 static catalog_status_t read_column(reader_t *reader, catalog_column_spec_t *column, value_view_t *value)
 {
     const uint8_t *fixed, *name;
     if (!take(reader, COLUMN_FIXED_BYTES, &fixed)) return CATALOG_CORRUPT;
-    size_t name_bytes = (size_t)get_le(fixed + 2, 2);
+    size_t name_bytes = (size_t)le_get_u16(fixed + 2);
     if ((fixed[1] & ~(FLAG_NOT_NULL | FLAG_DEFAULT)) != 0 || !column_type_valid((value_type_t)fixed[0])) {
         return CATALOG_CORRUPT;
     }
@@ -679,13 +667,13 @@ static catalog_status_t read_column(reader_t *reader, catalog_column_spec_t *col
     value->type = (value_type_t)*type;
     if (value->type == VALUE_INTEGER || value->type == VALUE_REAL) {
         if (!take(reader, 8, &payload)) return CATALOG_CORRUPT;
-        uint64_t bits = get_le(payload, 8);
+        uint64_t bits = le_get_u64(payload);
         if (value->type == VALUE_INTEGER) value->integer = (int64_t)bits;
         else memcpy(&value->real, &bits, sizeof(bits));
     } else {
         const uint8_t *length;
         if (!take(reader, 4, &length)) return CATALOG_CORRUPT;
-        value->size_bytes = (size_t)get_le(length, 4);
+        value->size_bytes = (size_t)le_get_u32(length);
         if (value->size_bytes > CATALOG_DEFAULT_MAX_BYTES || !take(reader, value->size_bytes, &payload)) {
             return CATALOG_CORRUPT;
         }
@@ -700,12 +688,12 @@ static catalog_status_t read_table(reader_t *reader, catalog_t *catalog)
 {
     const uint8_t *fixed, *name;
     if (!take(reader, TABLE_FIXED_BYTES, &fixed)) return CATALOG_CORRUPT;
-    catalog_table_id_t id = (catalog_table_id_t)get_le(fixed, 4);
-    size_t name_bytes = (size_t)get_le(fixed + 4, 2);
-    size_t column_count = (size_t)get_le(fixed + 8, 2);
+    catalog_table_id_t id = (catalog_table_id_t)le_get_u32(fixed);
+    size_t name_bytes = (size_t)le_get_u16(fixed + 4);
+    size_t column_count = (size_t)le_get_u16(fixed + 8);
     if (fixed[10] > FLAG_IDENTITY) return CATALOG_CORRUPT;
     bool has_identity = fixed[10] == FLAG_IDENTITY;
-    uint64_t next_identity = get_le(fixed + 19, 8);
+    uint64_t next_identity = le_get_u64(fixed + 19);
     if (id == CATALOG_NO_TABLE || id >= catalog->next_table_id) return CATALOG_CORRUPT;
     if (catalog->count > 0 && catalog->tables[catalog->count - 1].id >= id) return CATALOG_CORRUPT;
     if (column_count < 1 || column_count > CATALOG_MAX_COLUMNS) return CATALOG_CORRUPT;
@@ -725,7 +713,7 @@ static catalog_status_t read_table(reader_t *reader, catalog_t *catalog)
         status = read_column(reader, &columns[i], &defaults[i]);
     }
     catalog_table_spec_t spec = {(const char *)name, name_bytes, columns, column_count,
-                                 (uint16_t)get_le(fixed + 6, 2), has_identity};
+                                 le_get_u16(fixed + 6), has_identity};
     if (status == CATALOG_OK) status = check_spec(&spec, CATALOG_MAX_COLUMNS) == CATALOG_OK ? CATALOG_OK : CATALOG_CORRUPT;
     if (status == CATALOG_OK) {
         bool identity_ok = has_identity ? next_identity >= 1 && next_identity <= IDENTITY_END
@@ -742,10 +730,10 @@ static catalog_status_t read_table(reader_t *reader, catalog_t *catalog)
     free(columns);
     free(defaults);
     if (status != CATALOG_OK) return status;
-    table.row_count = get_le(fixed + 11, 8);
+    table.row_count = le_get_u64(fixed + 11);
     table.next_identity = next_identity;
-    table.heap_root = (uint32_t)get_le(fixed + 27, 4);
-    table.primary_root = (uint32_t)get_le(fixed + 31, 4);
+    table.heap_root = le_get_u32(fixed + 27);
+    table.primary_root = le_get_u32(fixed + 31);
     catalog->tables[catalog->count++] = table;
     catalog->encoded_bytes += table.encoded_bytes;
     return CATALOG_OK;
@@ -769,11 +757,11 @@ static catalog_status_t check_envelope(const uint8_t *bytes, size_t size)
     if (size < HEADER_BYTES + CHECKSUM_BYTES) return CATALOG_CORRUPT;
     if (size > CATALOG_MAX_ENCODED_BYTES) return CATALOG_LIMIT;
     if (memcmp(bytes, "SLCT", 4) != 0) return CATALOG_CORRUPT;
-    uint64_t version = get_le(bytes + 4, 2);
+    uint64_t version = le_get_u16(bytes + 4);
     if (version != FORMAT_VERSION) return CATALOG_UNSUPPORTED;
-    if (get_le(bytes + 6, 2) != 0) return CATALOG_CORRUPT;
-    if (get_le(bytes + 8, 4) != size) return CATALOG_CORRUPT;
-    if (get_le(bytes + size - CHECKSUM_BYTES, 4) != checksum(bytes, size - CHECKSUM_BYTES)) {
+    if (le_get_u16(bytes + 6) != 0) return CATALOG_CORRUPT;
+    if (le_get_u32(bytes + 8) != size) return CATALOG_CORRUPT;
+    if (le_get_u32(bytes + size - CHECKSUM_BYTES) != checksum(bytes, size - CHECKSUM_BYTES)) {
         return CATALOG_CORRUPT;
     }
     return CATALOG_OK;
@@ -784,14 +772,14 @@ catalog_status_t catalog_decode(const uint8_t *bytes, size_t size, catalog_t **o
     if (out == NULL || (bytes == NULL && size > 0)) return CATALOG_INVALID;
     catalog_status_t status = check_envelope(bytes, size);
     if (status != CATALOG_OK) return status;
-    size_t table_count = (size_t)get_le(bytes + 24, 4);
+    size_t table_count = (size_t)le_get_u32(bytes + 24);
     size_t payload = size - HEADER_BYTES - CHECKSUM_BYTES;
     if (table_count > payload / MIN_TABLE_BYTES) return CATALOG_CORRUPT;
     catalog_t *catalog;
     status = catalog_open_empty(&catalog);
     if (status != CATALOG_OK) return status;
     catalog->generation = 0;
-    catalog->next_table_id = (uint32_t)get_le(bytes + 20, 4);
+    catalog->next_table_id = le_get_u32(bytes + 20);
     if (catalog->next_table_id == CATALOG_NO_TABLE) status = CATALOG_CORRUPT;
     if (status == CATALOG_OK && table_count > 0) {
         catalog->tables = malloc(table_count * sizeof(*catalog->tables));
@@ -806,7 +794,7 @@ catalog_status_t catalog_decode(const uint8_t *bytes, size_t size, catalog_t **o
         const uint8_t *count_bytes;
         if (!take(&reader, INDEX_COUNT_BYTES, &count_bytes)) status = CATALOG_CORRUPT;
         else {
-            size_t index_count = (size_t)get_le(count_bytes, 4);
+            size_t index_count = (size_t)le_get_u32(count_bytes);
             if (index_count > CATALOG_MAX_INDEXES ||
                 index_count > reader.left / (INDEX_FIXED_BYTES + 1u)) status = CATALOG_CORRUPT;
             for (size_t i = 0; i < index_count && status == CATALOG_OK; i++) {
@@ -815,17 +803,17 @@ catalog_status_t catalog_decode(const uint8_t *bytes, size_t size, catalog_t **o
                     status = CATALOG_CORRUPT;
                     break;
                 }
-                size_t name_bytes = (size_t)get_le(fixed + 6, 2);
+                size_t name_bytes = (size_t)le_get_u16(fixed + 6);
                 if (fixed[8] > (INDEX_UNIQUE | INDEX_ORDERED) || !take(&reader, name_bytes, &name)) {
                     status = CATALOG_CORRUPT;
                     break;
                 }
-                status = catalog_add_index(catalog, (catalog_table_id_t)get_le(fixed, 4),
+                status = catalog_add_index(catalog, (catalog_table_id_t)le_get_u32(fixed),
                                            (const char *)name, name_bytes,
-                                           (uint16_t)get_le(fixed + 4, 2), (fixed[8] & INDEX_UNIQUE) != 0,
+                                           le_get_u16(fixed + 4), (fixed[8] & INDEX_UNIQUE) != 0,
                                            (fixed[8] & INDEX_ORDERED) != 0);
                 if (status == CATALOG_OK) {
-                    catalog->indexes[catalog->index_count - 1].root = (uint32_t)get_le(fixed + 9, 4);
+                    catalog->indexes[catalog->index_count - 1].root = le_get_u32(fixed + 9);
                 } else if (status != CATALOG_NOMEM) status = CATALOG_CORRUPT;
             }
         }
@@ -833,7 +821,7 @@ catalog_status_t catalog_decode(const uint8_t *bytes, size_t size, catalog_t **o
     if (status == CATALOG_OK && (reader.left != 0 || catalog->encoded_bytes != size)) {
         status = CATALOG_CORRUPT;
     }
-    if (status == CATALOG_OK) catalog->generation = get_le(bytes + 12, 8);
+    if (status == CATALOG_OK) catalog->generation = le_get_u64(bytes + 12);
     if (status == CATALOG_OK) status = check_table_names_unique(catalog);
     if (status != CATALOG_OK) {
         catalog_close(catalog);

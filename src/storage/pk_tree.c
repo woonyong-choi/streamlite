@@ -3,6 +3,8 @@
 #include "storage/pk_tree.h"
 #include "storage/le.h"
 
+#include "index_tree_internal.h"
+
 #define LEVEL_ANY (-1)
 
 /* 가득 찬 노드에 항목 하나를 더 끼워 넣어도 넘치지 않도록 항목 하나만큼 여유를 둔다. */
@@ -53,7 +55,7 @@ static heap_locator_t locator_at(const node_t *node, uint32_t index)
 {
     const uint8_t *entry = node->body + PK_TREE_HEADER_BYTES + (size_t)index * PK_TREE_LEAF_ENTRY_BYTES;
     return (heap_locator_t){le_get_u32(entry + 8),
-                            (uint16_t)((uint16_t)entry[12] | (uint16_t)entry[13] << 8)};
+                            le_get_u16(entry + 12)};
 }
 
 static void set_leaf(node_t *node, uint32_t index, int64_t key, heap_locator_t locator)
@@ -61,8 +63,7 @@ static void set_leaf(node_t *node, uint32_t index, int64_t key, heap_locator_t l
     uint8_t *entry = entry_at(node, index);
     le_put_u64(entry, (uint64_t)key);
     le_put_u32(entry + 8, locator.directory_index);
-    entry[12] = (uint8_t)locator.slot;
-    entry[13] = (uint8_t)(locator.slot >> 8);
+    le_put_u16(entry + 12, locator.slot);
     entry[14] = 0;
     entry[15] = 0;
 }
@@ -134,7 +135,7 @@ static pk_status_t load_node(const pk_tree_io_t *io, uint32_t table_id, uint32_t
     pk_status_t status = io->read(io->context, page, node->body);
     if (status != PK_OK) return status;
     if (memcmp(node->body, PK_TREE_MAGIC, 4) != 0 ||
-        ((uint32_t)node->body[4] | (uint32_t)node->body[5] << 8) != PK_TREE_VERSION ||
+        le_get_u16(node->body + 4) != PK_TREE_VERSION ||
         le_get_u32(node->body + 8) != table_id) {
         return PK_CORRUPT;
     }
@@ -145,10 +146,7 @@ static pk_status_t load_node(const pk_tree_io_t *io, uint32_t table_id, uint32_t
     return PK_OK;
 }
 
-/*
- * 노드를 쓴다. old_page가 이 batch가 만든 페이지면 제자리에, 아니면 새 페이지에 쓰고 옛 페이지를 놓는다.
- * old_page가 PAGE_FILE_NO_PAGE면 새 노드다.
- */
+/* 노드 header를 채워 COW로 쓴다(index_tree_write_node). old_page가 PAGE_FILE_NO_PAGE면 새 노드다. */
 static pk_status_t store_node(const pk_tree_io_t *io, uint32_t table_id, node_t *node, uint32_t old_page,
                               uint32_t *page)
 {
@@ -162,21 +160,7 @@ static pk_status_t store_node(const pk_tree_io_t *io, uint32_t table_id, node_t 
     le_put_u32(node->body + 12, node->count);
     le_put_u32(node->body + 16, node->stamp);
     memset(node->body + 20, 0, 4);
-
-    uint32_t target = old_page;
-    bool in_place = old_page != PAGE_FILE_NO_PAGE && io->is_fresh(io->context, old_page);
-    if (!in_place) {
-        pk_status_t allocated = io->allocate(io->context, &target);
-        if (allocated != PK_OK) return allocated;
-    }
-    pk_status_t written = io->write(io->context, target, node->body);
-    if (written != PK_OK) return written;
-    if (!in_place && old_page != PAGE_FILE_NO_PAGE) {
-        pk_status_t released = io->release(io->context, old_page);
-        if (released != PK_OK) return released;
-    }
-    *page = target;
-    return PK_OK;
+    return index_tree_write_node(io, node->body, old_page, page);
 }
 
 static void describe(change_t *out, const node_t *node)

@@ -333,8 +333,8 @@ static bool orders_by_primary_key(const sqlstmt_select_t *select, const resolver
 }
 
 /*
- * 이 단계의 scan_rows가 행을 기본 키 오름차순으로 내는지. scan_rows와 같은 순서로 경로를 고른다: 기본 키 등가(행 하나),
- * 보조 색인 등가(유일이면 행 하나, ordered면 같은 값 안에서 기본 키 순서), 기본 키 구간(키 순서). 전체 스캔은 힙 순서다.
+ * 이 단계의 scan_rows가 고를 경로(scan_path_choose)가 행을 기본 키 오름차순으로 내는지. 맞는 행이 없는 조건(never)도
+ * 순서를 어기지 않는다.
  */
 static database_exec_status_t scan_follows_primary_key(join_t *join, join_level_t *step, bool *ordered)
 {
@@ -342,37 +342,22 @@ static database_exec_status_t scan_follows_primary_key(join_t *join, join_level_
     where_t where;
     database_exec_status_t status = join_probes(join, step, &where);
     if (status == DATABASE_EXEC_OK) {
-        heap_secondary_spec_t secondary;
-        if (where.never || key_probe(&step->view, step->heap, &where) != SIZE_MAX) *ordered = true;
-        else if (secondary_probe(join->db, step->id, &where, &secondary) != SIZE_MAX) {
-            *ordered = secondary.unique || secondary.ordered;   /* scan_rows는 구간보다 보조 색인을 먼저 쓴다 */
-        } else {
-            *ordered = key_range(&step->view, step->heap, &where) != SIZE_MAX ||
-                       text_key_range(&step->view, step->heap, &where) != SIZE_MAX;
-        }
+        scan_path_t path = scan_path_choose(join->db, &step->view, step->id, step->heap, &where, true);
+        *ordered = where.never || scan_path_follows_primary_key(&path);
     }
     where_clear(join->db, &where);
     return status;
 }
 
-/*
- * 이 단계의 scan_rows가 행을 정수 열 column의 보조 색인 순서(값, 같은 값 안에서는 기본 키)로 내는지. scan_rows는 기본 키
- * 등가·보조 색인 등가·기본 키 구간·TEXT 키 구간을 먼저 쓰므로 그것이 없고 그 열의 보조 색인 구간을 쓸 때만이다.
- */
+/* 이 단계의 scan_rows가 고를 경로가 행을 정수 열 column의 보조 색인 순서로 내는지 */
 static database_exec_status_t scan_follows_index(join_t *join, join_level_t *step, size_t column, bool *ordered)
 {
     *ordered = false;
     where_t where;
     database_exec_status_t status = join_probes(join, step, &where);
     if (status == DATABASE_EXEC_OK && !where.never) {
-        heap_secondary_spec_t secondary;
-        if (key_probe(&step->view, step->heap, &where) == SIZE_MAX &&
-            secondary_probe(join->db, step->id, &where, &secondary) == SIZE_MAX &&
-            key_range(&step->view, step->heap, &where) == SIZE_MAX &&
-            text_key_range(&step->view, step->heap, &where) == SIZE_MAX) {
-            size_t r = secondary_range(join->db, &step->view, step->id, &where, &secondary);
-            *ordered = r != SIZE_MAX && secondary.column == column;
-        }
+        scan_path_t path = scan_path_choose(join->db, &step->view, step->id, step->heap, &where, true);
+        *ordered = scan_path_follows_index(&path, column);
     }
     where_clear(join->db, &where);
     return status;

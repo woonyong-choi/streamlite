@@ -194,8 +194,9 @@ static bool collect_range_match(void *context, heap_locator_t locator)
 }
 
 /*
- * WHERE에 맞는 행을 모은다. 기본 키·보조 색인 탐침이나 기본 키 구간이 있으면 그것으로 후보를 찾고, 없으면 전체를 훑는다.
- * scan_other가 NULL이 아니면 훑는 동안 맞지 않은 행마다 부른다(기본 키 갱신의 중복 검사용).
+ * WHERE에 맞는 행을 모은다. 경로는 scan_path_choose가 고르며 보조 색인 구간은 쓰지 않는다(force_scan이면 전체 스캔).
+ * 모은 뒤에 고치므로 갱신이 경로를 다시 지나지 않는다. scan_other가 NULL이 아니면 훑는 동안 맞지 않은 행마다
+ * 부른다(기본 키 갱신의 중복 검사용).
  */
 static database_exec_status_t collect_matches(database_t *db, const catalog_table_view_t *view, catalog_table_id_t id,
                                               heap_t *heap, const where_t *where, value_t *row, bool keep_values,
@@ -205,13 +206,12 @@ static database_exec_status_t collect_matches(database_t *db, const catalog_tabl
 {
     size_t n = view->column_count;
     if (where->never && scan_other == NULL) return DATABASE_EXEC_OK;
-    size_t by_key = force_scan ? SIZE_MAX : key_probe(view, heap, where);
-    heap_secondary_spec_t secondary;
-    size_t by_secondary = force_scan || by_key != SIZE_MAX ? SIZE_MAX : secondary_probe(db, id, where, &secondary);
-    if (by_key != SIZE_MAX) {
+    scan_path_t path = {SCAN_PATH_FULL, SIZE_MAX, {0}};
+    if (!force_scan) path = scan_path_choose(db, view, id, heap, where, false);
+    if (path.kind == SCAN_PATH_KEY) {
         bool is_hit;
         heap_locator_t at;
-        database_exec_status_t status = locate_key(db, heap, &where->probes[by_key].literal.view, &is_hit, &at);
+        database_exec_status_t status = locate_key(db, heap, &where->probes[path.at].literal.view, &is_hit, &at);
         if (status != DATABASE_EXEC_OK || !is_hit) return status;
         heap_status_t got = heap_get(heap, at, row);
         if (got != HEAP_OK) return heap_failure(db, got, "lookup");
@@ -223,28 +223,26 @@ static database_exec_status_t collect_matches(database_t *db, const catalog_tabl
         heap_release_row(heap, row);
         return status;
     }
-    if (by_secondary != SIZE_MAX) {
-        secondary_match_t scan = {db, heap, where, &where->probes[by_secondary], row, matches, keep_values,
+    if (path.kind == SCAN_PATH_SECONDARY) {
+        secondary_match_t scan = {db, heap, where, &where->probes[path.at], row, matches, keep_values,
                                   DATABASE_EXEC_OK};
-        heap_status_t visited = heap_secondary_visit_equal(heap, secondary, &where->probes[by_secondary].literal.view,
+        heap_status_t visited = heap_secondary_visit_equal(heap, path.index, &where->probes[path.at].literal.view,
                                                            collect_secondary_match, &scan);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index lookup");
     }
-    size_t by_range = force_scan ? SIZE_MAX : key_range(view, heap, where);
-    if (by_range != SIZE_MAX) {
+    if (path.kind == SCAN_PATH_KEY_RANGE) {
         range_match_t scan = {db, heap, where, row, matches, keep_values, DATABASE_EXEC_OK};
         bool stopped = false;
-        heap_status_t visited = heap_visit_key_range(heap, where->ranges[by_range].low, where->ranges[by_range].high,
+        heap_status_t visited = heap_visit_key_range(heap, where->ranges[path.at].low, where->ranges[path.at].high,
                                                      collect_range_match, &scan, &stopped);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");
     }
-    size_t by_text = force_scan ? SIZE_MAX : text_key_range(view, heap, where);
-    if (by_text != SIZE_MAX) {
+    if (path.kind == SCAN_PATH_TEXT_RANGE) {
         range_match_t scan = {db, heap, where, row, matches, keep_values, DATABASE_EXEC_OK};
         bool stopped = false;
-        heap_status_t visited = visit_text_range(heap, &where->text_ranges[by_text], collect_range_match, &scan, &stopped);
+        heap_status_t visited = visit_text_range(heap, &where->text_ranges[path.at], collect_range_match, &scan, &stopped);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");
     }

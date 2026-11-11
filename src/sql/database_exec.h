@@ -152,6 +152,29 @@ typedef struct cte_scope {
 typedef int (*row_compare_fn)(const void *ctx, const value_t *a, const value_t *b);
 
 /*
+ * SQL 정렬의 유일한 구현인 안정 병합 정렬을 원소 형식별 함수 name으로 정의한다. cmp(ctx, 뒤, 앞)가 음수일 때만 뒤 원소를
+ * 앞에 두므로 동률은 입력 순서를 지킨다(ORDER BY 동률·DISTINCT·GROUP BY의 결과 순서가 여기에 기댄다). scratch는
+ * count개 자리이며 이 함수는 할당하지 않는다.
+ */
+#define DEFINE_STABLE_SORT(name, elem_t, cmp_t)                                                              \
+    void name(elem_t *items, elem_t *scratch, size_t count, cmp_t cmp, const void *ctx)                      \
+    {                                                                                                        \
+        for (size_t width = 1; width < count; width *= 2) {                                                  \
+            for (size_t lo = 0; lo < count; lo += 2 * width) {                                               \
+                size_t mid = lo + width < count ? lo + width : count;                                        \
+                size_t hi = lo + 2 * width < count ? lo + 2 * width : count;                                 \
+                size_t i = lo, j = mid, k = lo;                                                              \
+                while (i < mid && j < hi) {                                                                  \
+                    scratch[k++] = cmp(ctx, items[j], items[i]) < 0 ? items[j++] : items[i++];               \
+                }                                                                                            \
+                while (i < mid) scratch[k++] = items[i++];                                                   \
+                while (j < hi) scratch[k++] = items[j++];                                                    \
+            }                                                                                                \
+            memcpy(items, scratch, count * sizeof(*items));                                                  \
+        }                                                                                                    \
+    }
+
+/*
  * 바깥 질의 범위. 서브쿼리 안의 열 이름이 자기 FROM에 없으면 여기서 찾고, 값은 params[바깥 칸]에서 읽는다.
  * resolver가 NULL이면 바깥 열을 볼 수 없다(그룹 질의의 출력·FROM 서브쿼리·WITH 등).
  */
@@ -484,6 +507,34 @@ heap_status_t visit_text_range(heap_t *heap, const text_range_t *range,
                                bool (*visit)(void *, heap_locator_t), void *context, bool *stopped);
 size_t secondary_probe(database_t *db, catalog_table_id_t table_id, const where_t *where,
                               heap_secondary_spec_t *spec);
+
+/* 한 테이블을 WHERE로 읽는 접근 경로. 앞의 것일수록 먼저 고른다 */
+typedef enum {
+    SCAN_PATH_KEY,         /* 기본 키 등가: 행 하나 */
+    SCAN_PATH_SECONDARY,   /* 보조 색인 등가: 유일이면 행 하나, ordered면 같은 값 안에서 기본 키 순서 */
+    SCAN_PATH_KEY_RANGE,   /* 정수 기본 키 구간: 키 순서 */
+    SCAN_PATH_TEXT_RANGE,  /* TEXT 기본 키 구간: 키 순서 */
+    SCAN_PATH_INDEX_RANGE, /* 정수 열 보조 색인 구간: 값 순서, 같은 값 안에서는 기본 키 순서 */
+    SCAN_PATH_FULL         /* 전체 스캔: heap 순서 */
+} scan_path_kind_t;
+
+typedef struct {
+    scan_path_kind_t kind;
+    size_t at;                   /* kind에 맞는 where의 probes·ranges·text_ranges 번호. FULL이면 SIZE_MAX */
+    heap_secondary_spec_t index; /* SECONDARY·INDEX_RANGE가 쓰는 색인 */
+} scan_path_t;
+
+/*
+ * WHERE의 탐침·구간으로 접근 경로를 고른다. 기본 키 등가, 보조 색인 등가, 정수 기본 키 구간, TEXT 기본 키 구간,
+ * (index_range면) 정수 열 보조 색인 구간, 전체 스캔 순서다. 경로 선택과 그 경로의 행 순서는 여기와
+ * scan_path_follows_*에서만 정한다. SELECT·JOIN의 scan_rows와 ORDER BY 생략 판단, UPDATE의 수집이 함께 쓴다.
+ */
+scan_path_t scan_path_choose(database_t *db, const catalog_table_view_t *view, catalog_table_id_t id,
+                             const heap_t *heap, const where_t *where, bool index_range);
+/* 이 경로가 행을 기본 키 오름차순으로 내는지 */
+bool scan_path_follows_primary_key(const scan_path_t *path);
+/* 이 경로가 행을 정수 열 column의 보조 색인 순서(값, 같은 값 안에서는 기본 키)로 내는지 */
+bool scan_path_follows_index(const scan_path_t *path, size_t column);
 database_exec_status_t locate_key(database_t *db, heap_t *heap, const value_view_t *key, bool *is_hit,
                                          heap_locator_t *at);
 database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *table, catalog_table_id_t id,

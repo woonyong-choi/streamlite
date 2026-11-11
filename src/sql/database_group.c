@@ -386,21 +386,13 @@ void group_rows_free(group_rows_t *rows)
     memset(rows, 0, sizeof(*rows));
 }
 
-/* 안정 병합 정렬. cmp는 행 포인터 둘을 비교한다 */
-void sort_rows(value_t **rows, value_t **scratch, size_t count, row_compare_fn cmp, const void *ctx)
-{
-    for (size_t width = 1; width < count; width *= 2) {
-        for (size_t lo = 0; lo < count; lo += 2 * width) {
-            size_t mid = lo + width < count ? lo + width : count;
-            size_t hi = lo + 2 * width < count ? lo + 2 * width : count;
-            size_t i = lo, j = mid, k = lo;
-            while (i < mid && j < hi) scratch[k++] = cmp(ctx, rows[j], rows[i]) < 0 ? rows[j++] : rows[i++];
-            while (i < mid) scratch[k++] = rows[i++];
-            while (j < hi) scratch[k++] = rows[j++];
-        }
-        memcpy(rows, scratch, count * sizeof(*rows));
-    }
-}
+/* 행 포인터의 안정 정렬. cmp는 행 포인터 둘을 비교한다 */
+DEFINE_STABLE_SORT(sort_rows, value_t *, row_compare_fn)
+
+typedef int (*group_compare_fn)(const void *ctx, const group_t *a, const group_t *b);
+
+/* 그룹 포인터의 안정 정렬. 행과 원소 형식만 다르고 sort_rows와 같은 정렬이다 */
+static DEFINE_STABLE_SORT(sort_group_ptrs, group_t *, group_compare_fn)
 
 static int compare_group_keys(const void *ctx, const value_t *a, const value_t *b)
 {
@@ -410,6 +402,11 @@ static int compare_group_keys(const void *ctx, const value_t *a, const value_t *
         if (order != 0) return order;
     }
     return 0;
+}
+
+static int compare_groups(const void *ctx, const group_t *a, const group_t *b)
+{
+    return compare_group_keys(ctx, a->cells, b->cells);
 }
 
 int compare_first_value(const void *ctx, const value_t *a, const value_t *b)
@@ -474,24 +471,6 @@ static database_exec_status_t agg_finish(database_t *db, const aggregate_t *agg,
     return DATABASE_EXEC_OK;
 }
 
-/* 그룹을 키 순서로 안정 병합 정렬한다 */
-static void sort_groups(const group_plan_t *plan, group_t **groups, group_t **scratch, size_t count)
-{
-    for (size_t width = 1; width < count; width *= 2) {
-        for (size_t lo = 0; lo < count; lo += 2 * width) {
-            size_t mid = lo + width < count ? lo + width : count;
-            size_t hi = lo + 2 * width < count ? lo + 2 * width : count;
-            size_t i = lo, j = mid, k = lo;
-            while (i < mid && j < hi) {
-                scratch[k++] = compare_group_keys(plan, groups[j]->cells, groups[i]->cells) < 0 ? groups[j++] : groups[i++];
-            }
-            while (i < mid) scratch[k++] = groups[i++];
-            while (j < hi) scratch[k++] = groups[j++];
-        }
-        memcpy(groups, scratch, count * sizeof(*groups));
-    }
-}
-
 /* 그룹을 키 순서로 정렬해 집계를 마무리하고 HAVING을 통과한 그룹 행을 내보낸다 */
 database_exec_status_t group_flush(database_t *db, const group_plan_t *plan, group_rows_t *rows,
                                           const sqleval_prog_t *having, select_ctx_t *ctx)
@@ -507,7 +486,7 @@ database_exec_status_t group_flush(database_t *db, const group_plan_t *plan, gro
     if (count > 1) {
         group_t **scratch = q_malloc(db, count * sizeof(group_t *));
         if (scratch == NULL) return DATABASE_EXEC_NOMEM;
-        sort_groups(plan, rows->groups, scratch, count);
+        sort_group_ptrs(rows->groups, scratch, count, compare_groups, plan);  /* 그룹을 키 순서로 */
         q_free(db, scratch, count * sizeof(group_t *));
     }
     for (size_t i = 0; i < count && status == DATABASE_EXEC_OK && !ctx->done; i++) {

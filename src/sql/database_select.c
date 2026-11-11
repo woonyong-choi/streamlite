@@ -156,8 +156,9 @@ database_exec_status_t select_emit(select_ctx_t *ctx, const value_t *row)
     return DATABASE_EXEC_OK;
 }
 
-static int compare_outputs(const select_ctx_t *ctx, const value_t *a, const value_t *b)
+static int compare_outputs(const void *context, const value_t *a, const value_t *b)
 {
+    const select_ctx_t *ctx = context;
     for (size_t i = 0; i < ctx->out_count; i++) {
         int order = sqleval_compare(&a[i].view, &b[i].view);
         if (order != 0) return order;
@@ -165,8 +166,9 @@ static int compare_outputs(const select_ctx_t *ctx, const value_t *a, const valu
     return 0;
 }
 
-static int compare_keys_of(const select_ctx_t *ctx, const value_t *a, const value_t *b)
+static int compare_keys_of(const void *context, const value_t *a, const value_t *b)
 {
+    const select_ctx_t *ctx = context;
     for (size_t k = 0; k < ctx->key_count; k++) {
         const select_key_t *key = &ctx->keys[k];
         const value_view_t *x = &a[key->slot].view, *y = &b[key->slot].view;
@@ -181,25 +183,6 @@ static int compare_keys_of(const select_ctx_t *ctx, const value_t *a, const valu
     return 0;
 }
 
-/* 안정 병합 정렬. scratch는 count개 자리 */
-static void merge_sort(const select_ctx_t *ctx, value_t **rows, value_t **scratch, size_t count, bool by_keys)
-{
-    for (size_t width = 1; width < count; width *= 2) {
-        for (size_t lo = 0; lo < count; lo += 2 * width) {
-            size_t mid = lo + width < count ? lo + width : count;
-            size_t hi = lo + 2 * width < count ? lo + 2 * width : count;
-            size_t i = lo, j = mid, k = lo;
-            while (i < mid && j < hi) {
-                int order = by_keys ? compare_keys_of(ctx, rows[j], rows[i]) : compare_outputs(ctx, rows[j], rows[i]);
-                scratch[k++] = order < 0 ? rows[j++] : rows[i++];
-            }
-            while (i < mid) scratch[k++] = rows[i++];
-            while (j < hi) scratch[k++] = rows[j++];
-        }
-        memcpy(rows, scratch, count * sizeof(*rows));
-    }
-}
-
 /* 모은 행에 DISTINCT·ORDER BY를 적용한다 */
 static database_exec_status_t select_settle(select_ctx_t *ctx)
 {
@@ -210,7 +193,7 @@ static database_exec_status_t select_settle(select_ctx_t *ctx)
         value_t **scratch = q_malloc(db, scratch_bytes);
         if (scratch == NULL) return DATABASE_EXEC_NOMEM;
         if (ctx->distinct) {
-            merge_sort(ctx, ctx->rows, scratch, count, false);
+            sort_rows(ctx->rows, scratch, count, compare_outputs, ctx);
             size_t kept = 1, width = select_width(ctx);
             for (size_t i = 1; i < count; i++) {
                 if (compare_outputs(ctx, ctx->rows[kept - 1], ctx->rows[i]) == 0) {
@@ -222,7 +205,7 @@ static database_exec_status_t select_settle(select_ctx_t *ctx)
             }
             ctx->row_count = count = kept;
         }
-        if (ctx->key_count > 0) merge_sort(ctx, ctx->rows, scratch, count, true);
+        if (ctx->key_count > 0) sort_rows(ctx->rows, scratch, count, compare_keys_of, ctx);
         q_free(db, scratch, scratch_bytes);
     }
     return DATABASE_EXEC_OK;
@@ -365,6 +348,36 @@ size_t secondary_range(database_t *db, const catalog_table_view_t *view, catalog
     return SIZE_MAX;
 }
 
+scan_path_t scan_path_choose(database_t *db, const catalog_table_view_t *view, catalog_table_id_t id,
+                             const heap_t *heap, const where_t *where, bool index_range)
+{
+    scan_path_t path = {SCAN_PATH_FULL, SIZE_MAX, {0}};
+    if ((path.at = key_probe(view, heap, where)) != SIZE_MAX) path.kind = SCAN_PATH_KEY;
+    else if ((path.at = secondary_probe(db, id, where, &path.index)) != SIZE_MAX) path.kind = SCAN_PATH_SECONDARY;
+    else if ((path.at = key_range(view, heap, where)) != SIZE_MAX) path.kind = SCAN_PATH_KEY_RANGE;
+    else if ((path.at = text_key_range(view, heap, where)) != SIZE_MAX) path.kind = SCAN_PATH_TEXT_RANGE;
+    else if (index_range && (path.at = secondary_range(db, view, id, where, &path.index)) != SIZE_MAX) {
+        path.kind = SCAN_PATH_INDEX_RANGE;
+    }
+    return path;
+}
+
+bool scan_path_follows_primary_key(const scan_path_t *path)
+{
+    switch (path->kind) {
+        case SCAN_PATH_KEY:
+        case SCAN_PATH_KEY_RANGE:
+        case SCAN_PATH_TEXT_RANGE: return true;
+        case SCAN_PATH_SECONDARY: return path->index.unique || path->index.ordered;
+        default: return false;
+    }
+}
+
+bool scan_path_follows_index(const scan_path_t *path, size_t column)
+{
+    return path->kind == SCAN_PATH_INDEX_RANGE && path->index.column == column;
+}
+
 database_exec_status_t locate_key(database_t *db, heap_t *heap, const value_view_t *key, bool *is_hit,
                                          heap_locator_t *at)
 {
@@ -420,7 +433,7 @@ static bool scan_range_row(void *context, heap_locator_t locator)
     return scan->status == DATABASE_EXEC_OK && !*scan->sink->stop;
 }
 
-/* 기본 키·보조 색인 탐침이나 기본 키 구간이 있으면 그것으로, 없으면 전체를 훑는다 */
+/* scan_path_choose가 고른 경로로 WHERE에 맞는 행을 sink에 넘긴다 */
 database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *table, catalog_table_id_t id,
                                         heap_t *heap, const where_t *where, const bool *needed, value_t *row,
                                         const row_sink_t *sink)
@@ -428,13 +441,11 @@ database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *tab
     if (*sink->stop || where->never) return DATABASE_EXEC_OK;
     bool matched = false;
     size_t n = table->column_count;
-    size_t by_key = key_probe(table, heap, where);
-    heap_secondary_spec_t secondary;
-    size_t by_secondary = by_key == SIZE_MAX ? secondary_probe(db, id, where, &secondary) : SIZE_MAX;
-    if (by_key != SIZE_MAX) {
+    scan_path_t path = scan_path_choose(db, table, id, heap, where, true);
+    if (path.kind == SCAN_PATH_KEY) {
         bool is_hit;
         heap_locator_t at;
-        database_exec_status_t status = locate_key(db, heap, &where->probes[by_key].literal.view, &is_hit, &at);
+        database_exec_status_t status = locate_key(db, heap, &where->probes[path.at].literal.view, &is_hit, &at);
         if (status != DATABASE_EXEC_OK || !is_hit) return status;
         heap_status_t got = heap_get_projected(heap, at, needed, row);
         if (got != HEAP_OK) return heap_failure(db, got, "lookup");
@@ -443,38 +454,34 @@ database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *tab
         heap_release_row(heap, row);
         return status;
     }
-    if (by_secondary != SIZE_MAX) {
-        secondary_scan_t scan = {db, heap, where, &where->probes[by_secondary], row, needed, sink, DATABASE_EXEC_OK};
-        heap_status_t visited = heap_secondary_visit_equal(heap, secondary, &where->probes[by_secondary].literal.view,
+    if (path.kind == SCAN_PATH_SECONDARY) {
+        secondary_scan_t scan = {db, heap, where, &where->probes[path.at], row, needed, sink, DATABASE_EXEC_OK};
+        heap_status_t visited = heap_secondary_visit_equal(heap, path.index, &where->probes[path.at].literal.view,
                                                            scan_secondary_row, &scan);
         /* LIMIT을 채워 방문을 멈추면 색인은 멈춤을 NOMEM으로 알린다. 오류가 아니다 */
         if (scan.status != DATABASE_EXEC_OK || *sink->stop) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index lookup");
     }
-    size_t by_range = key_range(table, heap, where);
-    if (by_range != SIZE_MAX) {
+    if (path.kind == SCAN_PATH_KEY_RANGE) {
         range_scan_t scan = {db, heap, where, row, needed, sink, DATABASE_EXEC_OK};
         bool stopped = false;
-        heap_status_t visited = heap_visit_key_range(heap, where->ranges[by_range].low, where->ranges[by_range].high,
+        heap_status_t visited = heap_visit_key_range(heap, where->ranges[path.at].low, where->ranges[path.at].high,
                                                      scan_range_row, &scan, &stopped);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");
     }
-    size_t by_text = text_key_range(table, heap, where);
-    if (by_text != SIZE_MAX) {
+    if (path.kind == SCAN_PATH_TEXT_RANGE) {
         range_scan_t scan = {db, heap, where, row, needed, sink, DATABASE_EXEC_OK};
         bool stopped = false;
-        heap_status_t visited = visit_text_range(heap, &where->text_ranges[by_text], scan_range_row, &scan, &stopped);
+        heap_status_t visited = visit_text_range(heap, &where->text_ranges[path.at], scan_range_row, &scan, &stopped);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");
     }
-    heap_secondary_spec_t ranged;
-    size_t by_index_range = secondary_range(db, table, id, where, &ranged);
-    if (by_index_range != SIZE_MAX) {
+    if (path.kind == SCAN_PATH_INDEX_RANGE) {
         range_scan_t scan = {db, heap, where, row, needed, sink, DATABASE_EXEC_OK};
         bool stopped = false;
-        heap_status_t visited = heap_secondary_visit_range(heap, ranged, where->ranges[by_index_range].low,
-                                                           where->ranges[by_index_range].high, scan_range_row, &scan,
+        heap_status_t visited = heap_secondary_visit_range(heap, path.index, where->ranges[path.at].low,
+                                                           where->ranges[path.at].high, scan_range_row, &scan,
                                                            &stopped);
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");

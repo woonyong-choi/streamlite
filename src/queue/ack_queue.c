@@ -27,6 +27,7 @@
 
 #include "ack_queue_internal.h"
 #include "storage/checksum.h"
+#include "storage/le.h"
 
 #define META_COLS "id, state, ready_at, lease_until, fence, attempts"
 #define META_CELLS 6u
@@ -179,15 +180,22 @@ static ackq_status_t scan_meta(ackq_t *queue, ackq_scope_t *scope, const char *w
     return status != ACKQ_OK ? status : finished;
 }
 
-static ackq_status_t fetch_meta(ackq_t *queue, ackq_scope_t *scope, uint64_t id, meta_t *meta)
+/* 작업 한 행의 columns를 id로 읽는 SELECT를 실행한다. 결과 해석은 호출자가 한다. */
+static ackq_status_t select_by_id(ackq_t *queue, ackq_scope_t *scope, const char *columns, int64_t id,
+                                  result_t **result)
 {
     char sql[ACKQ_SQL_MAX];
+    snprintf(sql, sizeof(sql), "SELECT %s FROM %s WHERE id = ?", columns, queue->table);
+    value_view_t param = ackq_int(id);
+    return ackq_run(queue, scope, false, sql, &param, 1, result, NULL);
+}
+
+static ackq_status_t fetch_meta(ackq_t *queue, ackq_scope_t *scope, uint64_t id, meta_t *meta)
+{
     result_t *result = NULL;
     int64_t key;
     if (!ackq_to_i64(id, &key)) return ACKQ_NOT_FOUND;
-    snprintf(sql, sizeof(sql), "SELECT %s FROM %s WHERE id = ?", queue->due_column ? DUE_COLS : META_COLS, queue->table);
-    value_view_t param = ackq_int(key);
-    ackq_status_t status = ackq_run(queue, scope, false, sql, &param, 1, &result, NULL);
+    ackq_status_t status = select_by_id(queue, scope, queue->due_column ? DUE_COLS : META_COLS, key, &result);
     if (status != ACKQ_OK) return status;
     bool found = false;
     result_row_t row;
@@ -279,11 +287,8 @@ static ackq_status_t take_bytes(result_t *result, uint8_t **bytes, size_t *size)
 static ackq_status_t fetch_column(ackq_t *queue, ackq_scope_t *scope, const char *column, uint64_t id,
                                   uint8_t **bytes, size_t *size)
 {
-    char sql[ACKQ_SQL_MAX];
     result_t *result = NULL;
-    snprintf(sql, sizeof(sql), "SELECT %s FROM %s WHERE id = ?", column, queue->table);
-    value_view_t param = ackq_int((int64_t)id);
-    ackq_status_t status = ackq_run(queue, scope, false, sql, &param, 1, &result, NULL);
+    ackq_status_t status = select_by_id(queue, scope, column, (int64_t)id, &result);
     if (status != ACKQ_OK) return status;
     return take_bytes(result, bytes, size);
 }
@@ -301,11 +306,8 @@ static ackq_status_t run_returning_bytes(ackq_t *queue, ackq_scope_t *scope, con
 
 static ackq_status_t fetch_created(ackq_t *queue, ackq_scope_t *scope, uint64_t id, uint64_t *created)
 {
-    char sql[ACKQ_SQL_MAX];
     result_t *result = NULL;
-    snprintf(sql, sizeof(sql), "SELECT created_at FROM %s WHERE id = ?", queue->table);
-    value_view_t param = ackq_int((int64_t)id);
-    ackq_status_t status = ackq_run(queue, scope, false, sql, &param, 1, &result, NULL);
+    ackq_status_t status = select_by_id(queue, scope, "created_at", (int64_t)id, &result);
     if (status != ACKQ_OK) return status;
     bool found = false;
     result_row_t row;
@@ -679,9 +681,9 @@ static void payload_digest(const uint8_t *payload, size_t size, uint8_t out[DIGE
     uint32_t crc = crc32c(0, payload, size);
     uint64_t fnv = 0xcbf29ce484222325ull;
     for (size_t i = 0; i < size; i++) fnv = (fnv ^ payload[i]) * 0x100000001b3ull;
-    for (size_t i = 0; i < 8; i++) out[i] = (uint8_t)(length >> (8 * i));
-    for (size_t i = 0; i < 4; i++) out[8 + i] = (uint8_t)(crc >> (8 * i));
-    for (size_t i = 0; i < 8; i++) out[12 + i] = (uint8_t)(fnv >> (8 * i));
+    le_put_u64(out, length);
+    le_put_u32(out + 8, crc);
+    le_put_u64(out + 12, fnv);
 }
 
 /*
@@ -1279,9 +1281,7 @@ static ackq_status_t retain_key(ackq_t *queue, ackq_scope_t *scope, uint64_t id)
 {
     char sql[ACKQ_SQL_MAX];
     result_t *result = NULL;
-    snprintf(sql, sizeof(sql), "SELECT idem, payload FROM %s WHERE id = ?", queue->table);
-    value_view_t param = ackq_int((int64_t)id);
-    ackq_status_t status = ackq_run(queue, scope, false, sql, &param, 1, &result, NULL);
+    ackq_status_t status = select_by_id(queue, scope, "idem, payload", (int64_t)id, &result);
     if (status != ACKQ_OK) return status;
     char key[ACKQ_IDEM_KEY_MAX + 1] = "";
     uint8_t digest[DIGEST_BYTES];

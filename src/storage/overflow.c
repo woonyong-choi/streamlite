@@ -2,6 +2,7 @@
 #include <string.h>
 
 #include "storage/checksum.h"
+#include "storage/le.h"
 #include "storage/overflow.h"
 
 #define OVERFLOW_HEADER_BYTES 28u
@@ -14,18 +15,6 @@ typedef struct {
     uint32_t total;
     uint32_t head;
 } page_header_t;
-
-static void write_u32(uint8_t *bytes, uint32_t value)
-{
-    for (unsigned i = 0; i < 4; i++) bytes[i] = (uint8_t)(value >> (i * 8));
-}
-
-static uint32_t read_u32(const uint8_t *bytes)
-{
-    uint32_t value = 0;
-    for (unsigned i = 0; i < 4; i++) value |= (uint32_t)bytes[i] << (i * 8);
-    return value;
-}
 
 /* 체크섬 필드를 뺀 페이지 전체의 CRC32C. 패딩 손상도 잡는다. */
 static uint32_t checksum(const uint8_t *page, size_t page_bytes)
@@ -58,25 +47,25 @@ static void encode_page(uint8_t *page, size_t page_bytes, page_header_t header,
 {
     memset(page, 0, page_bytes);
     memcpy(page, "SLO2", 4);
-    write_u32(page + 4, header.index);
-    write_u32(page + 8, header.next);
-    write_u32(page + 12, header.chunk);
-    write_u32(page + 16, header.total);
-    write_u32(page + 20, header.head);
+    le_put_u32(page + 4, header.index);
+    le_put_u32(page + 8, header.next);
+    le_put_u32(page + 12, header.chunk);
+    le_put_u32(page + 16, header.total);
+    le_put_u32(page + 20, header.head);
     if (header.chunk > 0) memcpy(page + OVERFLOW_HEADER_BYTES, chunk, header.chunk);
-    write_u32(page + OVERFLOW_CHECKSUM_OFFSET, checksum(page, page_bytes));
+    le_put_u32(page + OVERFLOW_CHECKSUM_OFFSET, checksum(page, page_bytes));
 }
 
 static bool decode_page(const uint8_t *page, size_t page_bytes, page_header_t *header)
 {
     if (memcmp(page, "SLO2", 4) != 0) return false;
-    header->index = read_u32(page + 4);
-    header->next = read_u32(page + 8);
-    header->chunk = read_u32(page + 12);
-    header->total = read_u32(page + 16);
-    header->head = read_u32(page + 20);
+    header->index = le_get_u32(page + 4);
+    header->next = le_get_u32(page + 8);
+    header->chunk = le_get_u32(page + 12);
+    header->total = le_get_u32(page + 16);
+    header->head = le_get_u32(page + 20);
     if (header->chunk > page_bytes - OVERFLOW_HEADER_BYTES) return false;
-    return read_u32(page + OVERFLOW_CHECKSUM_OFFSET) == checksum(page, page_bytes);
+    return le_get_u32(page + OVERFLOW_CHECKSUM_OFFSET) == checksum(page, page_bytes);
 }
 
 static void release_all(const overflow_io_t *io, const uint32_t *ids, size_t count,
