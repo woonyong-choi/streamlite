@@ -48,7 +48,7 @@ Flat C API의 `streamlite_open`은 writer 경합을 호출자에게 반환한다
 
 C의 `options=NULL` 또는 0으로 초기화한 옵션은 기본값이다. C의 `idem_retention_ms=0`은 기본 7일이고 `UINT64_MAX`는 purge 뒤 키를 보존하지 않는다. Python도 `idem_retention_ms=0`은 기본 7일이고, 키를 보존하지 않으려면 `None`을 주며 내부에서 이 sentinel로 변환한다. 일반 보존 기간의 최대는 `3162240000000`밀리초다.
 
-C의 `max_payload_bytes=0`은 기본 1MiB다. Python은 0 이하를 거절한다. 설정 가능한 최대는 `1073741824`바이트지만 payload는 큐 테이블의 한 행에 저장하므로 아래 행 저장 한도(TEXT·BLOB 합 63MiB, `idem`·`note` 포함)를 넘는 `put`·`update`는 `LIMIT`이다. 이름, 키와 reason의 NUL 경계는 [데이터](data.md#sql-값과-바인딩)에 있다. 음수나 범위를 넘는 Python 숫자는 unsigned ctypes 변환 전에 모든 인자에서 일관되게 검사하지 않으므로 자동 보정되는 입력으로 취급하지 않는다.
+C의 `max_payload_bytes=0`은 기본 1MiB다. Python은 0 이하를 거절한다. 설정 가능한 최대는 `1073741824`바이트지만 payload는 큐 테이블의 한 행에 `idem`·`note`와 함께 저장하므로 실효 상한은 아래 행 저장 한도(`66060288`바이트)에서 가장 긴 idempotency key(128바이트)와 가장 긴 note(200바이트)를 뺀 `66059960`바이트(C `ACKQ_ROW_PAYLOAD_MAX`)다. 이보다 크거나 `max_payload_bytes`보다 큰 payload의 `put`·`update`는 `LIMIT`이다. 열기·설치는 `max_payload_bytes`가 실효 상한보다 커도 받아들여 이미 있는 큐를 그대로 연다. 행 한도까지 받으면 그 뒤 note를 쓰는 전이(reason을 준 `nack`·`fail`, `recover`의 `max attempts exceeded`)가 그 행을 한도 밖으로 밀어 영구히 `LIMIT`이 되므로 put 단계에서 note 자리를 남긴다. 이 상한을 두기 전에 들어가 note 자리가 없는 행은 `nack`·`fail`·`recover`·`release_leases`가 자기 트랜잭션에서 rollback한 뒤 note를 비우고 상태만 바꿔 다시 하므로 다른 작업 처리를 막지 않는다. 호출자 트랜잭션(`txn=`) 안에서는 그 문장 실패로 트랜잭션이 실패 상태가 되므로 `LIMIT`이다. 이름, 키와 reason의 NUL 경계는 [데이터](data.md#sql-값과-바인딩)에 있다. 음수나 범위를 넘는 Python 숫자는 unsigned ctypes 변환 전에 모든 인자에서 일관되게 검사하지 않으므로 자동 보정되는 입력으로 취급하지 않는다.
 
 ### 큐 연산 인자
 

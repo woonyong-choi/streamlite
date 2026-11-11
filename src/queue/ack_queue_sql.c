@@ -139,7 +139,7 @@ static ackq_status_t map_txn_status(txn_status_t status)
 
 ackq_status_t ackq_scope_open(ackq_t *queue, session_t *session, bool write, ackq_scope_t *scope)
 {
-    *scope = (ackq_scope_t){session, false, false};
+    *scope = (ackq_scope_t){session, false, false, false};
     /* 다른 데이터베이스의 세션으로 이 큐의 SQL을 실행하지 않는다. 어떤 문장도 실행하기 전에 거절한다. */
     if (session == NULL || session_database(session) != queue->db) return ACKQ_INVALID;
     if (session_txn_active(session)) return session_txn_failed(session) ? ACKQ_TXN_FAILED : ACKQ_OK;
@@ -166,6 +166,17 @@ ackq_status_t ackq_scope_close(ackq_scope_t *scope, ackq_status_t result)
     }
     scope->own = false;
     return final;
+}
+
+ackq_status_t ackq_note_result(ackq_scope_t *scope, const char *note, ackq_status_t status)
+{
+    if (status == ACKQ_LIMIT && note != NULL && note[0] != '\0') scope->note_limited = true;
+    return status;
+}
+
+bool ackq_note_retry(const ackq_scope_t *scope, ackq_status_t status)
+{
+    return status == ACKQ_LIMIT && scope->own && scope->note_limited;
 }
 
 ackq_status_t ackq_run(ackq_t *queue, ackq_scope_t *scope, bool write, const char *sql, const value_view_t *params,

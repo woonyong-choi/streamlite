@@ -66,6 +66,11 @@ typedef struct {
     session_t *session;
     bool own;
     bool dirty;   /* 쓰기 문장을 실행했다. 자기 트랜잭션은 dirty일 때만 commit한다 */
+    /*
+     * 비지 않은 note를 쓰는 UPDATE가 LIMIT이었다(행 한도, #283). 그 문장 실패로 트랜잭션은 실패 상태이므로 자기
+     * 트랜잭션이면 연산이 rollback한 뒤 note 없이 다시 한다(ackq_note_retry).
+     */
+    bool note_limited;
 } ackq_scope_t;
 
 typedef struct {
@@ -101,6 +106,12 @@ uint64_t ackq_now(ackq_t *queue);
 ackq_status_t ackq_scope_open(ackq_t *queue, session_t *session, bool write, ackq_scope_t *scope);
 /* result가 ACKQ_OK이고 dirty이면 commit해 그 결과를 돌려준다. 아니면 rollback하고 result를 그대로 돌려준다. */
 ackq_status_t ackq_scope_close(ackq_scope_t *scope, ackq_status_t result);
+/*
+ * note를 쓰는 UPDATE의 결과를 본다. note가 비지 않았고 LIMIT이면 scope->note_limited를 켠다. status를 그대로 돌려준다.
+ */
+ackq_status_t ackq_note_result(ackq_scope_t *scope, const char *note, ackq_status_t status);
+/* 연산을 note 없이 다시 해야 하는지: 자기 트랜잭션에서 note_limited로 LIMIT이 났다(scope_close 전에 부른다) */
+bool ackq_note_retry(const ackq_scope_t *scope, ackq_status_t status);
 
 /*
  * 문장을 실행한다. 성공(ROWS·COMMAND)이면 *out에 결과를 주고 ACKQ_OK다. 오류 결과이면 결과를 해제하고 매핑한 상태를

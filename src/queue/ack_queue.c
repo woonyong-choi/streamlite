@@ -137,9 +137,13 @@ static ackq_status_t check_text(const char *text, size_t max_bytes, bool allow_e
     return value_text_chars(&view, &chars) == VALUE_OK ? ACKQ_OK : ACKQ_INVALID;
 }
 
+/*
+ * payload 상한은 큐 옵션과 ACKQ_ROW_PAYLOAD_MAX 중 작은 값이다. 옵션이 더 커도 열기는 받아들이고 여기서 거절한다.
+ * 행 한도까지 받으면 그 뒤 note를 쓰는 전이(nack·fail·recover)가 그 행을 한도 밖으로 밀어 영구히 LIMIT이 된다(#283).
+ */
 static ackq_status_t check_payload(const ackq_t *queue, const uint8_t *payload, size_t size)
 {
-    if (size > queue->max_payload) return ACKQ_LIMIT;
+    if (size > queue->max_payload || size > ACKQ_ROW_PAYLOAD_MAX) return ACKQ_LIMIT;
     if (size > 0 && payload == NULL) return ACKQ_INVALID;
     return ACKQ_OK;
 }
@@ -1055,32 +1059,41 @@ static ackq_status_t set_terminal(ackq_t *queue, ackq_scope_t *scope, uint64_t i
              queue->due_column ? ", due = ?" : "");
     value_view_t params[4] = {ackq_int(state), ackq_text(note), ackq_int(terminal_due(state, id)), ackq_int((int64_t)id)};
     if (!queue->due_column) params[2] = params[3];
-    return run_one_row(queue, scope, sql, params, queue->due_column ? 4 : 3);
+    return ackq_note_result(scope, note, run_one_row(queue, scope, sql, params, queue->due_column ? 4 : 3));
 }
 
-/* ack·fail 공통: 같은 claim이 LEASED면 target으로 바꾸고, 이미 target이면 중복 요청이라 OK다. */
+/*
+ * ack·fail 공통: 같은 claim이 LEASED면 target으로 바꾸고, 이미 target이면 중복 요청이라 OK다. note를 쓰는 UPDATE가 행
+ * 한도로 LIMIT이면(#283 전에 들어간 한도 근처 행) 자기 트랜잭션은 rollback하고 note 없이 한 번 다시 한다.
+ */
 static ackq_status_t finish_claim(ackq_t *queue, session_t *session, uint64_t id, uint64_t fence,
                                   ackq_state_t target, const char *note)
 {
     if (queue == NULL || id == 0 || fence == 0 || !fits_i64(fence)) return ACKQ_INVALID;
-    ackq_scope_t scope;
-    ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
-    if (status != ACKQ_OK) return status;
-    if (queue->conditional_enabled) {
-        ackq_finish_request_t request = {id, fence, target, note};
+    for (;;) {
+        ackq_scope_t scope;
+        ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
+        if (status != ACKQ_OK) return status;
         bool matched = false;
-        status = ackq_conditional_finish(queue, &scope, &request, &matched);
-        if (status != ACKQ_OK || matched) return ackq_scope_close(&scope, status);
+        if (queue->conditional_enabled) {
+            ackq_finish_request_t request = {id, fence, target, note};
+            status = ackq_conditional_finish(queue, &scope, &request, &matched);
+        }
+        if (status == ACKQ_OK && !matched) {
+            meta_t meta;
+            status = fetch_meta(queue, &scope, id, &meta);
+            if (status == ACKQ_OK) {
+                if (meta.fence != (int64_t)fence) status = ACKQ_STALE;
+                else if (meta.state == (int64_t)target) status = ACKQ_OK;
+                else if (meta.state != ACKQ_STATE_LEASED) status = ACKQ_STALE;
+                else status = queue->conditional_enabled ? ACKQ_INTERNAL : set_terminal(queue, &scope, id, target, note);
+            }
+        }
+        bool retry = ackq_note_retry(&scope, status);
+        status = ackq_scope_close(&scope, status);
+        if (!retry) return status;
+        note = "";
     }
-    meta_t meta;
-    status = fetch_meta(queue, &scope, id, &meta);
-    if (status == ACKQ_OK) {
-        if (meta.fence != (int64_t)fence) status = ACKQ_STALE;
-        else if (meta.state == (int64_t)target) status = ACKQ_OK;
-        else if (meta.state != ACKQ_STATE_LEASED) status = ACKQ_STALE;
-        else status = queue->conditional_enabled ? ACKQ_INTERNAL : set_terminal(queue, &scope, id, target, note);
-    }
-    return ackq_scope_close(&scope, status);
 }
 
 ackq_status_t ackq_ack(ackq_t *queue, session_t *session, uint64_t id, uint64_t fence)
@@ -1126,8 +1139,9 @@ ackq_status_t ackq_fail(ackq_t *queue, session_t *session, uint64_t id, uint64_t
     return finish_claim(queue, session, id, fence, ACKQ_STATE_FAILED, reason != NULL ? reason : "");
 }
 
+/* bare면 note를 비운다(행 한도 대체 경로). 아니면 note가 비었을 때 terminal 전이는 NOTE_MAX_ATTEMPTS를 쓴다 */
 static ackq_status_t nack_in(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, uint64_t fence,
-                             uint64_t retry_delay_ms, const char *note, bool *terminal)
+                             uint64_t retry_delay_ms, const char *note, bool bare, bool *terminal)
 {
     char sql[ACKQ_SQL_MAX];
     if (meta->fence != (int64_t)fence) return ACKQ_STALE;
@@ -1138,7 +1152,8 @@ static ackq_status_t nack_in(ackq_t *queue, ackq_scope_t *scope, const meta_t *m
     if (meta->state != ACKQ_STATE_LEASED) return ACKQ_STALE;
     if (queue->max_attempts > 0 && meta->attempts >= (int64_t)queue->max_attempts) {
         if (terminal != NULL) *terminal = true;
-        return set_terminal(queue, scope, meta->id, ACKQ_STATE_FAILED, note[0] != '\0' ? note : NOTE_MAX_ATTEMPTS);
+        const char *final = bare ? "" : note[0] != '\0' ? note : NOTE_MAX_ATTEMPTS;
+        return set_terminal(queue, scope, meta->id, ACKQ_STATE_FAILED, final);
     }
     int64_t ready_at;
     ackq_status_t status = add_ms(ackq_now(queue), retry_delay_ms, &ready_at);
@@ -1148,7 +1163,7 @@ static ackq_status_t nack_in(ackq_t *queue, ackq_scope_t *scope, const meta_t *m
     value_view_t params[4] = {ackq_int(ready_at), ackq_text(note), ackq_int(ready_at), ackq_int((int64_t)meta->id)};
     if (!queue->due_column) params[2] = params[3];
     if (terminal != NULL) *terminal = false;
-    return run_one_row(queue, scope, sql, params, queue->due_column ? 4 : 3);
+    return ackq_note_result(scope, note, run_one_row(queue, scope, sql, params, queue->due_column ? 4 : 3));
 }
 
 ackq_status_t ackq_nack(ackq_t *queue, session_t *session, uint64_t id, uint64_t fence, uint64_t retry_delay_ms,
@@ -1159,15 +1174,21 @@ ackq_status_t ackq_nack(ackq_t *queue, session_t *session, uint64_t id, uint64_t
     if (queue == NULL || id == 0 || fence == 0 || !fits_i64(fence)) return ACKQ_INVALID;
     ackq_status_t status = check_text(reason, ACKQ_NOTE_MAX, true, &length);
     if (status != ACKQ_OK) return status;
-    ackq_scope_t scope;
-    status = ackq_scope_open(queue, session, true, &scope);
-    if (status != ACKQ_OK) return status;
-    meta_t meta;
-    status = fetch_meta(queue, &scope, id, &meta);
-    if (status == ACKQ_OK) {
-        status = nack_in(queue, &scope, &meta, fence, retry_delay_ms, reason != NULL ? reason : "", terminal);
+    /* note를 쓰는 UPDATE가 행 한도로 LIMIT이면 자기 트랜잭션은 rollback하고 note 없이 한 번 다시 한다(finish_claim과 같다) */
+    for (bool bare = false;; bare = true) {
+        ackq_scope_t scope;
+        status = ackq_scope_open(queue, session, true, &scope);
+        if (status != ACKQ_OK) return status;
+        meta_t meta;
+        status = fetch_meta(queue, &scope, id, &meta);
+        if (status == ACKQ_OK) {
+            const char *note = bare || reason == NULL ? "" : reason;
+            status = nack_in(queue, &scope, &meta, fence, retry_delay_ms, note, bare, terminal);
+        }
+        bool retry = !bare && ackq_note_retry(&scope, status);
+        status = ackq_scope_close(&scope, status);
+        if (!retry) return status;
     }
-    return ackq_scope_close(&scope, status);
 }
 
 ackq_status_t ackq_update(ackq_t *queue, session_t *session, uint64_t id, uint64_t fence, const uint8_t *payload,
@@ -1205,7 +1226,7 @@ ackq_status_t ackq_update(ackq_t *queue, session_t *session, uint64_t id, uint64
  * 한 번 더 전달하지만, 이미 한도를 넘긴 작업(그 한 번을 받은 작업)은 FAILED로 끝낸다. claim은 READY의 시도 횟수를 보지
  * 않으므로 이렇게 하지 않으면 crash 뒤 release를 반복하는 루프에서 같은 작업이 끝없이 전달된다.
  */
-static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, bool expired)
+static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, bool expired, bool bare)
 {
     char sql[ACKQ_SQL_MAX];
     if (meta->fence == INT64_MAX) return ACKQ_LIMIT;
@@ -1214,10 +1235,11 @@ static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t
     if (limit > 0 && (expired ? meta->attempts >= limit : meta->attempts > limit)) {
         snprintf(sql, sizeof(sql), "UPDATE %s SET state = ?, lease_until = 0, fence = ?, note = ?%s WHERE id = ?",
                  queue->table, queue->due_column ? ", due = ?" : "");
-        value_view_t failed[5] = {ackq_int(ACKQ_STATE_FAILED), ackq_int(fence), ackq_text(NOTE_MAX_ATTEMPTS),
+        const char *note = bare ? "" : NOTE_MAX_ATTEMPTS;
+        value_view_t failed[5] = {ackq_int(ACKQ_STATE_FAILED), ackq_int(fence), ackq_text(note),
                                   ackq_int(terminal_due(ACKQ_STATE_FAILED, meta->id)), ackq_int((int64_t)meta->id)};
         if (!queue->due_column) failed[3] = failed[4];
-        return run_one_row(queue, scope, sql, failed, queue->due_column ? 5 : 4);
+        return ackq_note_result(scope, note, run_one_row(queue, scope, sql, failed, queue->due_column ? 5 : 4));
     }
     /* READY로 돌린 작업의 due는 원래 ready_at이다(이미 지난 시각이라 곧바로 claim할 수 있다) */
     snprintf(sql, sizeof(sql), "UPDATE %s SET state = 0, lease_until = 0, fence = ?%s WHERE id = ?", queue->table,
@@ -1256,6 +1278,19 @@ static ackq_status_t scan_leases(ackq_t *queue, ackq_scope_t *scope, int64_t unt
     return scan_meta(queue, scope, " WHERE state = ? AND lease_until <= ? ORDER BY id LIMIT ?", params, 3, top);
 }
 
+static bool listed(const uint64_t *ids, size_t count, uint64_t id)
+{
+    for (size_t i = 0; i < count; i++) {
+        if (ids[i] == id) return true;
+    }
+    return false;
+}
+
+/*
+ * recover·release 공통. FAILED로 끝내며 note를 쓰는 UPDATE가 행 한도로 LIMIT이면(#283 전에 들어간 한도 근처 행) 그 문장
+ * 실패로 트랜잭션이 실패 상태가 된다. 자기 트랜잭션이면 rollback하고 그 id를 bare 목록에 더해 처음부터 다시 하며,
+ * 목록의 id는 note 없이 상태만 바꾼다. 그래서 그런 행이 같은 호출의 다른 작업을 막지 않는다. 다시 하는 횟수는 limit 이하다.
+ */
 static ackq_status_t return_leases(ackq_t *queue, session_t *session, size_t limit, bool only_expired,
                                    size_t *processed)
 {
@@ -1265,23 +1300,33 @@ static ackq_status_t return_leases(ackq_t *queue, session_t *session, size_t lim
     if (clock > ACKQ_NOW_MAX) return ACKQ_LIMIT;   /* 유효한 시각을 한 번도 읽지 못했다 */
     int64_t now = (int64_t)clock;
     topk_t top = {calloc(limit, sizeof(meta_t)), 0, limit, false};
-    if (top.items == NULL) return ACKQ_NOMEM;
-    ackq_scope_t scope;
-    ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
-    if (status != ACKQ_OK) {
-        free(top.items);
-        return status;
+    uint64_t *bare = calloc(limit, sizeof(uint64_t));
+    size_t bare_count = 0;
+    ackq_status_t status = top.items == NULL || bare == NULL ? ACKQ_NOMEM : ACKQ_OK;
+    while (status == ACKQ_OK) {
+        top.count = 0;
+        ackq_scope_t scope;
+        status = ackq_scope_open(queue, session, true, &scope);
+        if (status != ACKQ_OK) break;
+        /* 시도 횟수 조건 없이 만료만 본다(release는 만료와 무관). 시도 횟수를 다 쓴 만료 작업은 return_one이 FAILED로 끝낸다 */
+        status = scan_leases(queue, &scope, only_expired ? now : INT64_MAX, &top);
+        size_t done = 0, i = 0;
+        for (; status == ACKQ_OK && i < top.count; i++) {
+            status = return_one(queue, &scope, &top.items[i], only_expired, listed(bare, bare_count, top.items[i].id));
+            if (status == ACKQ_OK) done++;
+        }
+        bool retry = ackq_note_retry(&scope, status) && bare_count < limit;
+        status = ackq_scope_close(&scope, status);
+        if (!retry) {
+            if (status == ACKQ_OK && processed != NULL) *processed = done;
+            break;
+        }
+        bare[bare_count++] = top.items[i - 1].id;   /* LIMIT이 난 작업. 다음 회차에 note 없이 바꾼다 */
+        status = ACKQ_OK;
     }
-    /* 시도 횟수 조건 없이 만료만 본다(release는 만료와 무관). 시도 횟수를 다 쓴 만료 작업은 return_one이 FAILED로 끝낸다 */
-    status = scan_leases(queue, &scope, only_expired ? now : INT64_MAX, &top);
-    size_t done = 0;
-    for (size_t i = 0; status == ACKQ_OK && i < top.count; i++) {
-        status = return_one(queue, &scope, &top.items[i], only_expired);
-        if (status == ACKQ_OK) done++;
-    }
+    free(bare);
     free(top.items);
-    if (status == ACKQ_OK && processed != NULL) *processed = done;
-    return ackq_scope_close(&scope, status);
+    return status;
 }
 
 ackq_status_t ackq_recover(ackq_t *queue, session_t *session, size_t limit, size_t *recovered)

@@ -189,6 +189,29 @@ def test_queue_payload_limit_option(db: Database, clock: FakeClock) -> None:
     assert DEFAULT_MAX_PAYLOAD_BYTES == 1 << 20
 
 
+def test_queue_payload_leaves_room_for_key_and_note(db: Database, clock: FakeClock) -> None:
+    """#283: payload 실효 상한은 행 한도 63MiB에서 가장 긴 idem key(128)와 note(200)를 뺀 값이다."""
+    cap = 66060288 - 128 - 200
+    queue = Queue(db, "room", max_payload_bytes=1 << 30, max_attempts=2, clock=clock)
+    payload = bytes(cap)
+    with pytest.raises(LimitError):
+        queue.put(payload + b"x")
+    first = queue.put(payload, "k" * 128)
+    claim = queue.get(100)
+    assert claim is not None and claim.id == first.id
+    assert queue.nack(claim, reason="r" * 200) is False
+    claim = queue.get(100)
+    assert claim is not None and claim.id == first.id
+    clock.now_ms += 1000
+    assert queue.recover() == 1
+    queue.put(payload, "j" * 128)
+    claim = queue.get(100)
+    assert claim is not None and len(claim.payload) == cap
+    queue.fail(claim, "r" * 200)
+    assert queue.stats().failed == 2
+    assert [item.note for item in queue.list_items()] == ["max attempts exceeded", "r" * 200]
+
+
 def test_queue_nack_retry_delay_and_terminal_failure(db: Database, clock: FakeClock) -> None:
     queue = Queue(db, "jobs", max_attempts=2, clock=clock)
     queue.put(b"retry")

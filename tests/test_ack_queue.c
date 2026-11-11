@@ -1671,6 +1671,154 @@ static void test_open_reads_lease_index_first(void)
     close_db(db);
 }
 
+/* ── #283: payload 실효 상한은 행 한도에서 idem key와 note 자리를 뺀 값이다 ── */
+
+/* 행 한도에서 가장 긴 idem key와 가장 긴 note를 뺀 값(include/queue/ack_queue.h의 ACKQ_ROW_PAYLOAD_MAX와 같아야 한다) */
+#define ROW_ROOM_PAYLOAD ((size_t)DATABASE_MAX_ROW_VALUE_BYTES - ACKQ_IDEM_KEY_MAX - ACKQ_NOTE_MAX)
+_Static_assert(ROW_ROOM_PAYLOAD == ACKQ_ROW_PAYLOAD_MAX && ROW_ROOM_PAYLOAD == 66059960u, "payload 실효 상한");
+
+static uint8_t *big_payload(size_t size)
+{
+    uint8_t *payload = malloc(size);
+    assert(payload != NULL);
+    for (size_t i = 0; i < size; i++) payload[i] = (uint8_t)(i * 31u);
+    return payload;
+}
+
+static void fill_text(char *text, size_t length, char c)
+{
+    memset(text, c, length);
+    text[length] = '\0';
+}
+
+static void test_payload_row_room(void)
+{
+    printf("\n[#283 payload 실효 상한 아래는 note를 쓰는 전이가 모두 성공한다]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("room", 2);
+    o.max_payload_bytes = ACKQ_MAX_PAYLOAD_LIMIT;
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    size_t cap = ROW_ROOM_PAYLOAD;
+    uint8_t *payload = big_payload(cap + 1);
+    char key1[ACKQ_IDEM_KEY_MAX + 1], key2[ACKQ_IDEM_KEY_MAX + 1], reason[ACKQ_NOTE_MAX + 1];
+    fill_text(key1, ACKQ_IDEM_KEY_MAX, 'k');
+    fill_text(key2, ACKQ_IDEM_KEY_MAX, 'j');
+    fill_text(reason, ACKQ_NOTE_MAX, 'r');
+    g_now = 1000;
+    uint64_t rejected = 0, small = 0, first = 0, second = 0;
+    ackq_status_t st = ackq_enqueue(q, db, payload, cap + 1, NULL, &rejected, NULL);
+    CHECK(st == ACKQ_LIMIT, "실효 상한+1 put은 LIMIT (%s)", ackq_status_name(st));
+    assert(enq(q, db, "small", NULL, &small, NULL) == ACKQ_OK);
+    st = ackq_update(q, db, small, 0, payload, cap + 1);
+    CHECK(st == ACKQ_LIMIT, "실효 상한+1 update는 LIMIT (%s)", ackq_status_name(st));
+    CHECK(ackq_enqueue(q, db, payload, cap, key1, &first, NULL) == ACKQ_OK, "실효 상한과 가장 긴 key의 put");
+    CHECK(ackq_enqueue(q, db, payload, cap, key2, &second, NULL) == ACKQ_OK, "두 번째 put");
+
+    ackq_claim_t item;
+    assert(ackq_claim_id(q, db, first, 100, &item) == ACKQ_OK);
+    uint64_t fence = item.fence;
+    ackq_claims_release(&item, 1);
+    bool terminal = true;
+    st = ackq_nack(q, db, first, fence, 0, reason, &terminal);
+    CHECK(st == ACKQ_OK && !terminal, "가장 긴 reason의 nack (%s)", ackq_status_name(st));
+    /* 마지막 시도를 만료시키면 recover가 "max attempts exceeded"로 FAILED를 쓴다. 작은 작업은 READY로 돌아간다 */
+    assert(ackq_claim_id(q, db, first, 100, &item) == ACKQ_OK);
+    ackq_claims_release(&item, 1);
+    assert(ackq_claim_id(q, db, small, 100, &item) == ACKQ_OK);
+    ackq_claims_release(&item, 1);
+    g_now += 1000;
+    size_t n = 0;
+    st = ackq_recover(q, db, 10, &n);
+    CHECK(st == ACKQ_OK && n == 2, "만료 lease 둘 다 recover (%s, n=%zu)", ackq_status_name(st), n);
+    assert(ackq_claim_id(q, db, second, 100, &item) == ACKQ_OK);
+    fence = item.fence;
+    ackq_claims_release(&item, 1);
+    st = ackq_fail(q, db, second, fence, reason);
+    CHECK(st == ACKQ_OK, "가장 긴 reason의 fail (%s)", ackq_status_name(st));
+    ackq_stats_t stats = {0};
+    assert(ackq_stats(q, db, &stats) == ACKQ_OK);
+    CHECK(stats.failed == 2 && stats.ready == 1 && stats.leased == 0, "FAILED 2, READY 1 (failed=%llu ready=%llu)",
+          (unsigned long long)stats.failed, (unsigned long long)stats.ready);
+    free(payload);
+    ackq_close(&q);
+    close_db(db);
+}
+
+/*
+ * 이 수정 전에 들어간 것처럼 note 자리가 없는 LEASED 행을 SQL로 직접 넣는다. idem을 key 상한보다 긴 320바이트로 써서 행이
+ * 한도 8바이트 아래다(payload는 ROW_ROOM_PAYLOAD). 21바이트 "max attempts exceeded"도 더 들어가지 않는다.
+ * 마지막 시도의 due는 ACKQ_DUE_LAST + id(src/queue/ack_queue_internal.h)다.
+ */
+static bool insert_near_limit(session_t *db, int64_t id, char fill, const uint8_t *payload, int64_t lease_until)
+{
+    char key[321], sql[256];
+    fill_text(key, 320, fill);
+    snprintf(sql, sizeof(sql),
+             "INSERT INTO streamlite_queue_near (id, state, ready_at, lease_until, fence, attempts, idem, payload, note, "
+             "created_at, due) VALUES (?, 1, 1000, ?, 1, 1, ?, ?, '', 1000, ?)");
+    value_view_t params[5] = {{VALUE_INTEGER, id, 0.0, NULL, 0},
+                              {VALUE_INTEGER, lease_until, 0.0, NULL, 0},
+                              {VALUE_TEXT, 0, 0.0, (const uint8_t *)key, 320},
+                              {VALUE_BLOB, 0, 0.0, payload, ROW_ROOM_PAYLOAD},
+                              {VALUE_INTEGER, -(INT64_C(1) << 61) + id, 0.0, NULL, 0}};
+    lexer_binding_t binding = {params, 5};
+    result_t *r = NULL;
+    if (session_exec(db, NULL, (const uint8_t *)sql, strlen(sql), &binding, &r) != DATABASE_EXEC_OK || r == NULL) return false;
+    bool ok = result_kind(r) != RESULT_KIND_ERROR;
+    result_release(&r);
+    return ok;
+}
+
+/* note 자리가 없는 행: recover·fail·nack은 note 없이 상태만 바꾸고, recover는 같은 호출의 다른 만료 작업도 처리한다 */
+static void test_note_fallback_near_row_limit(void)
+{
+    printf("\n[#283 note 자리가 없는 행은 note 없이 상태만 바꾼다]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("near", 1);
+    o.max_payload_bytes = ACKQ_MAX_PAYLOAD_LIMIT;
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    uint8_t *payload = big_payload(ROW_ROOM_PAYLOAD);
+    g_now = 1000;
+    /* 1: recover할 만료 lease, 3·4: fail·nack할 살아 있는 lease. 2는 작은 작업이다 */
+    CHECK(insert_near_limit(db, 1, 'a', payload, 1100), "한도 근처 행 1");
+    uint64_t small = 0;
+    assert(enq(q, db, "small", NULL, &small, NULL) == ACKQ_OK);
+    CHECK(insert_near_limit(db, 3, 'c', payload, 3600000), "한도 근처 행 3");
+    CHECK(insert_near_limit(db, 4, 'd', payload, 3600000), "한도 근처 행 4");
+    free(payload);
+    ackq_claim_t item;
+    assert(ackq_claim_id(q, db, small, 100, &item) == ACKQ_OK);
+    ackq_claims_release(&item, 1);
+    ackq_status_t st = ackq_fail(q, db, 3, 1, "bad input");
+    CHECK(st == ACKQ_OK, "fail은 note 없이 FAILED (%s)", ackq_status_name(st));
+    bool terminal = false;
+    st = ackq_nack(q, db, 4, 1, 0, "retry later", &terminal);
+    CHECK(st == ACKQ_OK && terminal, "마지막 시도의 nack은 note 없이 FAILED (%s)", ackq_status_name(st));
+    g_now += 1000;
+    size_t n = 0;
+    st = ackq_recover(q, db, 10, &n);
+    CHECK(st == ACKQ_OK && n == 2, "recover가 한도 근처 행과 다른 만료 작업을 함께 처리 (%s, n=%zu)",
+          ackq_status_name(st), n);
+    ackq_stats_t stats = {0};
+    assert(ackq_stats(q, db, &stats) == ACKQ_OK);
+    CHECK(stats.failed == 4 && stats.leased == 0, "모두 FAILED (failed=%llu leased=%llu)",
+          (unsigned long long)stats.failed, (unsigned long long)stats.leased);
+    ackq_item_t items[4];
+    size_t count = 0;
+    assert(ackq_list(q, db, 0, 4, false, items, &count) == ACKQ_OK && count == 4);
+    CHECK(items[0].id == 1 && items[0].note[0] == '\0' && items[2].note[0] == '\0' && items[3].note[0] == '\0',
+          "한도 근처 행의 note는 비어 있다");
+    CHECK(items[1].id == small && small == 2 && strcmp(items[1].note, "max attempts exceeded") == 0, "작은 작업은 note를 쓴다 (%s)",
+          items[1].note);
+    ackq_list_release(items, count);
+    ackq_close(&q);
+    close_db(db);
+}
+
 int main(void)
 {
     set_dir(DIR);
@@ -1702,6 +1850,8 @@ int main(void)
     test_due_queue_gains_lease_index();
     test_wrong_due_is_not_claimed();
     test_open_reads_lease_index_first();
+    test_payload_row_room();
+    test_note_fallback_near_row_limit();
     printf("\ntest_ack_queue: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;

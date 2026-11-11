@@ -152,6 +152,7 @@ ackq_status_t ackq_conditional_finish(ackq_t *queue, ackq_scope_t *scope, const 
     bool was_dirty = scope->dirty;
     result_t *result = NULL;
     ackq_status_t status = ackq_run(queue, scope, true, sql, params, count, &result, NULL);
+    status = ackq_note_result(scope, request->note, status);
     if (status != ACKQ_OK) return status;
     const result_command_t *command = result_command(result);
     if (command == NULL || command->affected_rows > 1) status = ACKQ_INTERNAL;
