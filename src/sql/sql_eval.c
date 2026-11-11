@@ -724,7 +724,7 @@ static sqleval_status_t eval_case(const runner_t *r, const node_t *node, value_t
     size_t pairs_end = expr->arg_count - (expr->has_else ? 1 : 0);
     const node_t *chosen = expr->has_else ? node->args[expr->arg_count - 1] : NULL;
     for (; status == SQLEVAL_OK && at < pairs_end; at += 2) {
-        int hit;
+        int hit = 0;
         if (expr->has_operand) {
             value_t when_tmp = {0};
             value_view_t when;
@@ -752,28 +752,50 @@ static sqleval_status_t eval_case(const runner_t *r, const node_t *node, value_t
     return status;
 }
 
-/* 글자 단위 위치. start(1부터)에서 count 글자. 시작이 1보다 작으면 그만큼 길이를 줄인다(PostgreSQL) */
+/* SQLite가 길이 없는 SUBSTR에 쓰는 길이(문자열 길이 한도 기본값). 시작이 문자열 앞으로 벗어난 만큼 여기서 뺀다 */
+#define SUBSTR_REST 1000000000
+
+/*
+ * 글자 단위 SUBSTR. SQLite와 같다: start는 1부터 세고 음수면 끝에서 센다(-1이 마지막 글자). 0은 첫 글자 바로 앞
+ * 자리라 길이 하나를 그 자리에 쓴다. 음수 count는 start 앞의 글자들이다. 범위를 벗어난 부분은 잘라 낸다.
+ */
 static sqleval_status_t substr(const runner_t *r, const node_t *node, const value_view_t *text, int64_t start,
                                bool has_count, int64_t count, value_t *tmp, value_view_t *view)
 {
-    if (has_count && count < 0) return failed(r->error, SQLEVAL_ARGUMENT, node->src, NULL);
-    int64_t end = INT64_MAX;
+    size_t chars = 0;
+    for (size_t at = 0; at < text->size_bytes; at += char_len(text->bytes[at])) chars++;
+    /* INT64 끝 값끼리 더해도 넘치지 않게 넓은 정수로 계산한다 */
+    __int128 length = (__int128)chars, skip = start, take = length > SUBSTR_REST ? length : SUBSTR_REST;
+    bool before = false;
     if (has_count) {
-        if (__builtin_add_overflow(start, count, &end)) end = INT64_MAX;
-    }
-    if (start < 1) start = 1;
-    size_t from = text->size_bytes, to = text->size_bytes;
-    int64_t index = 1;
-    for (size_t at = 0; at <= text->size_bytes; index++) {
-        if (index == start) from = at;
-        if (index == end) {
-            to = at;
-            break;
+        take = count;
+        if (take < 0) {
+            take = -take;
+            before = true;
         }
-        if (at == text->size_bytes) break;
-        at += char_len(text->bytes[at]);
     }
-    if (from > to) from = to;
+    if (skip < 0) {
+        skip += length;
+        if (skip < 0) {
+            take += skip;
+            if (take < 0) take = 0;
+            skip = 0;
+        }
+    } else if (skip > 0) {
+        skip--;
+    } else if (take > 0) {
+        take--;
+    }
+    if (before) {
+        skip -= take;
+        if (skip < 0) {
+            take += skip;
+            skip = 0;
+        }
+    }
+    size_t from = 0, to;
+    for (; skip > 0 && from < text->size_bytes; skip--) from += char_len(text->bytes[from]);
+    for (to = from; take > 0 && to < text->size_bytes; take--) to += char_len(text->bytes[to]);
     return set_text_bytes(r, node, tmp, view, text->bytes + from, to - from);
 }
 

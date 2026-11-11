@@ -28,8 +28,9 @@
  *     평가 순서는 SQL 표준·PostgreSQL도 약속하지 않으므로 오류가 날 수 있는 조건은 CASE로 막아야 한다.
  *   - 집계 COUNT·SUM·AVG·MIN·MAX는 이 모듈이 계산하지 않는다. 실행기가 그룹마다 접어 match로 넘긴다.
  *   - 서브쿼리 결과는 subquery 훅이 준다. 바깥 열을 보는 서브쿼리는 평가할 때마다 refresh로 다시 계산한다.
- *   - 함수: ABS, LENGTH(글자 수, BLOB은 바이트 수), LOWER, UPPER(ASCII), SUBSTR(x, 시작[, 길이])(글자 단위,
- *     시작이 1보다 작으면 그만큼 길이를 줄인다), TRIM·LTRIM·RTRIM(x[, 문자들]), REPLACE, COALESCE, NULLIF.
+ *   - 함수: ABS, LENGTH(글자 수, BLOB은 바이트 수), LOWER, UPPER(ASCII), SUBSTR(x, 시작[, 길이])(글자 단위. SQLite와
+ *     같다: 음수 시작은 끝에서 세고, 시작 0은 첫 글자 앞 자리이며, 음수 길이는 시작 앞의 글자들이다. PostgreSQL은
+ *     음수 시작을 1 앞에서 세고 음수 길이를 거절한다), TRIM·LTRIM·RTRIM(x[, 문자들]), REPLACE, COALESCE, NULLIF.
  */
 
 typedef enum {

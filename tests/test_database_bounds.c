@@ -434,6 +434,26 @@ static void test_create_index_rejects_trailing_tokens(void)
     assert(database_close(db) == DATABASE_OK);
 }
 
+/* ── SUBSTR 경계(SQLite와 같은 의미. 격자 대조는 test_database_sqlite에 있다) ── */
+
+static void test_substr_bounds(void)
+{
+    printf("\n[test_substr_bounds]\n");
+    database_t *db = fresh_db();
+    expect_text(db, "SELECT SUBSTR('hello', -5, 3), SUBSTR('hello', 0, 0), SUBSTR('hello', 0, 3), SUBSTR('hello', -2)",
+                "[1] 'hel'|''|'he'|'lo'");
+    expect_text(db, "SELECT SUBSTR('hello', 2, -1), SUBSTR('hello', 4, -9), SUBSTR('hello', -1, -2), SUBSTR('hello', 9, 2)",
+                "[1] 'h'|'hel'|'ll'|''");
+    expect_text(db, "SELECT SUBSTR('hello', -9, 5), SUBSTR('hello', -9), SUBSTR('hello', 6), SUBSTR('hello', 5, 9)",
+                "[1] 'h'|'hello'|''|'o'");
+    expect_text(db, "SELECT SUBSTR('가나다라', -2), SUBSTR('가나다라', 3, -2), SUBSTR('', 1, 1), SUBSTR('가나다라', 0, 2)",
+                "[1] '다라'|'가나'|''|'가'");
+    expect_text(db, "SELECT SUBSTR('hello', 9223372036854775807, 9223372036854775807), "
+                    "SUBSTR('hello', -9223372036854775807, 9223372036854775807), SUBSTR('hello', 2, 9223372036854775807)",
+                "[1] ''|'hello'|'ello'");
+    assert(database_close(db) == DATABASE_OK);
+}
+
 /* 인자가 있으면 이름에 그 글자가 든 검사만 돌린다(하나가 죽어도 나머지를 따로 볼 수 있게) */
 int main(int argc, char **argv)
 {
@@ -444,6 +464,7 @@ int main(int argc, char **argv)
         {"deep_statements_fit_small_stack", test_deep_statements_fit_small_stack},
         {"update_cannot_null_primary_key", test_update_cannot_null_primary_key},
         {"create_index_rejects_trailing_tokens", test_create_index_rejects_trailing_tokens},
+        {"substr_bounds", test_substr_bounds},
     };
     for (size_t i = 0; i < sizeof(TESTS) / sizeof(TESTS[0]); i++) {
         if (argc < 2 || strstr(TESTS[i].name, argv[1]) != NULL) TESTS[i].run();
