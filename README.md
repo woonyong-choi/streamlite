@@ -7,9 +7,11 @@
 
 <p align="center"><a href="https://github.com/woonyong-choi/streamlite/actions/workflows/ci.yml"><img src="https://github.com/woonyong-choi/streamlite/actions/workflows/ci.yml/badge.svg" alt="CI"></a> <a href="https://github.com/woonyong-choi/streamlite/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT 라이선스"></a></p>
 
-StreamLite는 ToteDB를 대체하는 새 배포판입니다. 배포·설치 이름과 Python import는 `streamlite`, C API는 `streamlite_*`, 공유 라이브러리는 `libstreamlite`입니다. DB 파일은 새 StreamLite 형식만 사용하며, 이전 ToteDB 형식 파일을 읽는 reader나 이전 이름의 별칭은 제공하지 않습니다. 아래의 ToteDB 0.2.0 표기와 실측 결과는 당시 배포·측정 이름이며 현재 배포판을 측정한 값이 아닙니다.
+```sh
+pip install streamlite
+```
 
-SQL·영속 이벤트 스트림·ACK와 실제 다중 writer를 결합하는 [리뉴얼 구조](docs/design/streamlite.md)는 제안 단계입니다. 현재 배포판은 단일 writer이며, 독립 소비자별 재생 스트림과 다중 writer가 구현됐다는 뜻은 아닙니다.
+Linux(x86_64·aarch64)와 macOS(Apple Silicon)에서 Python 3.9 이상으로 사용할 수 있습니다. 별도 서버 없이 DB 파일 하나로 동작하며, 쓰기 트랜잭션은 한 번에 하나만 실행됩니다.
 
 ---
 
@@ -34,13 +36,13 @@ SQL·영속 이벤트 스트림·ACK와 실제 다중 writer를 결합하는 [�
 
 Python 3.9 이상이 필요합니다. 가상 환경(venv)에서 설치하세요.
 
-`streamlite` 배포판은 아직 PyPI에 게시하지 않았습니다. 저장소에서 직접 설치하거나 직접 빌드한 wheel을 설치하세요. 빌드에는 C 컴파일러와 GNU Make가 필요합니다.
-
 ```sh
 python3 -m venv .venv
 . .venv/bin/activate
-pip install .
+pip install streamlite
 ```
+
+Linux x86_64·aarch64(glibc 2.28 이상)와 macOS arm64(11.0 이상)는 미리 빌드한 wheel을 받습니다. 그 밖의 환경(macOS x86_64, musl Linux)은 소스 배포판을 받아 설치 중에 빌드하므로 C 컴파일러와 GNU Make가 필요합니다. Windows는 지원하지 않습니다. 저장소에서 바로 설치하려면 저장소 루트에서 `pip install .`을 실행합니다.
 
 아래 코드는 `orders.db`에 주문을 저장하고 큐에 처리할 작업을 등록합니다. 테이블 생성은 처음 한 번만 실행합니다. 기존 DB를 삭제하거나 덮어쓰는 코드는 넣지 않았습니다.
 
@@ -85,6 +87,8 @@ with Database("orders.db") as db:
 워커가 작업을 끝냈더라도 ACK 전에 멈추면 같은 작업이 다시 전달될 수 있습니다. 메일 발송이나 외부 API 호출에는 중복 실행에 대비한 멱등성 처리가 필요합니다.
 
 ## SQLite·Python 도구와 비교
+
+아래 수치와 기능 비교는 이전 이름인 ToteDB 0.2.0 시기의 기록입니다. 표의 ToteDB는 StreamLite의 이전 판을 뜻합니다.
 
 2026-10-19의 [비교 실험](docs/experiments/local-db-comparison/report.md)에서 ToteDB는 SQLite WAL/FULL보다 DB 기록 처리량이 낮았고, `persist-queue`와 Litequeue보다 ACK 큐 처리도 느렸습니다.
 
@@ -148,7 +152,11 @@ SQLite에서도 주문 테이블과 작업 테이블을 같은 연결로 갱신�
 
 ## 지원 기능과 제약 사항
 
-[v0.2.0 릴리스](https://github.com/woonyong-choi/streamlite/releases/tag/v0.2.0)는 이전 이름과 형식을 쓰던 당시 ToteDB 배포판입니다. v0.2.0 태그와 릴리스는 이력으로 유지합니다. StreamLite 0.3.0은 아직 미배포이며 태그·릴리스·PyPI 게시 전입니다. StreamLite 0.3.0은 DB 파일을 저장하고 다시 여는 기능, 트랜잭션과 작업 큐를 제공합니다.
+StreamLite 0.3.0은 DB 파일을 저장하고 다시 여는 기능, 트랜잭션과 작업 큐를 제공합니다.
+
+StreamLite는 이전 이름 ToteDB를 바꾼 것입니다. [v0.2.0 릴리스](https://github.com/woonyong-choi/streamlite/releases/tag/v0.2.0)까지가 ToteDB 배포판이며 이력으로 유지합니다. 0.3.0부터 Python import는 `streamlite`, C API는 `streamlite_*`, 공유 라이브러리는 `libstreamlite`입니다. DB 파일 형식도 바뀌어 ToteDB 파일은 열리지 않으며, 이전 형식 reader와 이전 이름의 별칭은 제공하지 않습니다.
+
+SQL·영속 이벤트 스트림·ACK와 다중 writer를 결합하는 [리뉴얼 구조](docs/design/streamlite.md)는 제안 단계이며 이 배포판에 구현되지 않았습니다.
 
 SQL 조회·갱신과 JOIN·집계·서브쿼리를 지원합니다. C와 Python에서 사용할 수 있고, 작업 큐는 필요할 때 추가합니다.
 

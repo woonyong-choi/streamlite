@@ -428,7 +428,7 @@ CI의 SQL 비교·워크플로 검사와 릴리스의 Linux 보조 job은 Ubuntu
 
 ## 패키지 배포
 
-Python 패키지 `streamlite`는 아직 PyPI에 게시하지 않았다. 게시 전에는 저장소에서 `pip install .`로 설치하거나 직접 빌드한 wheel을 설치한다. 공유 라이브러리를 ctypes로 열기 때문에 Python 버전과 무관한 `py3-none-{플랫폼}` wheel을 플랫폼마다 하나씩 만든다.
+Python 패키지 `streamlite`는 0.3.0부터 PyPI에 게시한다. 게시하지 않은 변경은 저장소에서 `pip install .`로 설치하거나 직접 빌드한 wheel을 설치한다. 공유 라이브러리를 ctypes로 열기 때문에 Python 버전과 무관한 `py3-none-{플랫폼}` wheel을 플랫폼마다 하나씩 만든다.
 
 | 파일 | 역할 |
 |---|---|
