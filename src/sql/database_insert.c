@@ -156,7 +156,7 @@ static bool conflict_compile(database_t *db, conflict_t *c, const sqlexpr_t *exp
                              database_exec_status_t *status)
 {
     sqleval_error_t error = {SQLEVAL_OK, 0, NULL};
-    sqleval_env_t env = {conflict_resolve, NULL, c, subquery_hook, db, outer_hook};
+    sqleval_env_t env = {conflict_resolve, NULL, c, subquery_hook, db, outer_hook, eval_memory(db)};
     const resolver_t *saved = db->compile_resolver;
     db->compile_resolver = &c->existing;
     sqleval_status_t compiled = sqleval_compile(expr, &env, prog, &error);

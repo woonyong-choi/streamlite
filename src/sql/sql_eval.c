@@ -4,6 +4,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* 식 트리 높이만큼 재귀하는 길에 있는 함수는 컴파일러가 합치지 않게 한다(합치면 한 단계의 스택이 커진다) */
+#define NOINLINE __attribute__((noinline))
+
 typedef enum {
     FN_NONE,
     FN_ABS,
@@ -50,7 +53,22 @@ struct sqleval_prog {
     node_t *nodes;
     node_t **slots;
     size_t node_count;
+    sqleval_memory_t memory;  /* 계상 훅의 사본. reserve가 NULL이면 계상하지 않는다 */
+    size_t bytes;             /* 이 구조와 두 배열로 reserve한 바이트 */
 };
+
+/* value_cast가 숫자를 문자열로 바꿀 때(INTEGER 20바이트, REAL 32바이트 이하)의 여유 */
+#define CAST_SLACK 64u
+
+static bool mem_take(const sqleval_memory_t *memory, size_t bytes)
+{
+    return bytes == 0 || memory->reserve == NULL || memory->reserve(memory->ctx, bytes);
+}
+
+static void mem_give(const sqleval_memory_t *memory, size_t bytes)
+{
+    if (bytes != 0 && memory->reserve != NULL) memory->release(memory->ctx, bytes);
+}
 
 /* ── 컴파일 ── */
 
@@ -356,18 +374,28 @@ sqleval_status_t sqleval_compile(const sqlexpr_t *expr, const sqleval_env_t *env
     if (expr == NULL) return failed(error, SQLEVAL_ARGUMENT, NULL, NULL);
     size_t nodes = 0, slots = 0;
     count_nodes(expr, &nodes, &slots);
+    if (slots == 0) slots = 1;
+    /* 노드와 인자 자리는 문장의 식 노드 수만큼이다. 할당하기 전에 계상한다 */
+    if (nodes > (SIZE_MAX - sizeof(sqleval_prog_t)) / (sizeof(node_t) + sizeof(node_t *)) || slots > nodes + 1) {
+        return failed(error, SQLEVAL_NOMEM, expr, NULL);
+    }
+    size_t bytes = sizeof(sqleval_prog_t) + nodes * sizeof(node_t) + slots * sizeof(node_t *);
+    if (!mem_take(&env->memory, bytes)) return failed(error, SQLEVAL_NOMEM, expr, NULL);
     sqleval_prog_t *prog = calloc(1, sizeof(*prog));
     node_t *array = calloc(nodes, sizeof(*array));
-    node_t **slot_array = calloc(slots > 0 ? slots : 1, sizeof(*slot_array));
+    node_t **slot_array = calloc(slots, sizeof(*slot_array));
     if (prog == NULL || array == NULL || slot_array == NULL) {
         free(prog);
         free(array);
         free(slot_array);
+        mem_give(&env->memory, bytes);
         return failed(error, SQLEVAL_NOMEM, expr, NULL);
     }
     prog->nodes = array;
     prog->slots = slot_array;
     prog->node_count = nodes;
+    prog->memory = env->memory;
+    prog->bytes = bytes;
     compiler_t c = {env, array, 0, slot_array, 0, error};
     sqleval_status_t status = compile_node(&c, expr, &prog->root);
     if (status != SQLEVAL_OK) {
@@ -381,9 +409,12 @@ sqleval_status_t sqleval_compile(const sqlexpr_t *expr, const sqleval_env_t *env
 void sqleval_free(sqleval_prog_t *prog)
 {
     if (prog == NULL) return;
+    sqleval_memory_t memory = prog->memory;
+    size_t bytes = prog->bytes;
     free(prog->nodes);
     free(prog->slots);
     free(prog);
+    mem_give(&memory, bytes);
 }
 
 value_type_t sqleval_type(const sqleval_prog_t *prog) { return prog != NULL ? prog->root->type : VALUE_NULL; }
@@ -407,13 +438,26 @@ void sqleval_mark_columns(const sqleval_prog_t *prog, bool *needed, size_t colum
 typedef struct {
     const value_t *row;
     sqleval_error_t *error;
+    const sqleval_memory_t *memory;
 } runner_t;
 
 /*
- * node를 계산해 *view에 둔다. 새 값이 필요하면 *tmp에 만들고 view가 그것을 가리킨다(호출자가 tmp를 비운다).
+ * node를 계산해 *view에 둔다. 새 값이 필요하면 *tmp에 만들고 view가 그것을 가리킨다(호출자가 tmp_clear로 비운다).
  * 열과 리터럴은 복사하지 않고 빌려 준다.
+ *
+ * 계상(#272): tmp가 쥔 TEXT·BLOB 바이트는 만들기 전에 reserve하고 tmp_clear가 돌려준다. 값을 만들 때 쓰는 작업
+ * buffer도 같다. 그래서 중간값이 아무리 커도 예산을 넘겨 할당하지 않는다.
  */
 static sqleval_status_t eval(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view);
+
+static size_t owned_bytes(const value_t *value) { return value->owns_bytes ? value->view.size_bytes : 0; }
+
+static void tmp_clear(const runner_t *r, value_t *tmp)
+{
+    size_t bytes = owned_bytes(tmp);
+    value_clear(tmp);
+    mem_give(r->memory, bytes);
+}
 
 static sqleval_status_t from_value(const runner_t *r, value_status_t status, const node_t *node)
 {
@@ -426,17 +470,40 @@ static sqleval_status_t from_value(const runner_t *r, value_status_t status, con
     }
 }
 
-static sqleval_status_t set_int(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view, int64_t v)
+/*
+ * tmp에 새 값을 쓴 value 함수의 결과를 마무리한다. reserved는 그 값을 위해 미리 reserve한 바이트, old는 쓰기 전에
+ * tmp가 쥐고 있던 바이트다. 실패하면 tmp는 그대로이므로 reserved만 돌려준다. 성공하면 옛 값이 해제됐으므로 old를,
+ * 그리고 실제로 쥔 것보다 더 잡은 몫을 돌려준다.
+ */
+static sqleval_status_t settle(const runner_t *r, const node_t *node, value_status_t status, size_t old, size_t reserved,
+                               value_t *tmp, value_view_t *view)
 {
-    value_status_t status = value_set_integer(tmp, v);
-    if (status != VALUE_OK) return from_value(r, status, node);
+    if (status != VALUE_OK) {
+        mem_give(r->memory, reserved);
+        return from_value(r, status, node);
+    }
+    size_t kept = owned_bytes(tmp);
+    mem_give(r->memory, old);
+    if (reserved > kept) mem_give(r->memory, reserved - kept);
     *view = tmp->view;
     return SQLEVAL_OK;
 }
 
-static sqleval_status_t set_null(value_t *tmp, value_view_t *view)
+static sqleval_status_t set_int(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view, int64_t v)
 {
-    value_clear(tmp);
+    size_t old = owned_bytes(tmp);
+    return settle(r, node, value_set_integer(tmp, v), old, 0, tmp, view);
+}
+
+static sqleval_status_t set_real(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view, double v)
+{
+    size_t old = owned_bytes(tmp);
+    return settle(r, node, value_set_real(tmp, v), old, 0, tmp, view);
+}
+
+static sqleval_status_t set_null(const runner_t *r, value_t *tmp, value_view_t *view)
+{
+    tmp_clear(r, tmp);
     *view = tmp->view;
     return SQLEVAL_OK;
 }
@@ -456,13 +523,13 @@ static sqleval_status_t truth(const runner_t *r, const node_t *node, int *out)
     value_view_t view;
     sqleval_status_t status = eval(r, node, &tmp, &view);
     if (status == SQLEVAL_OK) status = truth_of(r, node, &view, out);
-    value_clear(&tmp);
+    tmp_clear(r, &tmp);
     return status;
 }
 
 static sqleval_status_t set_truth(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view, int t)
 {
-    return t < 0 ? set_null(tmp, view) : set_int(r, node, tmp, view, t);
+    return t < 0 ? set_null(r, tmp, view) : set_int(r, node, tmp, view, t);
 }
 
 /* NULL이 아닌 두 값의 비교. 형식은 컴파일 때 맞췄다 */
@@ -513,10 +580,7 @@ static sqleval_status_t arithmetic(const runner_t *r, const node_t *node, const 
             break;
         default: return failed(r->error, SQLEVAL_TYPE, node->src, NULL);
     }
-    value_status_t status = value_set_real(tmp, z);
-    if (status != VALUE_OK) return from_value(r, status, node);
-    *view = tmp->view;
-    return SQLEVAL_OK;
+    return set_real(r, node, tmp, view, z);
 }
 
 /* INTEGER면 10진 표기, TEXT면 그대로. buffer는 INTEGER 표기용 */
@@ -536,10 +600,24 @@ static void text_of(const value_view_t *v, char buffer[32], const uint8_t **byte
 static sqleval_status_t set_text_bytes(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view,
                                        const uint8_t *bytes, size_t size)
 {
-    value_status_t status = value_set_text(tmp, bytes, size);
-    if (status != VALUE_OK) return from_value(r, status, node);
-    *view = tmp->view;
-    return SQLEVAL_OK;
+    size_t old = owned_bytes(tmp);
+    if (!mem_take(r->memory, size)) return failed(r->error, SQLEVAL_NOMEM, node->src, NULL);
+    return settle(r, node, value_set_text(tmp, bytes, size), old, size, tmp, view);
+}
+
+/* 값을 만드는 동안만 쓰는 작업 buffer. 계상한 뒤 할당하고 scratch_free가 돌려준다. 거절되면 NULL이다 */
+static uint8_t *scratch_alloc(const runner_t *r, size_t bytes)
+{
+    if (!mem_take(r->memory, bytes)) return NULL;
+    uint8_t *block = malloc(bytes);
+    if (block == NULL) mem_give(r->memory, bytes);
+    return block;
+}
+
+static void scratch_free(const runner_t *r, uint8_t *block, size_t bytes)
+{
+    free(block);
+    mem_give(r->memory, bytes);
 }
 
 static sqleval_status_t concat(const runner_t *r, const node_t *node, const value_view_t *a, const value_view_t *b,
@@ -553,12 +631,12 @@ static sqleval_status_t concat(const runner_t *r, const node_t *node, const valu
     if (left_size > SIZE_MAX - right_size || left_size + right_size > VALUE_MAX_BYTES) {
         return failed(r->error, SQLEVAL_LIMIT, node->src, NULL);
     }
-    uint8_t *joined = malloc(left_size + right_size + 1);
+    uint8_t *joined = scratch_alloc(r, left_size + right_size + 1);
     if (joined == NULL) return failed(r->error, SQLEVAL_NOMEM, node->src, NULL);
     if (left_size > 0) memcpy(joined, left, left_size);
     if (right_size > 0) memcpy(joined + left_size, right, right_size);
     sqleval_status_t status = set_text_bytes(r, node, tmp, view, joined, left_size + right_size);
-    free(joined);
+    scratch_free(r, joined, left_size + right_size + 1);
     return status;
 }
 
@@ -606,7 +684,7 @@ static bool like_match(const uint8_t *text, size_t text_size, const uint8_t *pat
     return p == pattern_size;
 }
 
-static sqleval_status_t eval_like(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+static NOINLINE sqleval_status_t eval_like(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
 {
     value_t parts_tmp[3];
     memset(parts_tmp, 0, sizeof(parts_tmp));
@@ -621,7 +699,7 @@ static sqleval_status_t eval_like(const runner_t *r, const node_t *node, value_t
     }
     if (status == SQLEVAL_OK) {
         if (has_null) {
-            status = set_null(tmp, view);
+            status = set_null(r, tmp, view);
         } else if (count == 3 && (parts[2].size_bytes == 0 || char_len(parts[2].bytes[0]) != parts[2].size_bytes)) {
             status = failed(r->error, SQLEVAL_ARGUMENT, node->src, NULL);
         } else {
@@ -630,7 +708,7 @@ static sqleval_status_t eval_like(const runner_t *r, const node_t *node, value_t
             status = set_int(r, node, tmp, view, matched != node->src->negated);
         }
     }
-    for (size_t i = 0; i < 3; i++) value_clear(&parts_tmp[i]);
+    for (size_t i = 0; i < 3; i++) tmp_clear(r, &parts_tmp[i]);
     return status;
 }
 
@@ -665,7 +743,7 @@ static int in_subquery(const sqleval_subquery_t *sub, const value_view_t *x)
     return sub->set_has_null ? -1 : 0;
 }
 
-static sqleval_status_t eval_in(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+static NOINLINE sqleval_status_t eval_in(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
 {
     value_t left_tmp = {0};
     value_view_t left;
@@ -682,15 +760,15 @@ static sqleval_status_t eval_in(const runner_t *r, const node_t *node, value_t *
             if (eq == 1) result = 1;
             else if (eq < 0) result = -1;
         }
-        value_clear(&item_tmp);
+        tmp_clear(r, &item_tmp);
     }
-    value_clear(&left_tmp);
+    tmp_clear(r, &left_tmp);
     if (status != SQLEVAL_OK) return status;
     if (node->src->negated && result >= 0) result = !result;
     return set_truth(r, node, tmp, view, result);
 }
 
-static sqleval_status_t eval_between(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+static NOINLINE sqleval_status_t eval_between(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
 {
     value_t parts_tmp[3];
     memset(parts_tmp, 0, sizeof(parts_tmp));
@@ -706,11 +784,11 @@ static sqleval_status_t eval_between(const runner_t *r, const node_t *node, valu
         if (node->src->negated && both >= 0) both = !both;
         status = set_truth(r, node, tmp, view, both);
     }
-    for (size_t i = 0; i < 3; i++) value_clear(&parts_tmp[i]);
+    for (size_t i = 0; i < 3; i++) tmp_clear(r, &parts_tmp[i]);
     return status;
 }
 
-static sqleval_status_t eval_case(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+static NOINLINE sqleval_status_t eval_case(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
 {
     const sqlexpr_t *expr = node->src;
     value_t operand_tmp = {0};
@@ -730,7 +808,7 @@ static sqleval_status_t eval_case(const runner_t *r, const node_t *node, value_t
             value_view_t when;
             status = eval(r, node->args[at], &when_tmp, &when);
             hit = status == SQLEVAL_OK ? equals(&operand, &when) == 1 : 0;
-            value_clear(&when_tmp);
+            tmp_clear(r, &when_tmp);
         } else {
             status = truth(r, node->args[at], &hit);
             hit = hit == 1;
@@ -740,14 +818,12 @@ static sqleval_status_t eval_case(const runner_t *r, const node_t *node, value_t
             break;
         }
     }
-    value_clear(&operand_tmp);
+    tmp_clear(r, &operand_tmp);
     if (status != SQLEVAL_OK) return status;
-    if (chosen == NULL) return set_null(tmp, view);
+    if (chosen == NULL) return set_null(r, tmp, view);
     status = eval(r, chosen, tmp, view);
     if (status == SQLEVAL_OK && node->type == VALUE_REAL && view->type == VALUE_INTEGER) {
-        value_status_t cast = value_set_real(tmp, (double)view->integer);
-        if (cast != VALUE_OK) return from_value(r, cast, node);
-        *view = tmp->view;
+        return set_real(r, node, tmp, view, (double)view->integer);
     }
     return status;
 }
@@ -853,7 +929,7 @@ static sqleval_status_t replace(const runner_t *r, const node_t *node, const val
     } else {
         size -= (from->size_bytes - to->size_bytes) * hits;
     }
-    uint8_t *out = malloc(size + 1);
+    uint8_t *out = scratch_alloc(r, size + 1);
     if (out == NULL) return failed(r->error, SQLEVAL_NOMEM, node->src, NULL);
     size_t w = 0;
     for (size_t at = 0; at < text->size_bytes;) {
@@ -864,11 +940,11 @@ static sqleval_status_t replace(const runner_t *r, const node_t *node, const val
         } else out[w++] = text->bytes[at++];
     }
     sqleval_status_t status = set_text_bytes(r, node, tmp, view, out, w);
-    free(out);
+    scratch_free(r, out, size + 1);
     return status;
 }
 
-static sqleval_status_t eval_function(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+static NOINLINE sqleval_status_t eval_function(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
 {
     size_t count = node->src->arg_count;
     if (node->fn == FN_COALESCE) {
@@ -877,14 +953,12 @@ static sqleval_status_t eval_function(const runner_t *r, const node_t *node, val
             if (status != SQLEVAL_OK) return status;
             if (view->type != VALUE_NULL) {
                 if (node->type == VALUE_REAL && view->type == VALUE_INTEGER) {
-                    value_status_t cast = value_set_real(tmp, (double)view->integer);
-                    if (cast != VALUE_OK) return from_value(r, cast, node);
-                    *view = tmp->view;
+                    return set_real(r, node, tmp, view, (double)view->integer);
                 }
                 return SQLEVAL_OK;
             }
         }
-        return set_null(tmp, view);
+        return set_null(r, tmp, view);
     }
     value_t args_tmp[3];
     memset(args_tmp, 0, sizeof(args_tmp));
@@ -897,11 +971,16 @@ static sqleval_status_t eval_function(const runner_t *r, const node_t *node, val
         if (status == SQLEVAL_OK && args[i].type == VALUE_NULL) has_null = true;
     }
     if (status == SQLEVAL_OK && node->fn == FN_NULLIF) {
-        if (args[0].type != VALUE_NULL && equals(&args[0], &args[1]) == 1) status = set_null(tmp, view);
-        else status = value_clone(&args[0], tmp) == VALUE_OK ? (*view = tmp->view, SQLEVAL_OK)
-                                                               : failed(r->error, SQLEVAL_NOMEM, node->src, NULL);
+        if (args[0].type != VALUE_NULL && equals(&args[0], &args[1]) == 1) {
+            status = set_null(r, tmp, view);
+        } else {
+            size_t old = owned_bytes(tmp);
+            size_t bytes = args[0].type == VALUE_TEXT || args[0].type == VALUE_BLOB ? args[0].size_bytes : 0;
+            if (!mem_take(r->memory, bytes)) status = failed(r->error, SQLEVAL_NOMEM, node->src, NULL);
+            else status = settle(r, node, value_clone(&args[0], tmp), old, bytes, tmp, view);
+        }
     } else if (status == SQLEVAL_OK && has_null) {
-        status = set_null(tmp, view);
+        status = set_null(r, tmp, view);
     } else if (status == SQLEVAL_OK) {
         const value_view_t *a = &args[0];
         switch (node->fn) {
@@ -910,9 +989,7 @@ static sqleval_status_t eval_function(const runner_t *r, const node_t *node, val
                     if (a->integer == INT64_MIN) status = failed(r->error, SQLEVAL_OVERFLOW, node->src, NULL);
                     else status = set_int(r, node, tmp, view, a->integer < 0 ? -a->integer : a->integer);
                 } else {
-                    value_status_t set = value_set_real(tmp, a->real < 0 ? -a->real : a->real);
-                    status = from_value(r, set, node);
-                    if (status == SQLEVAL_OK) *view = tmp->view;
+                    status = set_real(r, node, tmp, view, a->real < 0 ? -a->real : a->real);
                 }
                 break;
             case FN_LENGTH:
@@ -926,7 +1003,7 @@ static sqleval_status_t eval_function(const runner_t *r, const node_t *node, val
                 break;
             case FN_LOWER:
             case FN_UPPER: {
-                uint8_t *out = malloc(a->size_bytes + 1);
+                uint8_t *out = scratch_alloc(r, a->size_bytes + 1);
                 if (out == NULL) {
                     status = failed(r->error, SQLEVAL_NOMEM, node->src, NULL);
                     break;
@@ -938,7 +1015,7 @@ static sqleval_status_t eval_function(const runner_t *r, const node_t *node, val
                     out[i] = c;
                 }
                 status = set_text_bytes(r, node, tmp, view, out, a->size_bytes);
-                free(out);
+                scratch_free(r, out, a->size_bytes + 1);
                 break;
             }
             case FN_SUBSTR:
@@ -951,178 +1028,213 @@ static sqleval_status_t eval_function(const runner_t *r, const node_t *node, val
             default: status = failed(r->error, SQLEVAL_UNKNOWN_FUNCTION, node->src, &node->src->name); break;
         }
     }
-    for (size_t i = 0; i < 3; i++) value_clear(&args_tmp[i]);
+    for (size_t i = 0; i < 3; i++) tmp_clear(r, &args_tmp[i]);
     return status;
 }
 
-static sqleval_status_t eval(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+static NOINLINE sqleval_status_t eval_unary(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
 {
     const sqlexpr_t *expr = node->src;
+    if (expr->op == SQLEXPR_OP_NOT) {
+        int t;
+        sqleval_status_t status = truth(r, node->args[0], &t);
+        if (status != SQLEVAL_OK) return status;
+        return set_truth(r, node, tmp, view, t < 0 ? -1 : !t);
+    }
+    sqleval_status_t status = eval(r, node->args[0], tmp, view);
+    if (status != SQLEVAL_OK || expr->op == SQLEXPR_OP_PLUS || view->type == VALUE_NULL) return status;
+    if (view->type == VALUE_INTEGER) {
+        if (view->integer == INT64_MIN) return failed(r->error, SQLEVAL_OVERFLOW, expr, NULL);
+        return set_int(r, node, tmp, view, -view->integer);
+    }
+    if (view->type != VALUE_REAL) return failed(r->error, SQLEVAL_TYPE, expr, NULL);
+    return set_real(r, node, tmp, view, -view->real);
+}
+
+/* AND·OR. 왼쪽으로 결과가 정해지면 오른쪽은 계산하지 않는다 */
+static NOINLINE sqleval_status_t eval_logic(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+{
+    int a, b;
+    sqleval_status_t status = truth(r, node->args[0], &a);
+    if (status != SQLEVAL_OK) return status;
+    bool and = node->src->op == SQLEXPR_OP_AND;
+    if (and && a == 0) return set_int(r, node, tmp, view, 0);
+    if (!and && a == 1) return set_int(r, node, tmp, view, 1);
+    status = truth(r, node->args[1], &b);
+    if (status != SQLEVAL_OK) return status;
+    int result = and ? (b == 0 ? 0 : (a < 0 || b < 0 ? -1 : 1)) : (b == 1 ? 1 : (a < 0 || b < 0 ? -1 : 0));
+    return set_truth(r, node, tmp, view, result);
+}
+
+/* NULL이 아닌 두 값의 산술·연결·비교 */
+static NOINLINE sqleval_status_t apply_binary(const runner_t *r, const node_t *node, const value_view_t *left,
+                                              const value_view_t *right, value_t *tmp, value_view_t *view)
+{
+    switch (node->src->op) {
+        case SQLEXPR_OP_ADD:
+        case SQLEXPR_OP_SUB:
+        case SQLEXPR_OP_MUL:
+        case SQLEXPR_OP_DIV:
+        case SQLEXPR_OP_MOD: return arithmetic(r, node, left, right, tmp, view);
+        case SQLEXPR_OP_CONCAT: return concat(r, node, left, right, tmp, view);
+        default: break;
+    }
+    int order = compare_values(left, right);
+    bool result = false;
+    switch (node->src->op) {
+        case SQLEXPR_OP_EQ: result = order == 0; break;
+        case SQLEXPR_OP_NE: result = order != 0; break;
+        case SQLEXPR_OP_LT: result = order < 0; break;
+        case SQLEXPR_OP_LE: result = order <= 0; break;
+        case SQLEXPR_OP_GT: result = order > 0; break;
+        case SQLEXPR_OP_GE: result = order >= 0; break;
+        default: break;
+    }
+    return set_int(r, node, tmp, view, result);
+}
+
+static NOINLINE sqleval_status_t eval_binary(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+{
+    value_t left_tmp = {0}, right_tmp = {0};
+    value_view_t left, right;
+    sqleval_status_t status = eval(r, node->args[0], &left_tmp, &left);
+    if (status == SQLEVAL_OK) status = eval(r, node->args[1], &right_tmp, &right);
+    if (status == SQLEVAL_OK) {
+        if (left.type == VALUE_NULL || right.type == VALUE_NULL) status = set_null(r, tmp, view);
+        else status = apply_binary(r, node, &left, &right, tmp, view);
+    }
+    tmp_clear(r, &left_tmp);
+    tmp_clear(r, &right_tmp);
+    return status;
+}
+
+static NOINLINE sqleval_status_t eval_is_null(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+{
+    value_t inner = {0};
+    value_view_t v = {VALUE_NULL, 0, 0.0, NULL, 0};
+    sqleval_status_t status = eval(r, node->args[0], &inner, &v);
+    bool is_null = v.type == VALUE_NULL;
+    tmp_clear(r, &inner);
+    if (status != SQLEVAL_OK) return status;
+    return set_int(r, node, tmp, view, is_null != node->src->negated);
+}
+
+static NOINLINE sqleval_status_t eval_cast(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+{
+    const sqlexpr_t *expr = node->src;
+    value_t inner = {0};
+    value_view_t v;
+    sqleval_status_t status = eval(r, node->args[0], &inner, &v);
+    if (status == SQLEVAL_OK) {
+        /* 문자열을 숫자로 바꿀 때는 SQLite·PostgreSQL처럼 앞뒤 ASCII 공백을 무시한다 */
+        if (v.type == VALUE_TEXT && (expr->cast_type == VALUE_INTEGER || expr->cast_type == VALUE_REAL)) {
+            while (v.size_bytes > 0 && is_ascii_space(v.bytes[0])) {
+                v.bytes++;
+                v.size_bytes--;
+            }
+            while (v.size_bytes > 0 && is_ascii_space(v.bytes[v.size_bytes - 1])) v.size_bytes--;
+        }
+        /* 정수를 실수로 바꾸는 CAST는 산술의 암묵 변환처럼 가장 가까운 double이다(SQLite·PostgreSQL과 같음) */
+        size_t old = owned_bytes(tmp);
+        size_t reserved = expr->cast_type == VALUE_TEXT || expr->cast_type == VALUE_BLOB ? v.size_bytes + CAST_SLACK : 0;
+        if (!mem_take(r->memory, reserved)) {
+            status = failed(r->error, SQLEVAL_NOMEM, expr, NULL);
+        } else {
+            value_status_t cast = v.type == VALUE_INTEGER && expr->cast_type == VALUE_REAL
+                                      ? value_set_real(tmp, (double)v.integer)
+                                      : value_cast(&v, expr->cast_type, tmp);
+            status = settle(r, node, cast, old, reserved, tmp, view);
+        }
+    }
+    tmp_clear(r, &inner);
+    return status;
+}
+
+static NOINLINE sqleval_status_t eval_subquery(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+{
+    sqleval_status_t status = refresh(r, node);
+    if (status != SQLEVAL_OK) return status;
+    if (node->src->kind == SQLEXPR_EXISTS) return set_int(r, node, tmp, view, node->sub->row_count > 0);
+    if (node->sub->row_count > 1) return failed(r->error, SQLEVAL_SUBQUERY_SHAPE, node->src, NULL);
+    if (node->sub->row_count == 0) return set_null(r, tmp, view);
+    *view = *node->sub->first;
+    return SQLEVAL_OK;
+}
+
+/*
+ * 종류별 계산은 따로 둔 함수가 한다. 이 함수는 식 트리 높이만큼 재귀하므로 지역 변수를 두지 않는다(#272:
+ * 한 함수에 모두 두면 높이 한 단계의 스택이 가장 큰 경우의 합이 된다).
+ */
+static sqleval_status_t eval(const runner_t *r, const node_t *node, value_t *tmp, value_view_t *view)
+{
     if (node->matched) {
         *view = r->row[node->column].view;
         return SQLEVAL_OK;
     }
-    switch (expr->kind) {
+    switch (node->src->kind) {
         case SQLEXPR_LITERAL:
-            *view = expr->value.view;
+            *view = node->src->value.view;
             return SQLEVAL_OK;
         case SQLEXPR_COLUMN:
             *view = node->outer_cell != NULL ? node->outer_cell->view : r->row[node->column].view;
             return SQLEVAL_OK;
-        case SQLEXPR_UNARY: {
-            if (expr->op == SQLEXPR_OP_NOT) {
-                int t;
-                sqleval_status_t status = truth(r, node->args[0], &t);
-                if (status != SQLEVAL_OK) return status;
-                return set_truth(r, node, tmp, view, t < 0 ? -1 : !t);
-            }
-            sqleval_status_t status = eval(r, node->args[0], tmp, view);
-            if (status != SQLEVAL_OK || expr->op == SQLEXPR_OP_PLUS || view->type == VALUE_NULL) return status;
-            if (view->type == VALUE_INTEGER) {
-                if (view->integer == INT64_MIN) return failed(r->error, SQLEVAL_OVERFLOW, expr, NULL);
-                return set_int(r, node, tmp, view, -view->integer);
-            }
-            if (view->type != VALUE_REAL) return failed(r->error, SQLEVAL_TYPE, expr, NULL);
-            value_status_t set = value_set_real(tmp, -view->real);
-            if (set != VALUE_OK) return from_value(r, set, node);
-            *view = tmp->view;
-            return SQLEVAL_OK;
-        }
-        case SQLEXPR_BINARY: {
-            if (expr->op == SQLEXPR_OP_AND || expr->op == SQLEXPR_OP_OR) {
-                int a, b;
-                sqleval_status_t status = truth(r, node->args[0], &a);
-                if (status != SQLEVAL_OK) return status;
-                bool and = expr->op == SQLEXPR_OP_AND;
-                if (and && a == 0) return set_int(r, node, tmp, view, 0);
-                if (!and && a == 1) return set_int(r, node, tmp, view, 1);
-                status = truth(r, node->args[1], &b);
-                if (status != SQLEVAL_OK) return status;
-                int result = and ? (b == 0 ? 0 : (a < 0 || b < 0 ? -1 : 1)) : (b == 1 ? 1 : (a < 0 || b < 0 ? -1 : 0));
-                return set_truth(r, node, tmp, view, result);
-            }
-            value_t left_tmp = {0}, right_tmp = {0};
-            value_view_t left, right;
-            sqleval_status_t status = eval(r, node->args[0], &left_tmp, &left);
-            if (status == SQLEVAL_OK) status = eval(r, node->args[1], &right_tmp, &right);
-            if (status == SQLEVAL_OK) {
-                if (left.type == VALUE_NULL || right.type == VALUE_NULL) {
-                    status = set_null(tmp, view);
-                } else {
-                    switch (expr->op) {
-                        case SQLEXPR_OP_ADD:
-                        case SQLEXPR_OP_SUB:
-                        case SQLEXPR_OP_MUL:
-                        case SQLEXPR_OP_DIV:
-                        case SQLEXPR_OP_MOD: status = arithmetic(r, node, &left, &right, tmp, view); break;
-                        case SQLEXPR_OP_CONCAT: status = concat(r, node, &left, &right, tmp, view); break;
-                        default: {
-                            int order = compare_values(&left, &right);
-                            bool result = false;
-                            switch (expr->op) {
-                                case SQLEXPR_OP_EQ: result = order == 0; break;
-                                case SQLEXPR_OP_NE: result = order != 0; break;
-                                case SQLEXPR_OP_LT: result = order < 0; break;
-                                case SQLEXPR_OP_LE: result = order <= 0; break;
-                                case SQLEXPR_OP_GT: result = order > 0; break;
-                                case SQLEXPR_OP_GE: result = order >= 0; break;
-                                default: break;
-                            }
-                            status = set_int(r, node, tmp, view, result);
-                            break;
-                        }
-                    }
-                }
-            }
-            value_clear(&left_tmp);
-            value_clear(&right_tmp);
-            return status;
-        }
-        case SQLEXPR_IS_NULL: {
-            value_t inner = {0};
-            value_view_t v;
-            sqleval_status_t status = eval(r, node->args[0], &inner, &v);
-            bool is_null = v.type == VALUE_NULL;
-            value_clear(&inner);
-            if (status != SQLEVAL_OK) return status;
-            return set_int(r, node, tmp, view, is_null != expr->negated);
-        }
+        case SQLEXPR_UNARY: return eval_unary(r, node, tmp, view);
+        case SQLEXPR_BINARY:
+            if (node->src->op == SQLEXPR_OP_AND || node->src->op == SQLEXPR_OP_OR) return eval_logic(r, node, tmp, view);
+            return eval_binary(r, node, tmp, view);
+        case SQLEXPR_IS_NULL: return eval_is_null(r, node, tmp, view);
         case SQLEXPR_BETWEEN: return eval_between(r, node, tmp, view);
         case SQLEXPR_IN: return eval_in(r, node, tmp, view);
         case SQLEXPR_LIKE: return eval_like(r, node, tmp, view);
         case SQLEXPR_CASE: return eval_case(r, node, tmp, view);
-        case SQLEXPR_CAST: {
-            value_t inner = {0};
-            value_view_t v;
-            sqleval_status_t status = eval(r, node->args[0], &inner, &v);
-            if (status == SQLEVAL_OK) {
-                /* 문자열을 숫자로 바꿀 때는 SQLite·PostgreSQL처럼 앞뒤 ASCII 공백을 무시한다 */
-                if (v.type == VALUE_TEXT && (expr->cast_type == VALUE_INTEGER || expr->cast_type == VALUE_REAL)) {
-                    while (v.size_bytes > 0 && is_ascii_space(v.bytes[0])) {
-                        v.bytes++;
-                        v.size_bytes--;
-                    }
-                    while (v.size_bytes > 0 && is_ascii_space(v.bytes[v.size_bytes - 1])) v.size_bytes--;
-                }
-                /* 정수를 실수로 바꾸는 CAST는 산술의 암묵 변환처럼 가장 가까운 double이다(SQLite·PostgreSQL과 같음) */
-                value_status_t cast = v.type == VALUE_INTEGER && expr->cast_type == VALUE_REAL
-                                          ? value_set_real(tmp, (double)v.integer)
-                                          : value_cast(&v, expr->cast_type, tmp);
-                status = from_value(r, cast, node);
-                if (status == SQLEVAL_OK) *view = tmp->view;
-            }
-            value_clear(&inner);
-            return status;
-        }
+        case SQLEXPR_CAST: return eval_cast(r, node, tmp, view);
         case SQLEXPR_FUNCTION: return eval_function(r, node, tmp, view);
-        case SQLEXPR_SUBQUERY: {
-            sqleval_status_t status = refresh(r, node);
-            if (status != SQLEVAL_OK) return status;
-            if (node->sub->row_count > 1) return failed(r->error, SQLEVAL_SUBQUERY_SHAPE, expr, NULL);
-            if (node->sub->row_count == 0) return set_null(tmp, view);
-            *view = *node->sub->first;
-            return SQLEVAL_OK;
-        }
-        case SQLEXPR_EXISTS: {
-            sqleval_status_t status = refresh(r, node);
-            if (status != SQLEVAL_OK) return status;
-            return set_int(r, node, tmp, view, node->sub->row_count > 0);
-        }
+        case SQLEXPR_SUBQUERY:
+        case SQLEXPR_EXISTS: return eval_subquery(r, node, tmp, view);
     }
-    return failed(r->error, SQLEVAL_TYPE, expr, NULL);
+    return failed(r->error, SQLEVAL_TYPE, node->src, NULL);
 }
 
 sqleval_status_t sqleval_run(const sqleval_prog_t *prog, const value_t *row, value_t *out, sqleval_error_t *error)
 {
     if (prog == NULL || out == NULL) return failed(error, SQLEVAL_ARGUMENT, NULL, NULL);
-    runner_t r = {row, error};
+    runner_t r = {row, error, &prog->memory};
     value_t tmp = {0};
     value_view_t view;
     sqleval_status_t status = eval(&r, prog->root, &tmp, &view);
     if (status != SQLEVAL_OK) {
-        value_clear(&tmp);
+        tmp_clear(&r, &tmp);
         return status;
     }
     /* 결과 형식을 정적 형식에 맞춘다(INTEGER가 REAL 자리에 온 경우) */
     if (prog->root->type == VALUE_REAL && view.type == VALUE_INTEGER) {
         value_status_t set = value_set_real(out, (double)view.integer);
-        value_clear(&tmp);
+        tmp_clear(&r, &tmp);
         return set == VALUE_OK ? SQLEVAL_OK : from_value(&r, set, prog->root);
     }
+    /* 결과는 계상하지 않은 채 넘긴다(호출자가 자기 몫으로 계상한다). tmp를 그대로 넘기면 그 몫을 돌려준다 */
     if (view.bytes != NULL && view.bytes == tmp.view.bytes) {
         value_clear(out);
+        mem_give(&prog->memory, owned_bytes(&tmp));
         *out = tmp;
         return SQLEVAL_OK;
     }
+    /* 빌린 값(열·리터럴)의 복제도 예산이 받을 때만 만든다 */
+    size_t bytes = view.type == VALUE_TEXT || view.type == VALUE_BLOB ? view.size_bytes : 0;
+    if (!mem_take(&prog->memory, bytes)) {
+        tmp_clear(&r, &tmp);
+        return failed(error, SQLEVAL_NOMEM, prog->root->src, NULL);
+    }
     value_status_t cloned = value_clone(&view, out);
-    value_clear(&tmp);
+    mem_give(&prog->memory, bytes);
+    tmp_clear(&r, &tmp);
     return cloned == VALUE_OK ? SQLEVAL_OK : from_value(&r, cloned, prog->root);
 }
 
 sqleval_status_t sqleval_test(const sqleval_prog_t *prog, const value_t *row, bool *truth_out, sqleval_error_t *error)
 {
     if (prog == NULL || truth_out == NULL) return failed(error, SQLEVAL_ARGUMENT, NULL, NULL);
-    runner_t r = {row, error};
+    runner_t r = {row, error, &prog->memory};
     int t = 0;
     sqleval_status_t status = truth(&r, prog->root, &t);
     *truth_out = status == SQLEVAL_OK && t == 1;

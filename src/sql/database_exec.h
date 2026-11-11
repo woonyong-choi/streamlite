@@ -420,6 +420,7 @@ size_t resolve_column(void *ctx, const sqlstmt_name_t *qualifier, const sqlstmt_
                              value_type_t *type);
 size_t source_of(const resolver_t *r, size_t column);
 database_exec_status_t eval_failure(database_t *db, const sqleval_error_t *error);
+sqleval_memory_t eval_memory(database_t *db);
 bool compile_expr(database_t *db, const sqlexpr_t *expr, const resolver_t *resolver, sqleval_prog_t **prog,
                          database_exec_status_t *status);
 void where_clear(database_t *db, where_t *where);

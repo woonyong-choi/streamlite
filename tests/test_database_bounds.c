@@ -434,6 +434,130 @@ static void test_create_index_rejects_trailing_tokens(void)
     assert(database_close(db) == DATABASE_OK);
 }
 
+/* ── 식 중간값의 메모리 계상 ── */
+
+typedef struct {
+    size_t used;
+    size_t peak;
+    size_t limit;
+} budget_t;
+
+static bool budget_reserve(void *ctx, mem_scope_t scope, size_t bytes)
+{
+    (void)scope;
+    budget_t *budget = ctx;
+    if (budget->limit != 0 && bytes > budget->limit - budget->used) return false;
+    budget->used += bytes;
+    if (budget->used > budget->peak) budget->peak = budget->used;
+    return true;
+}
+
+static void budget_release(void *ctx, mem_scope_t scope, size_t bytes)
+{
+    (void)scope;
+    budget_t *budget = ctx;
+    assert(bytes <= budget->used);
+    budget->used -= bytes;
+}
+
+static const mem_ledger_ops_t BUDGET_OPS = {budget_reserve, budget_release, NULL, NULL};
+
+/* limit 바이트 예산으로 실행한 결과 표현과 최고 계상량. 결과를 놓은 뒤 남은 계상은 0이어야 한다 */
+static char *run_budget(database_t *db, const char *sql, size_t limit, size_t *peak)
+{
+    budget_t budget = {0, 0, limit};
+    mem_ledger_t ledger = {&BUDGET_OPS, &budget};
+    database_exec_options_t options = {&ledger, NULL, 0};
+    char *text = query_ex(db, &options, sql);
+    CHECK(budget.used == 0, "%.80s: 문장이 끝난 뒤 계상 %zu바이트가 남음", sql, budget.used);
+    if (peak != NULL) *peak = budget.peak;
+    return text;
+}
+
+static void expect_charged(database_t *db, const char *sql, const char *expected, size_t at_least, size_t tight_limit)
+{
+    size_t peak = 0;
+    char *got = run_budget(db, sql, 0, &peak);
+    CHECK(strcmp(got, expected) == 0, "%.120s\n      기대: %s\n      실제: %.200s", sql, expected, got);
+    CHECK(peak >= at_least, "%.120s: 최고 계상 %zu바이트, 중간값 %zu바이트 이상을 계상해야 함", sql, peak, at_least);
+    free(got);
+    /* 중간값보다 작은 예산에서는 예산 오류로 끝난다(값을 만들고 나서가 아니라 만들기 전에 거절한다) */
+    got = run_budget(db, sql, tight_limit, &peak);
+    char head[32];
+    snprintf(head, sizeof(head), "ERR %d %d ", (int)RESULT_E_NOMEM, DATABASE_CODE_BUDGET);
+    CHECK(strncmp(got, head, strlen(head)) == 0, "%.120s: 예산 %zu바이트에서 %.200s", sql, tight_limit, got);
+    CHECK(peak <= tight_limit, "%.120s: 예산 %zu바이트를 넘겨 %zu바이트를 계상", sql, tight_limit, peak);
+    free(got);
+}
+
+static void test_expression_intermediates_are_charged(void)
+{
+    printf("\n[test_expression_intermediates_are_charged]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT)");
+    char *seed = repeated("INSERT INTO t VALUES (1, '", "a", 1000, "')", "", "");
+    exec_ok(db, seed);
+    free(seed);
+    size_t mb = (size_t)1 << 20, tight = (size_t)256 << 10;
+    /* 1000글자를 10배씩 세 번 늘리면 1,000,000바이트다. 결과는 정수 하나라 결과 계상으로는 드러나지 않는다 */
+    expect_charged(db, "SELECT LENGTH(REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa')) FROM t",
+                   "[1] 1000000", 1000000, tight);
+    expect_charged(db, "SELECT LENGTH(LOWER(REPLACE(REPLACE(REPLACE(b, 'a', 'AAAAAAAAAA'), 'A', 'AAAAAAAAAA'), 'A', 'AAAAAAAAAA'))) FROM t",
+                   "[1] 1000000", 1000000, tight);
+    expect_charged(db, "SELECT LENGTH(UPPER(REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'))) FROM t",
+                   "[1] 1000000", 1000000, tight);
+    expect_charged(db, "SELECT LENGTH(TRIM(REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'))) FROM t",
+                   "[1] 1000000", 1000000, tight);
+    expect_charged(db, "SELECT LENGTH(SUBSTR(REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 2)) FROM t",
+                   "[1] 999999", 1000000, tight);
+    expect_charged(db, "SELECT LENGTH(REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa') || b) FROM t",
+                   "[1] 1001000", 1001000, tight);
+    expect_charged(db, "SELECT LENGTH(CAST(REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa') AS BLOB)) FROM t",
+                   "[1] 1000000", 1000000, tight);
+    expect_charged(db, "SELECT COUNT(*) FROM t WHERE REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa') LIKE 'a%'",
+                   "[1] 1", 1000000, tight);
+    /* 넉넉한 예산에서는 그대로 계산되고 예산을 넘겨 계상하지 않는다 */
+    size_t peak = 0;
+    char *got = run_budget(db, "SELECT LENGTH(REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa')) FROM t",
+                           8 * mb, &peak);
+    CHECK(strcmp(got, "[1] 1000000") == 0 && peak <= 8 * mb, "넉넉한 예산: %.100s (최고 %zu)", got, peak);
+    free(got);
+
+    /* UPDATE의 SET 식도 같다. 예산에 막히면 행은 그대로다 */
+    {
+        const char *update = "UPDATE t SET b = SUBSTR(REPLACE(REPLACE(REPLACE(b, 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 'a', 'aaaaaaaaaa'), 1, 3) "
+                             "WHERE a = 1";
+        got = run_budget(db, update, tight, &peak);
+        CHECK(strncmp(got, "ERR 5 24 ", 9) == 0 && peak <= tight, "UPDATE 예산 %zu바이트: %.100s (최고 %zu)", tight, got, peak);
+        free(got);
+        expect_text(db, "SELECT LENGTH(b) FROM t", "[1] 1000");
+        got = run_budget(db, update, 0, &peak);
+        CHECK(strcmp(got, "CMD UPDATE 1") == 0 && peak >= 1000000, "UPDATE: %.100s (최고 %zu)", got, peak);
+        free(got);
+        expect_text(db, "SELECT b FROM t", "[1] 'aaa'");
+    }
+    /*
+     * 컴파일한 프로그램(노드·인자 자리 배열)도 계상한다. 토큰이 둘 많고 컴파일 전에 끝나는 문장(없는 표)과 견주면
+     * lexer·parser 몫은 같으므로 차이는 프로그램 몫이다. 노드 1001개는 노드마다 포인터 여덟 개보다 크다.
+     */
+    {
+        size_t compiled = 0, rejected = 0;
+        char *valid = repeated("SELECT 1", "+0", 500, "", "", "");
+        char *early = repeated("SELECT 1", "+0", 500, " FROM nosuch", "", "");
+        got = run_budget(db, valid, 0, &compiled);
+        CHECK(strcmp(got, "[1] 1") == 0, "식 500개: %.100s", got);
+        free(got);
+        got = run_budget(db, early, 0, &rejected);
+        CHECK(strncmp(got, "ERR 2 1 ", 8) == 0, "없는 표: %.100s", got);
+        free(got);
+        CHECK(compiled >= rejected + 1001 * 8 * sizeof(void *) - 4096,
+              "프로그램 계상: 컴파일한 문장 %zu바이트, 컴파일 전에 끝난 문장 %zu바이트", compiled, rejected);
+        free(valid);
+        free(early);
+    }
+    assert(database_close(db) == DATABASE_OK);
+}
+
 /* ── SUBSTR 경계(SQLite와 같은 의미. 격자 대조는 test_database_sqlite에 있다) ── */
 
 static void test_substr_bounds(void)
@@ -465,6 +589,7 @@ int main(int argc, char **argv)
         {"update_cannot_null_primary_key", test_update_cannot_null_primary_key},
         {"create_index_rejects_trailing_tokens", test_create_index_rejects_trailing_tokens},
         {"substr_bounds", test_substr_bounds},
+        {"expression_intermediates_are_charged", test_expression_intermediates_are_charged},
     };
     for (size_t i = 0; i < sizeof(TESTS) / sizeof(TESTS[0]); i++) {
         if (argc < 2 || strstr(TESTS[i].name, argv[1]) != NULL) TESTS[i].run();
