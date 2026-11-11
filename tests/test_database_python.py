@@ -368,6 +368,22 @@ def test_order_ties_and_access_paths_keep_row_order(tmp_path: Path) -> None:
         assert db.execute(sql).rows == expected, sql
 
 
+# #283: 저장할 수 있는 행은 SELECT로 돌려줄 수 있다. 한 행의 TEXT·BLOB 합 한도는 63MiB다
+ROW_VALUE_LIMIT = (64 << 20) - (1 << 20)
+
+
+def test_row_over_value_limit_is_rejected_and_largest_row_reads_back(tmp_path: Path) -> None:
+    db = Database(tmp_path / "big.streamlite")
+    db.execute("CREATE TABLE b (id INTEGER PRIMARY KEY, v BLOB)")
+    with pytest.raises(SqlError) as raised:
+        db.execute("INSERT INTO b VALUES (1, ?)", (b"x" * (ROW_VALUE_LIMIT + 1),))
+    assert (raised.value.error_class, raised.value.error_code) == (4, 54)
+    db.execute("INSERT INTO b VALUES (2, ?)", (b"y" * ROW_VALUE_LIMIT,))
+    rows = db.execute("SELECT id, v FROM b").rows
+    assert len(rows) == 1 and rows[0][0] == 2 and len(rows[0][1]) == ROW_VALUE_LIMIT
+    db.close()
+
+
 # #283: 색인 한도는 DB 전체 1024개라 색인 4개를 쓰는 큐를 16개 넘게 만들고 그 뒤에도 사용자 색인을 만든다
 def test_more_than_sixteen_queues_and_user_index(tmp_path: Path) -> None:
     from streamlite import Queue

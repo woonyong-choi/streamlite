@@ -88,6 +88,9 @@ void streamlite_free(void *pointer);
  * streamlite_exec가 만드는 인코딩 버퍼의 상한(바이트). 기본은 STREAMLITE_DEFAULT_MAX_RESULT_BYTES다. 넘는 결과는 부분 행을 주지 않고
  * STREAMLITE_LIMIT으로 거절하며, 메모리 할당 실패는 STREAMLITE_NOMEM이다. TEXT·BLOB 셀과 열 이름은 u32 길이로 인코딩하므로
  * UINT32_MAX를 넘는 길이도 STREAMLITE_LIMIT이다. 이 값은 프로세스 전역이며 결과를 만들기 전에 정한다.
+ * 저장하는 쪽은 한 행의 TEXT·BLOB 합을 63MiB(기본 상한 - 1MiB)로 제한하므로(#283) 기본 상한에서는 저장한 행 하나를
+ * 언제나 돌려줄 수 있다. 넘는 INSERT·UPDATE는 반영하지 않고 LIMIT 분류(코드 54)의 오류 결과다. 상한을 줄이거나 큰 행
+ * 여러 개를 한 결과로 읽으면 그 결과는 STREAMLITE_LIMIT일 수 있다.
  */
 #define STREAMLITE_DEFAULT_MAX_RESULT_BYTES ((size_t)64 << 20)
 void streamlite_set_max_result_bytes(size_t limit);

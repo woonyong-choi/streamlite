@@ -237,6 +237,18 @@ database_exec_status_t database_exec(database_t *db, const uint8_t *sql, size_t 
 #define DATABASE_CODE_SET_OPERATION 51      /* 집합 연산 양쪽 열 수가 다르거나 ORDER BY가 결과 열이 아님 */
 #define DATABASE_CODE_SUBQUERY 52           /* 서브쿼리 결과 모양이 자리에 맞지 않음, WITH 열 이름 수가 다름 */
 #define DATABASE_CODE_CONFLICT 53           /* ON CONFLICT 대상·갱신 열이 맞지 않거나 같은 행을 두 번 바꿈 */
+/* 저장할 행이 DATABASE_MAX_ROW_VALUE_BYTES를 넘는 오류 결과의 code(RESULT_E_LIMIT) */
+#define DATABASE_CODE_ROW_TOO_LARGE 54
+
+/*
+ * INSERT·UPDATE·ON CONFLICT DO UPDATE가 저장할 한 행의 TEXT·BLOB 바이트 합 한도(#283). 넘으면 아무것도 반영하지 않고
+ * RESULT_E_LIMIT(DATABASE_CODE_ROW_TOO_LARGE) 오류 결과다. 저장한 행을 SELECT로 돌려줄 수 없는 상태를 만들지 않기 위한
+ * 값이다: 행 하나의 결과 비용(값 바이트 + 셀 배열, 열 최대 1024개면 수십 KiB)이 결과 행 한도
+ * RESULT_DEFAULT_MAX_ROW_BYTES(64MiB) 안에 들고, 그 행 하나의 C 인코딩(열 이름·형식·셀 머리 포함 1MiB 미만의 추가분)이
+ * 기본 결과 상한 STREAMLITE_DEFAULT_MAX_RESULT_BYTES(64MiB) 안에 들도록 1MiB를 남긴다. 결과 상한을
+ * streamlite_set_max_result_bytes로 줄이거나 여러 큰 행을 한 결과로 읽으면 그 결과는 여전히 LIMIT일 수 있다.
+ */
+#define DATABASE_MAX_ROW_VALUE_BYTES (RESULT_DEFAULT_MAX_ROW_BYTES - ((size_t)1 << 20))
 
 typedef struct {
     bool (*requested)(void *ctx);

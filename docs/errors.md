@@ -185,6 +185,7 @@ core의 `DATABASE_LOST_COMMIT`도 현재 이 값으로 나온다(대응하는 �
 | `3, 11` | 기본 키·유일 색인 검사 |
 | `3, 53` | ON CONFLICT 갱신 대상 검사 |
 | `4, 25` | SQL 입력 길이 검사 |
+| `4, 54` | 저장할 행의 TEXT·BLOB 합 검사 |
 | `5, 24` | 메모리 예산 검사 |
 | `6, 19` | poisoned 핸들의 SQL |
 | `6, 32` | 자동 commit 또는 SQL `COMMIT` |
@@ -280,6 +281,14 @@ core의 `DATABASE_LOST_COMMIT`도 현재 이 값으로 나온다(대응하는 �
 원인: 입력 실효 상한을 넘었다.
 
 대응: SQL 크기를 줄인다.
+
+#### `4, 54` 저장할 행의 TEXT·BLOB 합 검사
+
+메시지: `행의 TEXT·BLOB 값 합이 한도 %zu바이트를 넘습니다`
+
+원인: INSERT·UPDATE·`ON CONFLICT DO UPDATE`가 저장할 한 행의 TEXT·BLOB 바이트 합이 63MiB(`66060288`바이트)를 넘는다. 이 한도를 넘는 행은 저장해도 SELECT 결과 한도 때문에 돌려줄 수 없으므로 문장 전체를 반영하지 않는다([설정](configuration.md#sql-입력과-결과-한도)).
+
+대응: 값을 나눠 여러 행에 저장한다. 큐 payload도 같은 행에 저장되므로 이 한도 안이어야 한다(Python `LimitError`).
 
 #### `5, 24` 메모리 예산 검사
 

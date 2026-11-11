@@ -600,6 +600,7 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
         }
         for (size_t i = 0; i < n; i++) views[i] = matches.items[m].cells[i].view;
         for (size_t i = 0; i < assign_count; i++) views[targets[i]] = fresh[m * assign_count + i].view;
+        if (!row_fits_limit(db, views, n, &status)) goto done;
         heap_locator_t placed;
         heap_status_t changed = vacates != NULL && vacates[m]
                                     ? heap_batch_insert(batch, views, n, &placed)

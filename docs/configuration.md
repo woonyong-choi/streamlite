@@ -48,7 +48,7 @@ Flat C API의 `streamlite_open`은 writer 경합을 호출자에게 반환한다
 
 C의 `options=NULL` 또는 0으로 초기화한 옵션은 기본값이다. C의 `idem_retention_ms=0`은 기본 7일이고 `UINT64_MAX`는 purge 뒤 키를 보존하지 않는다. Python의 `idem_retention_ms=0`은 보존하지 않는다는 뜻이며 내부에서 이 sentinel로 변환한다. 일반 보존 기간의 최대는 `3162240000000`밀리초다.
 
-C의 `max_payload_bytes=0`은 기본 1MiB다. Python은 0 이하를 거절한다. 설정 가능한 최대는 `1073741824`바이트지만 내부 행·결과 한도가 더 먼저 적용될 수 있다. 이름, 키와 reason의 NUL 경계는 [데이터](data.md#sql-값과-바인딩)에 있다. 음수나 범위를 넘는 Python 숫자는 unsigned ctypes 변환 전에 모든 인자에서 일관되게 검사하지 않으므로 자동 보정되는 입력으로 취급하지 않는다.
+C의 `max_payload_bytes=0`은 기본 1MiB다. Python은 0 이하를 거절한다. 설정 가능한 최대는 `1073741824`바이트지만 payload는 큐 테이블의 한 행에 저장하므로 아래 행 저장 한도(TEXT·BLOB 합 63MiB, `idem`·`note` 포함)를 넘는 `put`·`update`는 `LIMIT`이다. 이름, 키와 reason의 NUL 경계는 [데이터](data.md#sql-값과-바인딩)에 있다. 음수나 범위를 넘는 Python 숫자는 unsigned ctypes 변환 전에 모든 인자에서 일관되게 검사하지 않으므로 자동 보정되는 입력으로 취급하지 않는다.
 
 ### 큐 연산 인자
 
@@ -74,11 +74,14 @@ Python `list_items`는 큰 limit을 1024로 줄인다. `recover`, `release_lease
 | SQL 입력 실효 한도 | 1MiB, UTF-8 바이트 | Flat C·Python 변경 옵션 없음 |
 | SQL 식·질의 재귀 | 식 트리 높이 512, 식 중첩 128, 질의 중첩 16, 결합 단계 64 | 없음 |
 | C 인코딩 결과 전체 | 64MiB, `67108864`바이트 | `streamlite_set_max_result_bytes(size_t)` |
+| 저장할 한 행의 TEXT·BLOB 합 | 63MiB, `66060288`바이트 | 없음 |
 | 내부 결과 행 | 기본 64MiB, 셀 배열과 값 바이트 합 | Flat C·Python 변경 옵션 없음 |
 | 내부 builder 결과 | 기본 256MiB, metadata와 행 합 | Flat C·Python 변경 옵션 없음 |
 | 결과 열 수·이름 | 최대 1024개·이름 256바이트 | 없음 |
 | 명령 tag·오류 메시지 | 최대 32바이트·1024바이트 | 없음 |
 | 보조 색인 수 | DB 전체 1024개, 테이블당 64개. 큐 하나가 4개 사용 | 없음 |
+
+행 저장 한도는 결과 한도에서 정했다. INSERT·UPDATE·`ON CONFLICT DO UPDATE`가 만들 행의 TEXT·BLOB 합이 63MiB를 넘으면 아무것도 반영하지 않고 `LIMIT`(분류 4, 코드 54) 오류다. 그래서 저장한 행 하나는 내부 결과 행 한도(64MiB)와 기본 C 인코딩 결과 상한(64MiB, 열 이름·셀 머리 몫 1MiB 남김) 안에서 언제나 SELECT로 돌아온다. 0.3.0 개발 중에는 64MiB 이상 값의 INSERT·UPDATE가 성공하고 SELECT만 실패했다. 결과 cap을 줄이거나 큰 행 여러 개를 한 결과로 읽으면 그 결과는 여전히 `LIMIT`일 수 있으므로 `WHERE`나 `LIMIT`로 나눠 읽는다.
 
 보조 색인 한도는 DB 전체 1024개, 테이블 하나에 64개다. 큐 하나는 큐 테이블 색인 3개(`due`·`idem`·`lease_until`)와 키 테이블 유일 색인 1개를 쓰므로, 사용자 색인이 없으면 큐를 256개까지 만들 수 있다. 0.3.0 개발 중에는 DB 전체 한도가 64개라 큐 16개 뒤 큐 설치와 사용자 `CREATE INDEX`가 실패했다. 카탈로그 형식은 색인 수를 u32로 쓰므로 형식은 그대로이며, 전체 한도가 64개이던 빌드는 64개를 넘는 파일을 열 때 파일을 바꾸지 않고 손상(`DB_CORRUPT`)으로 거절한다.
 

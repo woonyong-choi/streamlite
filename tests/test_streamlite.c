@@ -854,6 +854,82 @@ static void test_open_while_other_process_writes(void)
     streamlite_close(&db);
 }
 
+/* ── #283 저장한 행은 SELECT로 돌려줄 수 있다 ── */
+
+/* 오류 결과면 "ERR 분류,코드", 아니면 render와 같은 줄 */
+static int exec_code(streamlite_db_t *db, const char *sql, const streamlite_param_t *params, size_t n, char *out, size_t cap)
+{
+    uint8_t *buf = NULL;
+    size_t size = 0;
+    int st = streamlite_exec(db, NULL, sql, params, n, &buf, &size);
+    if (st == STREAMLITE_OK && size >= 9 && buf[0] == 2) {
+        reader_t r = {buf, size, 1};
+        uint32_t cls = (uint32_t)rd(&r, 4);
+        int32_t code = (int32_t)rd(&r, 4);
+        snprintf(out, cap, "ERR %u,%d", cls, code);
+    } else if (st == STREAMLITE_OK) {
+        render(buf, size, out, cap);
+    } else {
+        snprintf(out, cap, "status %d", st);
+    }
+    streamlite_free(buf);
+    return st;
+}
+
+static void test_stored_row_is_readable(void)
+{
+    printf("\n[#283 저장한 행은 SELECT로 돌려줄 수 있다]\n");
+    fresh_dir();
+    streamlite_db_t *db = open_capi_db("rows");
+    char out[256], expect[64];
+    CHECK(exec_code(db, "CREATE TABLE b (id INTEGER PRIMARY KEY, v BLOB, w TEXT)", NULL, 0, out, sizeof(out)) == STREAMLITE_OK,
+          "표");
+    CHECK(exec_code(db, "CREATE TABLE u (k INTEGER PRIMARY KEY, v BLOB)", NULL, 0, out, sizeof(out)) == STREAMLITE_OK, "표 u");
+    size_t limit = DATABASE_MAX_ROW_VALUE_BYTES;
+    CHECK(limit <= STREAMLITE_DEFAULT_MAX_RESULT_BYTES - ((size_t)1 << 20), "한도는 기본 결과 상한보다 1MiB 작다 (%zu)", limit);
+    uint8_t *big = calloc(1, limit + 1);
+    assert(big != NULL);
+
+    /* 한도를 넘는 값은 수정 전에는 들어갔지만 SELECT가 결과 한도로 실패했다 */
+    streamlite_param_t over[2] = {p_int(1), p_blob(big, limit + 1)};
+    exec_code(db, "INSERT INTO b (id, v) VALUES (?, ?)", over, 2, out, sizeof(out));
+    CHECK(strcmp(out, "ERR 4,54") == 0, "한도 + 1바이트 INSERT는 LIMIT (%s)", out);
+    exec_code(db, "SELECT COUNT(*) FROM b", NULL, 0, out, sizeof(out));
+    CHECK(strcmp(out, "ROWS[COUNT:1?] (0)") == 0, "거절한 INSERT는 반영되지 않았다 (%s)", out);
+
+    /* 값 둘의 합으로 넘어도 거절한다 */
+    streamlite_param_t split[3] = {p_int(2), p_blob(big, limit / 2 + 1), {STREAMLITE_PARAM_TEXT, 0, 0, big, limit / 2 + 1}};
+    memset(big, 'a', limit / 2 + 1);
+    exec_code(db, "INSERT INTO b VALUES (?, ?, ?)", split, 3, out, sizeof(out));
+    CHECK(strcmp(out, "ERR 4,54") == 0, "TEXT·BLOB 합이 넘는 행은 LIMIT (%s)", out);
+    memset(big, 0, limit / 2 + 1);
+
+    /* 한도와 같은 값은 들어가고 SELECT로 읽힌다 */
+    streamlite_param_t fit[2] = {p_int(3), p_blob(big, limit)};
+    exec_code(db, "INSERT INTO b (id, v) VALUES (?, ?)", fit, 2, out, sizeof(out));
+    CHECK(strcmp(out, "CMD INSERT 1") == 0, "한도와 같은 INSERT (%s)", out);
+    exec_code(db, "SELECT * FROM b WHERE id = 3", NULL, 0, out, sizeof(out));
+    snprintf(expect, sizeof(expect), "(3|b%zu|NULL)", limit);
+    CHECK(strstr(out, expect) != NULL, "한도와 같은 행을 SELECT * 로 읽는다 (%s)", out);
+
+    /* UPDATE·ON CONFLICT DO UPDATE도 한도를 넘는 행을 만들지 않는다 */
+    exec_code(db, "UPDATE b SET w = 'x' WHERE id = 3", NULL, 0, out, sizeof(out));
+    CHECK(strcmp(out, "ERR 4,54") == 0, "한도를 넘게 만드는 UPDATE는 LIMIT (%s)", out);
+    exec_code(db, "UPDATE b SET v = X'01' WHERE id = 3", NULL, 0, out, sizeof(out));
+    CHECK(strcmp(out, "CMD UPDATE 1") == 0, "줄이는 UPDATE (%s)", out);
+    streamlite_param_t grow[1] = {p_blob(big, limit + 1)};
+    exec_code(db, "UPDATE b SET v = ? WHERE id = 3", grow, 1, out, sizeof(out));
+    CHECK(strcmp(out, "ERR 4,54") == 0, "한도를 넘는 값으로 바꾸는 UPDATE는 LIMIT (%s)", out);
+    exec_code(db, "INSERT INTO u VALUES (1, X'00')", NULL, 0, out, sizeof(out));
+    streamlite_param_t upsert[2] = {p_int(1), p_blob(big, limit + 1)};
+    exec_code(db, "INSERT INTO u VALUES (?, X'00') ON CONFLICT (k) DO UPDATE SET v = ?", upsert, 2, out, sizeof(out));
+    CHECK(strncmp(out, "ERR 4,54", 8) == 0, "한도를 넘게 만드는 ON CONFLICT DO UPDATE는 LIMIT (%s)", out);
+    exec_code(db, "SELECT LENGTH(v) FROM u", NULL, 0, out, sizeof(out));
+    CHECK(strstr(out, "(1)") != NULL, "거절한 갱신은 반영되지 않았다 (%s)", out);
+    free(big);
+    streamlite_close(&db);
+}
+
 /* ── #260 새 파일 생성의 동기화 단계 ── */
 
 static int g_fsync_calls, g_full_calls;
@@ -925,6 +1001,7 @@ int main(void)
     test_create_durability();
     test_cancel_busy_wait();
     test_open_while_other_process_writes();
+    test_stored_row_is_readable();
     printf("\ntest_streamlite: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;
