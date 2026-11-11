@@ -54,6 +54,8 @@ overflow_status_t overflow_write(const overflow_io_t *io, const uint8_t *bytes,
                                  size_t size_bytes, overflow_ref_t *ref);
 /*
  * 성공한 *bytes는 호출자가 free한다. 체인이 ref와 어긋나면 OVERFLOW_CORRUPT이며 출력은 그대로다.
+ * ref의 크기는 머리 페이지의 머리글과 대조한 뒤에만 할당에 쓴다(overflow_free도 같다). 머리글까지 맞춘 손상은
+ * 이 모듈이 알 수 없으므로 파일 크기와의 대조는 호출자가 한다.
  * 해제 뒤 재사용된 페이지를 가리키는 오래된 ref는 감지하지 못한다. reader가 살아 있는 동안
  * 해제하지 않는 것은 상위 계층 계약이다.
  */
