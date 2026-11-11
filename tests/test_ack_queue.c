@@ -1861,6 +1861,8 @@ int main(void)
 #endif
 #ifdef ACKQ_TEST_SKIP_LARGE_ROWS
     printf("[행 한도 근처 큐 시험 2개: 스레드 검사기 빌드라 건너뜀]\n");
+    (void)test_payload_row_room;
+    (void)test_note_fallback_near_row_limit;
 #else
     test_payload_row_room();
     test_note_fallback_near_row_limit();
