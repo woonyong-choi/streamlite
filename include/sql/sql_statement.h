@@ -59,7 +59,9 @@
  *   - 매개변수는 lexer가 번호를 매긴 id로 binding에서 값을 찾아 리터럴로 복제한다. 값은 SQL에 이어 붙이지 않는다.
  *   - 함수 이름은 대문자로 맞춰 둔다. 어떤 함수가 있는지, 열 이름이 맞는지, 형식이 맞는지는 실행기(sql_eval) 몫이다.
  *   - X'hex'는 X와 따옴표 문자열이 붙어 있어야 하며 짝수 개의 16진 숫자여야 한다. 빈 X''는 빈 BLOB이다.
- *   - 식 트리 높이는 512, 목록(인자·IN·여러 행 INSERT의 값)은 65536개까지다. 넘으면 SQLSTMT_LIMIT다.
+ *   - 목록(인자·IN·여러 행 INSERT의 값)은 65536개까지다. 넘으면 SQLSTMT_LIMIT다.
+ *   - 재귀 한도: 식 트리 높이 SQLSTMT_MAX_EXPR_HEIGHT, 식 중첩 SQLSTMT_MAX_EXPR_NESTING, 질의 중첩
+ *     SQLSTMT_MAX_QUERY_NESTING, 결합 단계 SQLSTMT_MAX_SOURCES(아래 정의). 넘으면 SQLSTMT_LIMIT다.
  *   - FROM 원본은 SQLSTMT_MAX_SOURCES개까지다. 넘으면 SQLSTMT_LIMIT다.
  *
  * 명시적으로 거절하는 것(SQLSTMT_UNSUPPORTED): 첫 결합이 아닌 RIGHT JOIN, FULL·NATURAL JOIN, JOIN ... USING, 괄호로 묶은 JOIN,
@@ -79,6 +81,32 @@
  */
 
 #define SQLSTMT_NO_COLUMN UINT16_MAX
+
+/*
+ * 재귀 한도(#272). parser·복제·식 컴파일·평가·해제와 질의 실행이 재귀이므로, 어떤 입력도 스택을 넘기지 못하게
+ * parser가 아래 네 값을 강제한다. 넘으면 SQLSTMT_LIMIT·SQLSTMT_REASON_TOO_MANY_ITEMS다.
+ *
+ *   SQLSTMT_MAX_EXPR_HEIGHT    식 트리 높이(잎이 1, sqlexpr_t.height). 괄호 없이 이어 쓴 연산자 사슬도 왼쪽으로 치우친
+ *                              트리가 되어 연산자마다 한 단계다(1+1+...은 511번까지). 서브쿼리를 가진 노드는 그 질의
+ *                              안(FROM·WITH의 질의 포함)의 가장 높은 식을 더한다. 바깥 식을 계산하다가 안쪽 식을
+ *                              계산하기 때문이다. FROM·WITH의 질의는 바깥 식보다 먼저 끝나므로 바깥 식에 더하지 않는다.
+ *   SQLSTMT_MAX_EXPR_NESTING   식 중첩: 맨 위 식이 1이고 괄호·함수 인자·CASE 항·IN 목록·CAST·단항 연산·NOT·괄호
+ *                              질의마다 1씩 는다. parser가 한 단계마다 우선순위 함수 열네 개를 거친다.
+ *   SQLSTMT_MAX_QUERY_NESTING  괄호 질의의 중첩(식 자리·EXISTS·IN·FROM·WITH). 맨 바깥 문장은 세지 않는다.
+ *   SQLSTMT_MAX_SOURCES        한 질의의 FROM 원본 수, 그리고 그 수에 식 안 서브쿼리의 같은 값을 더한 결합 단계.
+ *                              결합은 원본마다 한 단계씩 재귀하고 바깥 열을 보는 서브쿼리는 그 가장 안쪽에서 다시
+ *                              실행된다. 집합 연산은 가장 큰 쪽을, FROM·WITH의 질의는 더하지 않고 큰 쪽만 센다.
+ *                              SELECT가 아닌 문장은 고칠 표 하나를 1로 센다.
+ *
+ * 값의 근거(arm64 macOS, Apple clang 17, 2026-11 측정. 한도를 함께 채운 입력이 쓴 스택의 최고치):
+ *   -O2(배포 라이브러리)        한 단계당 식 높이 약 0.2KiB, 식 중첩 약 1KiB(parser), 결합 약 2KiB, 질의 약 4KiB.
+ *                              최악 입력 290,168바이트로 macOS 보조 스레드 기본 스택 512KiB의 55%다.
+ *   -O0 + UBSan(시험 바이너리)  같은 입력에 1,153,288바이트. 512KiB 스택에서는 보장하지 않으며 주 스레드 기본 8MiB에서 돈다.
+ * 호출자가 이미 쓴 스택은 이 수치에 없다. 한도를 올리려면 같은 측정으로 512KiB 안에 드는지 다시 확인한다.
+ */
+#define SQLSTMT_MAX_EXPR_HEIGHT 512u
+#define SQLSTMT_MAX_EXPR_NESTING 128u
+#define SQLSTMT_MAX_QUERY_NESTING 16u
 
 typedef enum {
     SQLSTMT_OK,
@@ -205,6 +233,7 @@ typedef struct sqlexpr {
     bool distinct;
     value_type_t cast_type;
     size_t offset;               /* 식이 시작한 입력 바이트 위치(오류 보고용) */
+    uint32_t height;             /* 이 노드가 뿌리인 식 트리의 높이(잎은 1). 서브쿼리 안의 가장 높은 식을 더한다 */
     uint32_t parameter_id;
     value_t value;
     sqlstmt_name_t qualifier;    /* COLUMN의 테이블 이름. 없으면 size 0 */
@@ -284,6 +313,7 @@ typedef struct {
     sqlexpr_t *on;               /* INNER·LEFT·RIGHT의 ON 조건. 그 밖에는 NULL */
 } sqlstmt_source_t;
 
+/* 한 질의의 FROM 원본 수이자 중첩한 질의들이 함께 쌓는 결합 단계의 한도(위 재귀 한도 설명) */
 #define SQLSTMT_MAX_SOURCES 64
 
 /* 집합 연산. 왼쪽부터 결합한다. INTERSECT를 다른 연산과 섞으면 거절한다(엔진마다 우선순위가 다르다) */
