@@ -1,6 +1,6 @@
 # 안전성 시험 결과
 
-ToteDB의 SQL 트랜잭션은 게시된 페이지를 덮어쓰지 않는 COW와 로컬 파일 잠금을 전제로 한다. 아래 프로세스 종료·I/O 실패 시험에서는 다시 연 DB가 트랜잭션 전부 또는 전무 상태였고, 성공을 돌려준 commit은 프로세스 종료 뒤에도 남았다. 오류 응답만으로 미반영을 판단하지 않는다. 불확정 결과는 닫고 재개방한 뒤 업무 상태를 확인한다. 이 문서는 시험 조건과 관측, 확인하지 않은 범위를 적는다. 게시와 복구 경계는 [아키텍처](architecture.md#최종-게시와-결과-전달), 호출자 대응은 [오류](errors.md#실패-뒤-상태)에 있다.
+StreamLite의 SQL 트랜잭션은 게시된 페이지를 덮어쓰지 않는 COW와 로컬 파일 잠금을 전제로 한다. 아래 프로세스 종료·I/O 실패 시험에서는 다시 연 DB가 트랜잭션 전부 또는 전무 상태였고, 성공을 돌려준 commit은 프로세스 종료 뒤에도 남았다. 오류 응답만으로 미반영을 판단하지 않는다. 불확정 결과는 닫고 재개방한 뒤 업무 상태를 확인한다. 이 문서는 시험 조건과 관측, 확인하지 않은 범위를 적는다. 게시와 복구 경계는 [아키텍처](architecture.md#최종-게시와-결과-전달), 호출자 대응은 [오류](errors.md#실패-뒤-상태)에 있다.
 
 현재 결과의 기준은 소스 `1ae11543b0c6b7e28a9381b00bab014474ea04cc`의 2026-10-20 실행이다. macOS 26(Darwin 25)·Apple clang 17 환경에서 `make test-all test-runner test-fault test-result`가 종료 코드 0으로 끝났으며 sanitizer는 undefined였다. 아래 종료·I/O·할당 실패 수치는 이 실행 출력과 대조했다. Linux ASan·TSan이나 전원 차단을 새로 실행한 결과는 아니다.
 
@@ -124,6 +124,58 @@ test_locking_and_unpublished_files
 make test
 ```
 
+### 이전 세대로 물러난 열기
+
+열기는 최신 세대를 읽을 수 없으면 이전 세대로 물러난다. 최신 제어 페이지의 체크섬이 맞지 않거나, 제어 페이지는 온전하지만 그 commit이 쓴 페이지의 체크섬이나 파일 길이가 manifest와 다를 때다. 이 증거는 두 원인에서 똑같이 나온다.
+
+| 원인 | 성공을 돌려준 commit인가 | 올바른 대응 |
+|---|---|---|
+| 마지막 `fsync` 전에 전원이 끊긴 commit | 아니다 | 이전 세대에서 이어 쓴다 |
+| `fsync`까지 끝난 commit의 페이지나 제어 페이지 손상 | 그렇다 | 덮어쓰지 않고 보존한다 |
+
+파일만으로는 둘을 구분하지 못한다. 그래서 commit은 마지막 `fsync`가 성공한 뒤 잠금 파일(`<db>-lock`)에 그 세대 번호와 DB 파일 inode를 적는다(내구 확인 기록, 이 기록 자체는 `fsync`하지 않는다). 물러난 열기는 이 기록으로 판정한다.
+
+| 판정 | 조건 | 읽기 열기 | 쓰기 열기 |
+|---|---|---|---|
+| 확정 | 기록이 "연 세대 + 1"의 `fsync` 성공을 말함 | 이전 세대로 열림 | `DATABASE_LOST_COMMIT`으로 거절, 파일 무변경 |
+| 미확정 | 기록이 없거나 다른 세대를 말함 | 이전 세대로 열림 | 열리고 다음 commit이 끝나지 않은 세대를 덮어씀 |
+
+두 경우 모두 `database_open_report`(page_file은 `page_file_open_info`)로 물러난 사실과 판정을 읽는다. 확정된 손실을 포기하고 이어 쓰려면 `database_open_accepting_loss`로 연다. 이미 열려 있던 쓰기 핸들이 확정된 손실을 만나면 변경 문장이 손상 오류로 거절되고 읽기는 이전 세대를 본다. 프로세스 종료만으로는 물러나지 않는다. 데이터 쓰기가 제어 쓰기보다 먼저이고 둘 다 커널에 남기 때문이다.
+
+한계는 다음과 같다. 미확정은 "끝나지 않은 commit"이라는 뜻이 아니다. 전원 차단으로 기록이 함께 사라졌거나, 잠금 파일을 지웠거나 다른 경로로 DB만 복사했거나, 이 기록을 쓰지 않던 판이 마지막으로 commit한 파일에서는 성공한 commit의 손상도 미확정으로 열리고 쓰기 열기가 그 세대를 덮어쓴다. 이 경우 호출자가 할 수 있는 일은 열린 뒤 보고를 읽는 것뿐이다. 공개 C API와 Python 바인딩은 아직 이 보고와 받아들이는 열기를 노출하지 않는다.
+
+근거는 [test_page_file.c](../tests/test_page_file.c)와 [test_database_recovery.c](../tests/test_database_recovery.c)의 아래 항목이다. 손상은 파일 바이트를 직접 바꿔 만들었다.
+
+```text
+test_acknowledged_commit_damage_is_not_overwritten
+test_incomplete_commit_falls_back
+test_lost_commit_refuses_writable_open
+test_unconfirmed_fallback_recovers_and_reports
+test_open_handle_does_not_overwrite_lost_commit
+```
+
+```sh
+make test test-database
+```
+
+### 죽은 writer의 게시 대기 표시
+
+writer는 게시 잠금을 기다리는 동안 잠금 파일 첫 바이트에 게시 대기 표시를 쓴다. 그 구간에서 SIGKILL된 writer의 표시는 남는다. writer 잠금을 얻은 핸들은 남은 표시를 지우고, 공유 잠금을 잡으려는 핸들은 writer 잠금이 비어 있으면 표시를 무시한다(쓰기 핸들은 지운다). 시험은 게시 대기 상한을 1500ms로 두고, 죽은 writer의 표시가 남은 상태에서 쓰기 핸들의 공유 잠금과 다른 writer가 거래를 쥔 동안의 읽기 핸들 공유 잠금이 0.5초 안에 끝나는지 확인한다.
+
+```text
+test_stale_publish_mark_does_not_stall_readers
+```
+
+### 생성 도중 종료
+
+생성하는 핸들은 partial 파일을 만들기 전부터 게시하거나 닫을 때까지 writer 잠금을 쥔다. writer 잠금을 얻었는데 `<db>.partial`이 남아 있으면 그것을 만들던 프로세스는 죽은 것이므로 지우고 새로 만든다. 다른 이름과 hard link로 묶인 partial은 지우지 않는다. 게시 뒤 partial 삭제나 디렉터리 `fsync`가 실패하면 `database_create`는 실패를 돌려주고 게시한 이름을 거둔다. 거두지도 못하면 게시된 빈 DB가 남고 다음 생성은 `DATABASE_EXISTS`다.
+
+```text
+test_stale_partial_does_not_block_create
+test_dirty_publish_can_be_retracted
+test_create_is_retryable
+```
+
 ### 큐 실패 주입과 worker 종료
 
 큐 연산의 I/O·할당 실패 검사는 [test_ack_queue_fault.c](../tests/test_ack_queue_fault.c)에 있다.
@@ -173,9 +225,22 @@ python3 bench/sqlite_workload.py
 python3 bench/sqlite_workload.py --analyze
 ```
 
+## 동기화 단계
+
+열기 옵션(C `streamlite_open_ex`의 `durability`, Python `Database(durability=...)`)으로 commit의 동기화 단계를 고른다. 어느 단계든 쓰기 순서(새 데이터 페이지 → 제어 페이지)와 COW는 같으므로 프로세스 종료 뒤에는 commit 전부 또는 전무로 다시 열린다. 단계는 OS 장애·전원 차단에 대한 보장만 바꾼다.
+
+| 단계 | commit의 동기화 | 성공 응답 뒤 OS 장애 | 성공 응답 뒤 전원 차단 |
+|---|---|---|---|
+| NORMAL(기본) | `fsync(2)` | 남는다 | Linux 등은 장치가 `fsync`를 지키면 남는다. Apple 플랫폼은 `fsync`가 장치 캐시를 비우지 않아 최근 commit을 잃을 수 있다 |
+| FULL | Apple은 `F_FULLFSYNC`, 그 밖은 `fsync(2)` | 남는다 | 장치가 요청을 지키면 남는다 |
+| OFF | 없음. 정상 close에서 한 번 `fsync` | 최근 commit을 잃을 수 있다 | 최근 commit을 잃을 수 있다 |
+
+OFF는 동기화하지 않은 세대가 쓴 페이지와 제어 페이지 중 일부만 장치에 남을 수 있어 OS 장애·전원 차단 뒤 파일이 손상(`DB_CORRUPT`)으로 열리거나 이전 세대로 물러날 수 있다. 페이지 체크섬과 manifest 대조가 이를 손상으로 판정하지만, 판정한 파일을 고치지는 않는다. 그래서 OFF commit은 잠금 파일의 내구 확인 기록을 지워 장애 뒤의 물러난 열기를 확정 손실이 아닌 미확정으로 다룬다. OFF는 다시 만들 수 있는 자료나 시험에 쓰고, 성공 응답을 영속 확인으로 쓰는 업무에는 NORMAL 이상을 쓴다. 0.3.0 개발 중 한때(#271) macOS 기본이 `F_FULLFSYNC`였으나 commit 지연이 약 10배가 되어 기본을 `fsync`(NORMAL)로 되돌리고 FULL로 고르게 했다.
+
 ## 검증하지 않은 것
 
-- 전원 차단. 시험은 프로세스 종료와 I/O 오류만 다룬다. 저장 장치가 `fsync` 성공을 돌려준 뒤 쓰기를 버리면(lost write) 이전 세대가 정상으로 열리며 탐지하지 못한다.
+- 전원 차단. 시험은 프로세스 종료와 I/O 오류만 다룬다. 저장 장치가 `fsync` 성공을 돌려준 뒤 최신 제어 쓰기를 통째로 버리면(lost write) 이전 세대가 정상으로 열리며 탐지하지 못한다. 손상 흔적이 남은 경우의 판정과 한계는 [이전 세대로 물러난 열기](#이전-세대로-물러난-열기)에 있다.
+- 동기화의 실제 내구성. commit의 동기화는 열기 옵션의 단계([동기화 단계](#동기화-단계))를 따른다. 기본 NORMAL은 `fsync(2)`이고, FULL은 Apple 플랫폼에서 `fcntl(F_FULLFSYNC)`를 쓰며 파일 시스템이 지원하지 않을 때(`ENOTSUP`·`EINVAL`·`ENOTTY`·`ENODEV`)만 `fsync`로 물러난다. 장치가 이 요청을 지키는지는 시험하지 않았다. 위 종료·I/O 실패 수치는 C 시험 바이너리의 기본 단계(NORMAL, `fsync`)와 시험이 주입한 I/O 진입점의 결과다. 단계별로 commit이 부르는 동기화(NORMAL은 `fsync`, FULL은 `full_sync`, OFF는 없음)와 OFF의 close 동기화·내구 확인 기록 삭제·close 없이 끝난 프로세스의 commit 보존은 [test_page_file_durable.c](../tests/test_page_file_durable.c)가 확인한다.
 - 네트워크 파일 시스템. 잠금은 로컬 파일 시스템의 `flock`을 전제로 한다.
 - 여러 writer의 동시 commit. 쓰기 트랜잭션은 파일 전체에서 하나씩 직렬로 실행한다.
 - 다른 운영체제·sanitizer 조합의 전수 검증. 과거 Linux 기록과 현재 macOS undefined 실행만 구분해 적었으며, 이번에 Linux ASan·TSan을 다시 실행하지 않았다.

@@ -42,7 +42,7 @@ def main() -> None:
     library = (
         build
         / "lib"
-        / ("libtotedb.dylib" if sys.platform == "darwin" else "libtotedb.so")
+        / ("libstreamlite.dylib" if sys.platform == "darwin" else "libstreamlite.so")
     )
     flags = (build / ".build-fingerprint").read_text()
     files = sorted(
@@ -81,15 +81,15 @@ def main() -> None:
         "phase_names": PHASES,
         "request_order": ["begin", "exec", "commit"],
         "sqlite_internal_phases": None,
-        "tote_prepare_ns": None,
-        "output_cost": "Tote wire encoding is inside exec; decoding/free and SQLite changes/reset/finalize are output_client_ns",
+        "streamlite_prepare_ns": None,
+        "output_cost": "StreamLite wire encoding is inside exec; decoding/free and SQLite changes/reset/finalize are output_client_ns",
         "io_bytes": "bytes accepted by kernel calls, not physical device bytes",
         "wall_minus_cpu": "unclassified residual, not an OS off-CPU or lock attribution",
     }
     args.output.mkdir(parents=True, exist_ok=False)
     (args.output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     failed = False
-    for engine in ("tote", "sqlite-each", "sqlite-reuse"):
+    for engine in ("streamlite", "sqlite-each", "sqlite-reuse"):
         db = (args.output / f"{engine}.db").resolve()
         command = [str(driver), engine, str(db), str(args.n)]
         result = subprocess.run(command, capture_output=True, text=True, check=False)

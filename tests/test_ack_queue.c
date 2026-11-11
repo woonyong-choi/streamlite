@@ -5,6 +5,7 @@
  * 빌드(저장소 루트): make test-ack-queue
  */
 #include <pthread.h>
+#include <time.h>
 
 #include "ack_queue_test_util.h"
 
@@ -318,7 +319,7 @@ static void test_lease_and_fencing(void)
     g_now += 1;
     CHECK(ackq_recover(q, db, 10, &recovered) == ACKQ_OK && recovered == 1, "만료된 lease 1개 회복");
     CHECK(ackq_ack(q, db, gone, gone_fence) == ACKQ_STALE, "회복된 작업에 옛 ack는 STALE");
-    CHECK(claim_n(q, db, 1, 50) == 1 && g_items[0].id == gone && g_items[0].fence == gone_fence + 1, "회복 뒤 새 fence로 전달");
+    CHECK(claim_n(q, db, 1, 50) == 1 && g_items[0].id == gone && g_items[0].fence == gone_fence + 2, "회복 뒤 새 fence로 전달(recover +1, claim +1)");
     ackq_claims_release(g_items, 1);
     ackq_close(&q);
     close_db(db);
@@ -359,9 +360,9 @@ static void test_lease_extension(void)
     until = 77;
     CHECK(ackq_extend(q, db, id, fence, 100, &until) == ACKQ_STALE && until == 77, "옛 claim의 연장은 STALE");
     char sql[96];
-    snprintf(sql, sizeof(sql), "SELECT fence FROM tote_queue_jobs WHERE id = %llu", (unsigned long long)id);
+    snprintf(sql, sizeof(sql), "SELECT fence FROM streamlite_queue_jobs WHERE id = %llu", (unsigned long long)id);
     int64_t now_fence = scalar_int(db, sql);
-    snprintf(sql, sizeof(sql), "SELECT lease_until FROM tote_queue_jobs WHERE id = %llu", (unsigned long long)id);
+    snprintf(sql, sizeof(sql), "SELECT lease_until FROM streamlite_queue_jobs WHERE id = %llu", (unsigned long long)id);
     CHECK(now_fence == (int64_t)newer && scalar_int(db, sql) == 1500, "STALE 연장은 lease와 fence를 바꾸지 않는다");
     CHECK(ackq_extend(q, db, 999, 1, 100, &until) == ACKQ_NOT_FOUND, "없는 id");
     CHECK(ackq_extend(q, db, id, newer, ACKQ_MAX_LEASE_MS + 1, &until) == ACKQ_INVALID, "lease 상한 초과");
@@ -405,7 +406,7 @@ static void test_idem_retention_after_purge(void)
     /* 보존 기간(purge 시각 100 + 1000)이 지나면 같은 key로 새 작업을 만든다 */
     g_now = 1100;
     CHECK(enq(q, db, "mail-1", "order-1", &other, &dup) == ACKQ_OK && !dup && other != id, "기간이 지나면 새 작업");
-    CHECK(scalar_int(db, "SELECT COUNT(*) FROM tote_queue_jobs_keys") == 0, "만료된 key는 지워졌다");
+    CHECK(scalar_int(db, "SELECT COUNT(*) FROM streamlite_queue_jobs_keys") == 0, "만료된 key는 지워졌다");
 
     /* 0이면 key를 남기지 않는다 */
     ackq_close(&q);
@@ -418,7 +419,7 @@ static void test_idem_retention_after_purge(void)
     ackq_claims_release(g_items, 1);
     assert(ackq_purge(q, db, false, 10, &purged) == ACKQ_OK && purged == 1);
     CHECK(enq(q, db, "a", "k", &other, &dup) == ACKQ_OK && !dup && other != id, "보존하지 않는 큐는 purge 뒤 새 작업");
-    CHECK(scalar_int(db, "SELECT COUNT(*) FROM tote_queue_plain_keys") == 0, "key를 남기지 않는다");
+    CHECK(scalar_int(db, "SELECT COUNT(*) FROM streamlite_queue_plain_keys") == 0, "key를 남기지 않는다");
     ackq_close(&q);
 
     /* 기본 보존 기간은 7일 */
@@ -593,7 +594,7 @@ static void test_update_release_cursor(void)
     CHECK(ackq_release_leases(q, db, 10, &released) == ACKQ_OK && released == 2, "모든 lease 해제 2개");
     ackq_stats_t stats;
     CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.ready == 6 && stats.leased == 0 && stats.acked == 1, "상태 집계");
-    CHECK(claim_n(q, db, 1, 100) == 1 && g_items[0].id == ids[1] && g_items[0].fence == 2, "해제된 작업은 새 fence로 다시 나온다");
+    CHECK(claim_n(q, db, 1, 100) == 1 && g_items[0].id == ids[1] && g_items[0].fence == 3, "해제된 작업은 새 fence로 다시 나온다(release +1, claim +1)");
     ackq_claims_release(g_items, 1);
 
     /* cursor: 3개씩, payload 없이 */
@@ -770,13 +771,13 @@ static void test_wrong_database_and_read_only(void)
 
     /* 두 번째 database: 같은 이름의 큐 테이블은 없고 업무 테이블만 있다 */
     char path_b[192];
-    snprintf(path_b, sizeof(path_b), "%s/other.totedb", g_dir);
+    snprintf(path_b, sizeof(path_b), "%s/other.streamlite", g_dir);
     database_t *created = NULL;
     assert(database_create(path_b, &created) == DATABASE_OK && database_close(created) == DATABASE_OK);
     session_t *b = open_conn(path_b, true, true, NULL);
     assert(b != NULL);
-    assert(exec_ok(b, "CREATE TABLE tote_queue_jobs (id INTEGER PRIMARY KEY, marker TEXT NOT NULL)"));
-    assert(exec_ok(b, "INSERT INTO tote_queue_jobs VALUES (1, 'other-db')"));
+    assert(exec_ok(b, "CREATE TABLE streamlite_queue_jobs (id INTEGER PRIMARY KEY, marker TEXT NOT NULL)"));
+    assert(exec_ok(b, "INSERT INTO streamlite_queue_jobs VALUES (1, 'other-db')"));
     session_t *foreign = NULL;
     assert((foreign = begin_txn(b)) != NULL);
     CHECK(session_database(foreign) != session_database(a) && session_database(foreign) == session_database(b), "소속 확인");
@@ -798,7 +799,7 @@ static void test_wrong_database_and_read_only(void)
     CHECK(ackq_list(qa, foreign, 0, 1, false, listed, &count) == ACKQ_INVALID, "list 거절");
     CHECK(!session_txn_failed(foreign), "거절은 남의 트랜잭션을 실패시키지 않는다");
     CHECK(commit_txn(&foreign) == TXN_OK, "남의 트랜잭션은 영향 없이 commit된다");
-    CHECK(scalar_int(b, "SELECT id FROM tote_queue_jobs WHERE marker = 'other-db'") == 1 && scalar_int(b, "SELECT id FROM tote_queue_jobs") == 1,
+    CHECK(scalar_int(b, "SELECT id FROM streamlite_queue_jobs WHERE marker = 'other-db'") == 1 && scalar_int(b, "SELECT id FROM streamlite_queue_jobs") == 1,
           "다른 database의 같은 이름 테이블이 바뀌지 않았다");
     CHECK(ackq_stats(qa, a, &stats) == ACKQ_OK && stats.leased == 1 && stats.acked == 0 && stats.ready == 0,
           "이 큐도 바뀌지 않았다");
@@ -912,6 +913,764 @@ static void test_session_contract_db_and_queue(void)
     CHECK(close_db(db), "세션·데이터베이스·풀을 닫는다");
 }
 
+/* ── #273: recover·release가 끝낸 claim, release와 시도 횟수, purge 뒤 중복 ack ── */
+
+static void test_recover_release_revoke_claim(void)
+{
+    printf("\n[#273 recover·release 뒤의 처리권]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 0);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    uint64_t id;
+    bool terminal = false;
+    assert(enq(q, db, "work", NULL, &id, NULL) == ACKQ_OK);
+    assert(claim_n(q, db, 1, 100) == 1);
+    uint64_t fence = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    g_now = 1100;
+    size_t n = 0;
+    CHECK(ackq_recover(q, db, 10, &n) == ACKQ_OK && n == 1, "만료 lease 회복");
+    /* 아무도 다시 claim하지 않았어도 recover가 처리권을 끝냈다. ack·nack·fail·extend·update가 같은 판정이다 */
+    CHECK(ackq_ack(q, db, id, fence) == ACKQ_STALE, "recover 뒤 ack는 STALE");
+    ackq_status_t st = ackq_nack(q, db, id, fence, 5000, "late", &terminal);
+    CHECK(st == ACKQ_STALE, "recover 뒤 nack도 STALE (%s)", ackq_status_name(st));
+    CHECK(ackq_fail(q, db, id, fence, "late") == ACKQ_STALE, "recover 뒤 fail도 STALE");
+    CHECK(ackq_extend(q, db, id, fence, 100, NULL) == ACKQ_STALE, "recover 뒤 extend도 STALE");
+    CHECK(ackq_update(q, db, id, fence, (const uint8_t *)"x", 1) == ACKQ_STALE, "recover 뒤 update도 STALE");
+    CHECK(claim_n(q, db, 1, 100) == 1 && g_items[0].id == id && g_items[0].fence > fence,
+          "거절된 nack의 지연은 적용되지 않고 더 큰 fence로 바로 전달된다");
+    uint64_t second = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+
+    CHECK(ackq_release_leases(q, db, 10, &n) == ACKQ_OK && n == 1, "release");
+    st = ackq_nack(q, db, id, second, 0, NULL, &terminal);
+    CHECK(st == ACKQ_STALE, "release 뒤 nack도 STALE (%s)", ackq_status_name(st));
+    CHECK(ackq_ack(q, db, id, second) == ACKQ_STALE, "release 뒤 ack는 STALE");
+    CHECK(claim_n(q, db, 1, 100) == 1 && g_items[0].fence > second, "release 뒤에도 fence는 커진다");
+    uint64_t third = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    /* 같은 claim의 중복 nack은 여전히 멱등이다 */
+    CHECK(ackq_nack(q, db, id, third, 0, NULL, &terminal) == ACKQ_OK && ackq_nack(q, db, id, third, 0, NULL, &terminal) == ACKQ_OK,
+          "같은 claim의 중복 nack은 OK");
+
+    /* purge가 지운 작업의 중복 ack는 fence를 확인할 행이 없어 NOT_FOUND다 */
+    assert(claim_n(q, db, 1, 100) == 1);
+    uint64_t last = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    CHECK(ackq_ack(q, db, id, last) == ACKQ_OK && ackq_ack(q, db, id, last) == ACKQ_OK, "purge 전 중복 ack는 OK");
+    CHECK(ackq_purge(q, db, false, 10, &n) == ACKQ_OK && n == 1, "purge");
+    CHECK(ackq_ack(q, db, id, last) == ACKQ_NOT_FOUND, "purge 뒤 중복 ack는 NOT_FOUND");
+    ackq_close(&q);
+
+    /* 시도 횟수를 다 쓴 작업: 만료(recover)는 FAILED로 끝내고 옛 claim의 nack·fail을 거절한다 */
+    ackq_options_t once = qopts("once", 1);
+    assert(ackq_install(db, &once, &q) == ACKQ_OK);
+    uint64_t a, b;
+    assert(enq(q, db, "a", NULL, &a, NULL) == ACKQ_OK && enq(q, db, "b", NULL, &b, NULL) == ACKQ_OK);
+    assert(claim_n(q, db, 1, 100) == 1);
+    uint64_t fa = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    g_now += 100;
+    CHECK(ackq_recover(q, db, 10, &n) == ACKQ_OK && n == 1, "시도를 다 쓴 만료 lease 회복");
+    ackq_stats_t stats;
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.failed == 1, "만료는 FAILED");
+    st = ackq_nack(q, db, a, fa, 0, NULL, &terminal);
+    CHECK(st == ACKQ_STALE, "FAILED로 회복된 뒤 옛 nack은 STALE (%s)", ackq_status_name(st));
+    st = ackq_fail(q, db, a, fa, "late");
+    CHECK(st == ACKQ_STALE, "FAILED로 회복된 뒤 옛 fail은 STALE (%s)", ackq_status_name(st));
+
+    /* release는 작업의 실패가 아니다. 시도 횟수에 닿은 작업도 READY로 돌리고, 그 다음 nack·만료에서 끝난다 */
+    assert(claim_n(q, db, 1, 100) == 1 && g_items[0].id == b && g_items[0].attempts == 1);
+    ackq_claims_release(g_items, 1);
+    CHECK(ackq_release_leases(q, db, 10, &n) == ACKQ_OK && n == 1, "release");
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.ready == 1 && stats.failed == 1,
+          "release는 시도 횟수와 무관하게 READY (ready=%llu failed=%llu)", (unsigned long long)stats.ready,
+          (unsigned long long)stats.failed);
+    CHECK(claim_n(q, db, 1, 100) == 1 && g_items[0].id == b && g_items[0].attempts == 2, "한 번 더 전달된다");
+    uint64_t fb = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    CHECK(ackq_nack(q, db, b, fb, 0, NULL, &terminal) == ACKQ_OK && terminal, "그 다음 nack은 terminal");
+    ackq_close(&q);
+    close_db(db);
+}
+
+/* ── #273: 시계가 음수·범위 밖이거나 뒤로 가는 경우 ── */
+
+static void test_clock_guard(void)
+{
+    printf("\n[#273 시계 방어와 단조 보정]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 0);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    uint64_t id;
+    /* 유효한 시각을 한 번 읽은 핸들은 그 뒤의 범위 밖 값을 그 시각으로 읽는다 */
+    g_now = 10000;
+    assert(enq(q, db, "seed", NULL, &id, NULL) == ACKQ_OK);
+    /* 음수 시각이 uint64로 감긴 값 */
+    g_now = (uint64_t)-5000;
+    ackq_status_t st = enq(q, db, "neg", NULL, &id, NULL);
+    CHECK(st == ACKQ_OK, "감긴 시계에서도 enqueue (%s)", ackq_status_name(st));
+    size_t count = 0;
+    st = ackq_claim(q, db, 1, 100, g_items, &count);
+    CHECK(st == ACKQ_OK && count == 1, "감긴 시계에서도 claim은 LIMIT이 아니다 (%s)", ackq_status_name(st));
+    CHECK(count == 1 && g_items[0].lease_until_ms == 10100, "lease는 읽은 시각 10000에서 잰다");
+    uint64_t fence = count == 1 ? g_items[0].fence : 1;
+    uint64_t first = count == 1 ? g_items[0].id : 0;
+    ackq_claims_release(g_items, count);
+    CHECK(ackq_ack(q, db, first, fence) == ACKQ_OK, "ack");
+    assert(claim_n(q, db, 1, 100) == 1);
+    first = g_items[0].id;
+    fence = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    assert(ackq_ack(q, db, first, fence) == ACKQ_OK);
+
+    /* 뒤로 간 시계는 이 핸들이 본 가장 늦은 시각으로 읽는다: lease가 줄지도, 일찍 만료되지도 않는다 */
+    g_now = 10000;
+    assert(enq(q, db, "back", NULL, &id, NULL) == ACKQ_OK);
+    assert(claim_n(q, db, 1, 1000) == 1);
+    fence = g_items[0].fence;
+    CHECK(g_items[0].lease_until_ms == 11000, "lease 11000");
+    ackq_claims_release(g_items, 1);
+    g_now = 5000;
+    uint64_t until = 0;
+    CHECK(ackq_extend(q, db, id, fence, 1000, &until) == ACKQ_OK && until == 11000,
+          "뒤로 간 시계로 연장해도 lease가 줄지 않는다 (until=%llu)", (unsigned long long)until);
+    CHECK(ackq_extend(q, db, id, fence, 1000, &until) == ACKQ_OK && until == 11000,
+          "뒤로 간 채로 다시 연장해도 줄지 않는다 (until=%llu)", (unsigned long long)until);
+    CHECK(claim_n(q, db, 1, 1000) == 0, "뒤로 간 시계에서 만료되지 않는다");
+    g_now = 10999;
+    CHECK(claim_n(q, db, 1, 1000) == 0, "따라잡기 전에도 만료되지 않는다");
+    g_now = 11000;
+    CHECK(claim_n(q, db, 1, 1000) == 1 && g_items[0].fence == fence + 1, "실제로 지나면 만료된다");
+    ackq_claims_release(g_items, 1);
+    ackq_close(&q);
+    close_db(db);
+}
+
+/* ── #273: 유효한 시각을 읽지 못한 핸들, 앞으로 뛰었다 돌아온 시계 ── */
+
+static void test_clock_unavailable_and_return(void)
+{
+    printf("\n[#273 첫 시계 값이 범위 밖인 핸들과 앞으로 뛰었다 돌아온 시계]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 0);
+    ackq_t *q, *other;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    uint64_t id = 0;
+    size_t count = 0, n = 0;
+    ackq_stats_t stats;
+
+    /* 유효한 값을 한 번도 읽지 못한 핸들은 1970년(0)으로 진행하지 않고 LIMIT으로 거절한다 */
+    g_now = (uint64_t)-5000;
+    ackq_status_t st = enq(q, db, "first", NULL, &id, NULL);
+    CHECK(st == ACKQ_LIMIT, "첫 시계 값이 범위 밖이면 enqueue는 LIMIT (%s)", ackq_status_name(st));
+    st = ackq_claim(q, db, 1, 100, g_items, &count);
+    CHECK(st == ACKQ_LIMIT && count == 0, "첫 시계 값이 범위 밖이면 claim은 LIMIT (%s)", ackq_status_name(st));
+    st = ackq_recover(q, db, 10, &n);
+    CHECK(st == ACKQ_LIMIT, "첫 시계 값이 범위 밖이면 recover는 LIMIT (%s)", ackq_status_name(st));
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.ready + stats.leased == 0, "아무것도 넣지 않았다");
+
+    ackq_close(&q);
+
+    /* 다른 worker가 10초 lease를 잡은 뒤 이 핸들의 시계가 앞으로 1시간 뛰었다 돌아온다 */
+    const uint64_t base = 1000000, hour = 3600000;
+    g_now = base;
+    o = qopts("jump", 0);
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    uint64_t held;
+    assert(enq(q, db, "held", NULL, &held, NULL) == ACKQ_OK);
+    assert(ackq_open(db, &o, &other) == ACKQ_OK);
+    assert(ackq_claim(other, db, 1, 10000, g_items, &count) == ACKQ_OK && count == 1 && g_items[0].id == held);
+    ackq_claims_release(g_items, 1);
+    g_now = base + hour;
+    assert(enq(q, db, "during", NULL, &id, NULL) == ACKQ_OK);
+    g_now = base + 10;
+    count = claim_n(q, db, 1, 1000);
+    CHECK(count == 0, "돌아온 뒤에는 다른 worker의 살아 있는 lease를 만료로 보지 않는다");
+    ackq_claims_release(g_items, count);
+    g_now = base + 20;
+    uint64_t after;
+    assert(enq(q, db, "after", NULL, &after, NULL) == ACKQ_OK);
+    count = claim_n(q, db, 1, 1000);
+    uint64_t until = count == 1 ? g_items[0].lease_until_ms : 0;
+    CHECK(count == 1 && g_items[0].id == after && until >= base + 1020 && until < base + 1020 + 5000,
+          "돌아온 뒤의 lease는 실제 경과에 맞춰 잰다 (until=%llu)", (unsigned long long)until);
+    ackq_claims_release(g_items, count);
+    /* after의 lease(base+1020)도 이미 지났으므로 두 건을 받는다. 순서는 claim 가능해진 시각순일 수 있어 id로 찾는다 */
+    g_now = base + 10000;
+    count = claim_n(q, db, 2, 1000);
+    bool got_held = false;
+    for (size_t i = 0; i < count; i++) got_held = got_held || g_items[i].id == held;
+    CHECK(got_held, "실제로 10초가 지나면 그 lease는 만료된다");
+    ackq_claims_release(g_items, count);
+    ackq_close(&other);
+    ackq_close(&q);
+    close_db(db);
+}
+
+/* ── #273: crash 뒤 release를 반복해도 시도 한도에서 끝난다 ── */
+
+static void test_release_loop_reaches_attempt_limit(void)
+{
+    printf("\n[#273 release를 반복하는 독 작업은 시도 한도에서 FAILED]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("poison", 2);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    uint64_t id;
+    assert(enq(q, db, "poison", NULL, &id, NULL) == ACKQ_OK);
+    size_t claims = 0, n = 0;
+    ackq_stats_t stats = {0};
+    for (int round = 0; round < 10; round++) {
+        size_t count = claim_n(q, db, 1, 60000);
+        if (count == 0) break;
+        claims++;
+        ackq_claims_release(g_items, count);
+        CHECK(ackq_release_leases(q, db, 10, &n) == ACKQ_OK && n == 1, "release");
+        assert(ackq_stats(q, db, &stats) == ACKQ_OK);
+        if (stats.failed == 1) break;
+    }
+    CHECK(stats.failed == 1 && stats.ready == 0 && stats.leased == 0,
+          "release 반복이 유한 횟수 안에 FAILED로 끝난다 (ready=%llu failed=%llu)",
+          (unsigned long long)stats.ready, (unsigned long long)stats.failed);
+    CHECK(claims == 3, "한도 2에 닿은 뒤 release로 한 번 더 전달하고 끝난다 (claims=%zu)", claims);
+    ackq_close(&q);
+    close_db(db);
+}
+
+/* ── #273: 보존 기간이 긴 key 뒤의 만료된 key 정리 ── */
+
+static void test_key_expiry_order(void)
+{
+    printf("\n[#273 key 만료는 넣은 순서가 아니라 만료 시각 기준]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t long_o = qopts("jobs", 0), short_o = qopts("jobs", 0);
+    long_o.idem_retention_ms = 1000000;
+    short_o.idem_retention_ms = 100;
+    ackq_t *long_q, *short_q;
+    assert(ackq_install(db, &long_o, &long_q) == ACKQ_OK && ackq_open(db, &short_o, &short_q) == ACKQ_OK);
+    g_now = 1000;
+    uint64_t id;
+    size_t n = 0;
+    const char *keys[3] = {"long-lived", "short-1", "short-2"};
+    for (int i = 0; i < 3; i++) {
+        ackq_t *via = i == 0 ? long_q : short_q;
+        assert(enq(via, db, "p", keys[i], &id, NULL) == ACKQ_OK);
+        assert(claim_n(via, db, 1, 100) == 1);
+        uint64_t fence = g_items[0].fence;
+        ackq_claims_release(g_items, 1);
+        assert(ackq_ack(via, db, id, fence) == ACKQ_OK);
+        CHECK(ackq_purge(via, db, false, 10, &n) == ACKQ_OK && n == 1, "purge %d", i);
+    }
+    CHECK(scalar_int(db, "SELECT COUNT(*) FROM streamlite_queue_jobs_keys") == 3, "key 셋 보존");
+    g_now = 1100;
+    CHECK(ackq_purge(short_q, db, false, 10, &n) == ACKQ_OK && n == 0, "지울 작업은 없다");
+    int64_t left = scalar_int(db, "SELECT COUNT(*) FROM streamlite_queue_jobs_keys");
+    CHECK(left == 1, "앞에 만료 전 key가 있어도 만료된 key 둘을 지운다 (남은 key %lld)", (long long)left);
+    bool dup = false;
+    CHECK(enq(short_q, db, "p", "long-lived", &id, &dup) == ACKQ_OK && dup, "만료 전 key는 그대로 판정한다");
+    ackq_close(&long_q);
+    ackq_close(&short_q);
+    close_db(db);
+}
+
+/* ── #273: 내부 테이블·색인 이름과 겹치는 큐 이름 ── */
+
+static void test_name_collision(void)
+{
+    printf("\n[#273 내부 이름과 겹치는 큐 이름]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("a", 0);
+    ackq_t *a = NULL, *q = NULL;
+    assert(ackq_install(db, &o, &a) == ACKQ_OK);
+    size_t tables = database_table_count(raw_db(db));
+    static const char *const reserved[] = {"a_keys", "a_state", "a_idem", "a_keys_idem", "fresh_keys", "x_state", "y_idem"};
+    for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
+        ackq_options_t bad = qopts(reserved[i], 0);
+        ackq_status_t st = ackq_install(db, &bad, &q);
+        CHECK(st == ACKQ_INVALID && q == NULL, "%s 설치는 INVALID (%s)", reserved[i], ackq_status_name(st));
+        CHECK(ackq_open(db, &bad, &q) == ACKQ_NOT_INSTALLED, "%s 열기는 NOT_INSTALLED", reserved[i]);
+    }
+    CHECK(database_table_count(raw_db(db)) == tables, "거절한 설치는 아무것도 만들지 않는다");
+    uint64_t id;
+    CHECK(enq(a, db, "still works", NULL, &id, NULL) == ACKQ_OK, "기존 큐는 그대로 쓴다");
+
+    /* 이 규칙 전에 만든 파일에는 예약 접미어로 끝나는 큐가 있을 수 있다. 그 큐는 그대로 열리고, 겹치는 새 이름만 거절한다 */
+    CHECK(exec_ok(db, "CREATE TABLE streamlite_queue_b_state (id INTEGER PRIMARY KEY AUTOINCREMENT, state INTEGER NOT NULL, "
+                      "ready_at INTEGER NOT NULL, lease_until INTEGER NOT NULL, fence INTEGER NOT NULL, "
+                      "attempts INTEGER NOT NULL, idem TEXT NOT NULL, payload BLOB NOT NULL, note TEXT NOT NULL, "
+                      "created_at INTEGER NOT NULL)") &&
+              exec_ok(db, "CREATE TABLE streamlite_queue_b_state_keys (seq INTEGER PRIMARY KEY AUTOINCREMENT, idem TEXT NOT NULL, "
+                          "job INTEGER NOT NULL, digest BLOB NOT NULL, expires_at INTEGER NOT NULL)"),
+          "예전 파일의 큐 b_state");
+    ackq_options_t legacy = qopts("b_state", 0), base = qopts("b", 0);
+    ackq_t *old = NULL;
+    CHECK(ackq_open(db, &legacy, &old) == ACKQ_OK, "예전 큐 b_state는 열린다");
+    ackq_close(&old);
+    CHECK(ackq_install(db, &legacy, &old) == ACKQ_OK, "예전 큐 b_state는 install로도 열린다");
+    CHECK(old != NULL && enq(old, db, "legacy", NULL, &id, NULL) == ACKQ_OK, "예전 큐에 enqueue");
+    tables = database_table_count(raw_db(db));
+    ackq_status_t st = ackq_install(db, &base, &q);
+    CHECK(st == ACKQ_INVALID && q == NULL, "b_state가 있으면 b 설치는 INVALID (%s)", ackq_status_name(st));
+    CHECK(database_table_count(raw_db(db)) == tables, "거절한 설치는 아무것도 만들지 않는다");
+    ackq_close(&old);
+    ackq_close(&a);
+    close_db(db);
+}
+
+
+/* ── #260 claim 순서·backlog·마지막 시도·이전 형식·빈 claim ── */
+
+static uint64_t claim_one_id(ackq_t *q, session_t *db, uint64_t lease_ms, uint64_t *fence)
+{
+    size_t n = claim_n(q, db, 1, lease_ms);
+    uint64_t id = n == 1 ? g_items[0].id : 0;
+    if (fence != NULL) *fence = n == 1 ? g_items[0].fence : 0;
+    ackq_claims_release(g_items, n);
+    return id;
+}
+
+static void test_claim_order_and_backlog(void)
+{
+    printf("\n[#260 claim 순서와 backlog 무관 비용]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 0);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    uint64_t a, b, c, fence;
+    assert(enq(q, db, "a", NULL, &a, NULL) == ACKQ_OK && enq(q, db, "b", NULL, &b, NULL) == ACKQ_OK &&
+           enq(q, db, "c", NULL, &c, NULL) == ACKQ_OK);
+    CHECK(claim_one_id(q, db, 60000, &fence) == a, "먼저 넣은 a");
+    g_now = 1001;
+    CHECK(ackq_nack(q, db, a, fence, 0, "retry", NULL) == ACKQ_OK, "a nack(지연 0)");
+    CHECK(claim_one_id(q, db, 60000, NULL) == b, "nack한 a가 머리를 막지 않고 b가 먼저");
+    CHECK(claim_one_id(q, db, 60000, NULL) == c, "다음은 c");
+    CHECK(claim_one_id(q, db, 60000, &fence) == a, "그다음에 a");
+    CHECK(ackq_ack(q, db, a, fence) == ACKQ_OK, "a ack");
+
+    /* 만료 전 LEASED 300건과 ACKED 300건이 있어도 claim은 그 행을 읽지 않는다 */
+    for (int i = 0; i < 300; i++) {
+        uint64_t id;
+        assert(enq(q, db, "leased", NULL, &id, NULL) == ACKQ_OK);
+    }
+    CHECK(claim_n(q, db, 300, 3600000) == 300, "300건 claim");
+    ackq_claims_release(g_items, 300);
+    for (int i = 0; i < 300; i++) {
+        uint64_t id;
+        assert(enq(q, db, "acked", NULL, &id, NULL) == ACKQ_OK);
+        CHECK(claim_one_id(q, db, 60000, &fence) == id, "새 작업 %d", i);
+        assert(ackq_ack(q, db, id, fence) == ACKQ_OK);
+    }
+    /* 지연 READY 300건도 claim 구간 밖이다 */
+    for (int i = 0; i < 300; i++) {
+        uint64_t id;
+        assert(enq(q, db, "delayed", NULL, &id, NULL) == ACKQ_OK);
+        assert(claim_one_id(q, db, 60000, &fence) == id);
+        assert(ackq_nack(q, db, id, fence, 3600000, NULL, NULL) == ACKQ_OK);
+    }
+    uint64_t last;
+    assert(enq(q, db, "last", NULL, &last, NULL) == ACKQ_OK);
+    database_scan_stats_t before, after;
+    database_scan_stats(raw_db(db), &before);
+    CHECK(claim_one_id(q, db, 60000, &fence) == last, "backlog 뒤의 새 작업");
+    database_scan_stats(raw_db(db), &after);
+    CHECK(after.rows_scanned == before.rows_scanned && after.index_pages_read - before.index_pages_read <= 24,
+          "claim은 전체 스캔 없이 색인 몇 쪽만 읽는다 (scanned %llu, pages %llu)",
+          (unsigned long long)(after.rows_scanned - before.rows_scanned),
+          (unsigned long long)(after.index_pages_read - before.index_pages_read));
+    CHECK(claim_n(q, db, 1, 60000) == 0, "남은 것은 만료 전 LEASED와 지연 READY뿐");
+    ackq_stats_t stats;
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.leased == 303 && stats.ready == 300 && stats.acked == 301,
+          "stats ready %llu leased %llu acked %llu", (unsigned long long)stats.ready, (unsigned long long)stats.leased,
+          (unsigned long long)stats.acked);
+    size_t purged = 0;
+    CHECK(ackq_purge(q, db, false, 1024, &purged) == ACKQ_OK && purged == 301, "ACKED 301건 purge");
+    CHECK(scalar_int(db, "SELECT COUNT(*) FROM streamlite_queue_jobs WHERE idem IS NULL") == 603, "key 없는 작업의 idem은 NULL");
+    /* 만료되면 lease가 이른 것부터 다시 받는다 */
+    g_now += 3600000;
+    CHECK(claim_n(q, db, 5, 60000) == 5 && g_items[0].attempts == 2, "만료된 LEASED를 다시 claim");
+    ackq_claims_release(g_items, 5);
+    ackq_close(&q);
+    close_db(db);
+}
+
+static void test_last_attempt_band(void)
+{
+    printf("\n[#260 마지막 시도의 만료 lease]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 2);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    uint64_t x, fence;
+    assert(enq(q, db, "x", NULL, &x, NULL) == ACKQ_OK);
+    CHECK(claim_one_id(q, db, 10, NULL) == x, "시도 1");
+    g_now += 20;
+    CHECK(claim_one_id(q, db, 10, &fence) == x, "만료 뒤 시도 2(마지막)");
+    uint64_t until = 0;
+    CHECK(ackq_extend(q, db, x, fence, 10, &until) == ACKQ_OK && until == g_now + 10, "마지막 시도도 연장된다");
+    g_now += 20;
+    CHECK(claim_n(q, db, 1, 10) == 0, "시도를 다 쓴 만료 lease는 claim되지 않는다");
+    CHECK(ackq_ack(q, db, x, fence) == ACKQ_OK, "recover 전에는 현재 fence로 ack된다");
+    uint64_t y;
+    assert(enq(q, db, "y", NULL, &y, NULL) == ACKQ_OK);
+    CHECK(claim_one_id(q, db, 10, NULL) == y && (g_now += 20, claim_one_id(q, db, 10, &fence) == y), "y 두 번 claim");
+    g_now += 20;
+    size_t recovered = 0, released = 0;
+    CHECK(ackq_recover(q, db, 10, &recovered) == ACKQ_OK && recovered == 1, "recover가 마지막 시도를 찾는다");
+    ackq_stats_t stats;
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.failed == 1 && stats.acked == 1, "y는 FAILED");
+    uint64_t z;
+    assert(enq(q, db, "z", NULL, &z, NULL) == ACKQ_OK);
+    CHECK(claim_one_id(q, db, 60000, NULL) == z && (g_now += 1, claim_one_id(q, db, 60000, NULL) == 0), "z 시도 1");
+    g_now += 60001;
+    CHECK(claim_one_id(q, db, 60000, NULL) == z, "z 시도 2(마지막)");
+    CHECK(ackq_release_leases(q, db, 10, &released) == ACKQ_OK && released == 1, "release가 마지막 시도도 푼다");
+    CHECK(claim_one_id(q, db, 60000, NULL) == z, "풀린 z는 다시 전달된다");
+    size_t purged = 0;
+    CHECK(ackq_purge(q, db, true, 10, &purged) == ACKQ_OK && purged == 2, "ACKED·FAILED purge");
+    ackq_close(&q);
+    close_db(db);
+}
+
+#define LEGACY_TABLE "CREATE TABLE streamlite_queue_old (id INTEGER PRIMARY KEY AUTOINCREMENT, state INTEGER NOT NULL, " \
+                     "ready_at INTEGER NOT NULL, lease_until INTEGER NOT NULL, fence INTEGER NOT NULL, " \
+                     "attempts INTEGER NOT NULL, idem TEXT NOT NULL, payload BLOB NOT NULL, note TEXT NOT NULL, " \
+                     "created_at INTEGER NOT NULL)"
+
+static void test_previous_format_queue(void)
+{
+    printf("\n[#260 이전 판이 설치한 큐]\n");
+    make_db();
+    session_t *db = open_db();
+    /* 이전 판의 설치와 같은 테이블·색인과 행(key 없는 작업의 idem은 '') */
+    CHECK(exec_ok(db, LEGACY_TABLE) && exec_ok(db, "CREATE INDEX streamlite_queue_old_state ON streamlite_queue_old (state)") &&
+              exec_ok(db, "CREATE INDEX streamlite_queue_old_idem ON streamlite_queue_old (idem)") &&
+              exec_ok(db, "CREATE TABLE streamlite_queue_old_keys (seq INTEGER PRIMARY KEY AUTOINCREMENT, idem TEXT NOT NULL, "
+                          "job INTEGER NOT NULL, digest BLOB NOT NULL, expires_at INTEGER NOT NULL)") &&
+              exec_ok(db, "CREATE UNIQUE INDEX streamlite_queue_old_keys_idem ON streamlite_queue_old_keys (idem)") &&
+              exec_ok(db, "INSERT INTO streamlite_queue_old (state, ready_at, lease_until, fence, attempts, idem, payload, note, "
+                          "created_at) VALUES (0, 10, 0, 0, 0, '', X'01', '', 10), (1, 10, 50, 1, 1, '', X'02', '', 10), "
+                          "(2, 10, 0, 1, 1, 'k', X'03', '', 10)"),
+          "이전 형식 큐");
+    ackq_options_t o = qopts("old", 3);
+    ackq_t *q = NULL;
+    g_now = 100;
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "열린다");
+    CHECK(!exec_ok(db, "CREATE INDEX streamlite_queue_old_lease ON streamlite_queue_old (lease_until)"),
+          "열 때 lease_until 색인을 만들었다");
+    uint64_t id;
+    CHECK(enq(q, db, "new", NULL, &id, NULL) == ACKQ_OK && id == 4, "enqueue");
+    CHECK(scalar_int(db, "SELECT COUNT(*) FROM streamlite_queue_old WHERE idem = ''") == 3, "이전 형식은 idem ''를 유지");
+    CHECK(claim_n(q, db, 10, 1000) == 3 && g_items[0].id == 1 && g_items[1].id == 2 && g_items[2].id == 4,
+          "READY 1·만료 LEASED 2·새 작업 4를 id 순서로");
+    uint64_t fences[3] = {g_items[0].fence, g_items[1].fence, g_items[2].fence};
+    ackq_claims_release(g_items, 3);
+    CHECK(ackq_ack(q, db, 1, fences[0]) == ACKQ_OK && ackq_nack(q, db, 2, fences[1], 0, NULL, NULL) == ACKQ_OK,
+          "ack·nack");
+    g_now += 2000;
+    size_t recovered = 0, purged = 0;
+    CHECK(ackq_recover(q, db, 10, &recovered) == ACKQ_OK && recovered == 1, "만료된 4를 recover");
+    CHECK(ackq_purge(q, db, false, 10, &purged) == ACKQ_OK && purged == 2, "ACKED 둘 purge");
+    bool dup = false;
+    CHECK(enq(q, db, "\x03", "k", &id, &dup) == ACKQ_OK && dup && id == 3, "purge 뒤에도 key 보존");
+    ackq_stats_t stats;
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.ready == 2 && stats.leased == 0, "stats");
+    ackq_close(&q);
+    /* 호출자 트랜잭션 안에서 열면 이관하지 않고 그 거래를 실패로 만들지 않는다 */
+    CHECK(exec_ok(db, LEGACY_TABLE "") == false, "같은 표는 다시 못 만든다");
+    session_t *txn = begin_txn(db);
+    ackq_options_t again = qopts("old", 3);
+    CHECK(txn != NULL && ackq_open(txn, &again, &q) == ACKQ_OK && !session_txn_failed(txn), "거래 안 열기");
+    ackq_close(&q);
+    rollback_txn(&txn);
+    close_db(db);
+}
+
+static void test_empty_claim_without_writer(void)
+{
+    printf("\n[#260 빈 큐 claim은 writer를 잡지 않는다]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 0);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    CHECK(claim_n(q, db, 1, 1000) == 0, "빈 큐");
+    session_t *writer = begin_txn(db);
+    assert(writer != NULL);
+    uint64_t id;
+    CHECK(enq(q, writer, "pending", NULL, &id, NULL) == ACKQ_OK, "다른 세션의 거래가 writer를 쥐고 enqueue");
+    size_t count = 9;
+    CHECK(ackq_claim(q, db, 1, 1000, g_items, &count) == ACKQ_OK && count == 0,
+          "writer를 다른 거래가 쥐어도 빈 claim은 BUSY가 아니다");
+    CHECK(commit_txn(&writer) == TXN_OK, "commit");
+    CHECK(claim_one_id(q, db, 1000, NULL) == id, "commit 뒤에는 받는다");
+    writer = begin_txn(db);
+    count = 9;
+    CHECK(ackq_claim(q, db, 1, 1000, g_items, &count) == ACKQ_BUSY && count == 0,
+          "직전 claim이 받았으면 곧바로 쓰기 거래를 열어 writer를 기다린다");
+    rollback_txn(&writer);
+    ackq_close(&q);
+    close_db(db);
+}
+
+/* 자기 거래 하나로 READY n건을 넣는다 */
+static void enqueue_ready(ackq_t *q, session_t *db, size_t n)
+{
+    session_t *txn = begin_txn(db);
+    assert(txn != NULL);
+    for (size_t i = 0; i < n; i++) {
+        uint64_t id;
+        assert(enq(q, txn, "r", NULL, &id, NULL) == ACKQ_OK);
+    }
+    assert(commit_txn(&txn) == TXN_OK);
+}
+
+typedef struct {
+    uint64_t lookups;
+    uint64_t pages;
+    uint64_t scanned;
+} read_cost_t;
+
+/* 연산 하나가 읽은 색인 조회·색인 페이지·전체 스캔 행 수 */
+static read_cost_t read_cost(session_t *db, database_scan_stats_t *before)
+{
+    database_scan_stats_t after;
+    database_scan_stats(raw_db(db), &after);
+    read_cost_t cost = {after.index_lookups - before->index_lookups, after.index_pages_read - before->index_pages_read,
+                        after.rows_scanned - before->rows_scanned};
+    *before = after;
+    return cost;
+}
+
+static void test_recover_cost_independent_of_ready(void)
+{
+    printf("\n[#260 recover·release 비용은 READY 수와 무관]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 2);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    /* 만료 전 마지막 시도 LEASED 400건과 시도가 남은 LEASED 1건 */
+    enqueue_ready(q, db, 400);
+    CHECK(claim_n(q, db, 400, 10) == 400, "400건 claim");
+    ackq_claims_release(g_items, 400);
+    g_now += 20;
+    CHECK(claim_n(q, db, 400, 3600000) == 400, "400건은 두 번째(마지막) 시도");
+    ackq_claims_release(g_items, 400);
+    uint64_t fresh;
+    assert(enq(q, db, "x", NULL, &fresh, NULL) == ACKQ_OK && claim_one_id(q, db, 3600000, NULL) == fresh);
+    /* 때가 된 READY 4000건. 돌려놓을 것이 없는 호출의 읽기는 색인 몇 쪽이어야 한다(READY를 방문하면 수십 쪽이다) */
+    enqueue_ready(q, db, 4000);
+    database_scan_stats_t mark;
+    database_scan_stats(raw_db(db), &mark);
+    size_t n = 9;
+    CHECK(ackq_recover(q, db, 10, &n) == ACKQ_OK && n == 0, "만료된 lease가 없으면 recover 0건");
+    read_cost_t recover = read_cost(db, &mark);
+    CHECK(recover.scanned == 0 && recover.lookups <= 2 && recover.pages <= 8,
+          "recover는 READY·만료 전 lease를 방문하지 않는다 (lookups %llu, pages %llu, scanned %llu)",
+          (unsigned long long)recover.lookups, (unsigned long long)recover.pages, (unsigned long long)recover.scanned);
+    CHECK(ackq_release_leases(q, db, 1024, &n) == ACKQ_OK && n == 401, "release 401건 (%zu)", n);
+    read_cost(db, &mark);
+    CHECK(ackq_release_leases(q, db, 1024, &n) == ACKQ_OK && n == 0, "남은 lease가 없으면 release 0건");
+    read_cost_t release = read_cost(db, &mark);
+    CHECK(release.scanned == 0 && release.lookups <= 2 && release.pages <= 8,
+          "release는 READY를 방문하지 않는다 (lookups %llu, pages %llu, scanned %llu)", (unsigned long long)release.lookups,
+          (unsigned long long)release.pages, (unsigned long long)release.scanned);
+    ackq_stats_t stats;
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.leased == 0 && stats.ready == 4401, "모두 READY (ready %llu)",
+          (unsigned long long)stats.ready);
+    ackq_close(&q);
+    close_db(db);
+}
+
+#define DUE_TABLE "CREATE TABLE streamlite_queue_due (id INTEGER PRIMARY KEY AUTOINCREMENT, state INTEGER NOT NULL, " \
+                  "ready_at INTEGER NOT NULL, lease_until INTEGER NOT NULL, fence INTEGER NOT NULL, " \
+                  "attempts INTEGER NOT NULL, idem TEXT, payload BLOB NOT NULL, note TEXT NOT NULL, " \
+                  "created_at INTEGER NOT NULL, due INTEGER NOT NULL)"
+
+/* lease_until 색인 없이 만든 due 형식 큐(이 판의 이전 빌드가 만든 것) */
+static void make_due_queue_without_lease_index(session_t *db)
+{
+    CHECK(exec_ok(db, DUE_TABLE) && exec_ok(db, "CREATE INDEX streamlite_queue_due_due ON streamlite_queue_due (due)") &&
+              exec_ok(db, "CREATE INDEX streamlite_queue_due_idem ON streamlite_queue_due (idem)") &&
+              exec_ok(db, "CREATE TABLE streamlite_queue_due_keys (seq INTEGER PRIMARY KEY AUTOINCREMENT, idem TEXT NOT NULL, "
+                          "job INTEGER NOT NULL, digest BLOB NOT NULL, expires_at INTEGER NOT NULL)") &&
+              exec_ok(db, "CREATE UNIQUE INDEX streamlite_queue_due_keys_idem ON streamlite_queue_due_keys (idem)"),
+          "lease 색인 없는 due 형식 큐");
+}
+
+static void test_due_queue_gains_lease_index(void)
+{
+    printf("\n[#260 lease 색인 없는 due 형식 큐는 열 때 색인을 더한다]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_t *q;
+    ackq_options_t fresh = qopts("jobs", 0);
+    assert(ackq_install(db, &fresh, &q) == ACKQ_OK);
+    CHECK(!exec_ok(db, "CREATE INDEX streamlite_queue_jobs_lease ON streamlite_queue_jobs (lease_until)"),
+          "새로 설치한 큐는 lease_until 색인이 있다");
+    ackq_close(&q);
+    make_due_queue_without_lease_index(db);
+    /* 호출자 거래 안에서는 만들지 않고 그 거래를 실패로 만들지 않는다 */
+    session_t *txn = begin_txn(db);
+    ackq_options_t o = qopts("due", 0);
+    CHECK(txn != NULL && ackq_open(txn, &o, &q) == ACKQ_OK && !session_txn_failed(txn), "거래 안 열기");
+    ackq_close(&q);
+    rollback_txn(&txn);
+    CHECK(exec_ok(db, "SELECT 1 FROM streamlite_queue_due WHERE 1 = 0"), "표는 그대로");
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "자동 commit 열기");
+    CHECK(!exec_ok(db, "CREATE INDEX streamlite_queue_due_lease ON streamlite_queue_due (lease_until)"),
+          "열 때 lease_until 색인을 만들었다");
+    g_now = 1000;
+    enqueue_ready(q, db, 4000);
+    database_scan_stats_t mark;
+    database_scan_stats(raw_db(db), &mark);
+    size_t n = 9;
+    CHECK(ackq_recover(q, db, 10, &n) == ACKQ_OK && n == 0, "recover 0건");
+    read_cost_t cost = read_cost(db, &mark);
+    CHECK(cost.scanned == 0 && cost.lookups <= 2 && cost.pages <= 8, "READY를 방문하지 않는다 (lookups %llu, pages %llu)",
+          (unsigned long long)cost.lookups, (unsigned long long)cost.pages);
+    ackq_close(&q);
+    close_db(db);
+}
+
+/* 이전 판 라이브러리처럼 due를 고치지 않고 상태만 바꾼다 */
+static bool old_library_update(session_t *db, const char *set, uint64_t id)
+{
+    char sql[256];
+    snprintf(sql, sizeof(sql), "UPDATE streamlite_queue_jobs SET %s WHERE id = %llu", set, (unsigned long long)id);
+    return exec_ok(db, sql);
+}
+
+/* 혼용 뒤 due를 상태에 맞게 다시 맞추는 문장(docs/design/transaction-queue.md) */
+#define REPAIR_DUE "UPDATE streamlite_queue_jobs SET due = CASE WHEN state = 0 THEN ready_at WHEN state = 1 THEN lease_until " \
+                   "WHEN state = 2 THEN -4611686018427387904 + id ELSE -3458764513820540928 + id END"
+
+static void test_wrong_due_is_not_claimed(void)
+{
+    printf("\n[#260 due가 상태와 어긋난 행(이전 판 라이브러리 혼용)]\n");
+    make_db();
+    session_t *db = open_db();
+    ackq_options_t o = qopts("jobs", 3);
+    ackq_t *q;
+    assert(ackq_install(db, &o, &q) == ACKQ_OK);
+    g_now = 1000;
+    uint64_t live, acked, failed, delayed, ready, fence;
+    assert(enq(q, db, "live", NULL, &live, NULL) == ACKQ_OK && enq(q, db, "acked", NULL, &acked, NULL) == ACKQ_OK &&
+           enq(q, db, "failed", NULL, &failed, NULL) == ACKQ_OK && enq(q, db, "delayed", NULL, &delayed, NULL) == ACKQ_OK &&
+           enq(q, db, "ready", NULL, &ready, NULL) == ACKQ_OK);
+    /* 이전 판의 claim·ack·fail·nack: due는 enqueue 때의 ready_at(1000)에 남는다 */
+    CHECK(old_library_update(db, "state = 1, lease_until = 61000, fence = 1, attempts = 1", live) &&
+              old_library_update(db, "state = 2, lease_until = 0, fence = 1, attempts = 1", acked) &&
+              old_library_update(db, "state = 3, lease_until = 0, fence = 1, attempts = 1", failed) &&
+              old_library_update(db, "state = 0, ready_at = 900000, lease_until = 0, fence = 1, attempts = 1", delayed),
+          "이전 판 동작 흉내");
+    g_now = 2000;
+    CHECK(claim_n(q, db, 10, 60000) == 1 && g_items[0].id == ready, "때가 된 READY 하나만 받는다");
+    ackq_claims_release(g_items, 1);
+    CHECK(claim_n(q, db, 10, 60000) == 0, "살아 있는 lease·ACKED·FAILED·지연 READY는 받지 않는다");
+    ackq_claim_t item;
+    CHECK(ackq_claim_id(q, db, live, 60000, &item) == ACKQ_STALE && ackq_claim_id(q, db, acked, 60000, &item) == ACKQ_STALE,
+          "id 지정 claim도 STALE");
+    ackq_stats_t stats;
+    CHECK(ackq_stats(q, db, &stats) == ACKQ_OK && stats.acked == 1 && stats.failed == 1 && stats.leased == 2 &&
+              stats.ready == 1,
+          "상태는 그대로");
+    /* lease가 만료되면 이전 판이 잡은 작업도 다시 받는다(fence는 1 오른다) */
+    g_now = 62000;
+    CHECK(claim_n(q, db, 1, 60000) == 1 && g_items[0].id == live && g_items[0].fence == 2, "만료된 lease는 다시 받는다");
+    fence = g_items[0].fence;
+    ackq_claims_release(g_items, 1);
+    CHECK(ackq_ack(q, db, live, fence) == ACKQ_OK, "새 판 ack");
+    /* due가 ACKED 구간 밖이면 purge가 찾지 못한다. 고침 문장 뒤에는 지운다 */
+    size_t purged = 9;
+    CHECK(ackq_purge(q, db, true, 10, &purged) == ACKQ_OK && purged == 1, "새 판이 끝낸 작업만 purge (%zu)", purged);
+    CHECK(exec_ok(db, REPAIR_DUE), "due 고침 문장");
+    CHECK(ackq_purge(q, db, true, 10, &purged) == ACKQ_OK && purged == 2, "고친 뒤 ACKED·FAILED purge (%zu)", purged);
+    g_now = 900000;
+    CHECK(claim_n(q, db, 10, 60000) == 2 && g_items[0].id == ready && g_items[1].id == delayed,
+          "지연 READY는 제 시각에 받는다");
+    ackq_claims_release(g_items, 2);
+    ackq_close(&q);
+    close_db(db);
+}
+
+static uint64_t elapsed_ms(const struct timespec *start)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (uint64_t)(now.tv_sec - start->tv_sec) * 1000u + (uint64_t)((now.tv_nsec - start->tv_nsec) / 1000000);
+}
+
+static void test_open_reads_lease_index_first(void)
+{
+    printf("\n[#260 열기는 lease 색인이 있으면 쓰기 거래를 열지 않는다]\n");
+    make_db();
+    session_t *db = open_db();
+    CHECK(exec_ok(db, LEGACY_TABLE) && exec_ok(db, "CREATE INDEX streamlite_queue_old_state ON streamlite_queue_old (state)") &&
+              exec_ok(db, "CREATE INDEX streamlite_queue_old_idem ON streamlite_queue_old (idem)") &&
+              exec_ok(db, "CREATE TABLE streamlite_queue_old_keys (seq INTEGER PRIMARY KEY AUTOINCREMENT, idem TEXT NOT NULL, "
+                          "job INTEGER NOT NULL, digest BLOB NOT NULL, expires_at INTEGER NOT NULL)") &&
+              exec_ok(db, "CREATE UNIQUE INDEX streamlite_queue_old_keys_idem ON streamlite_queue_old_keys (idem)"),
+          "이전 형식 큐");
+    ackq_options_t o = qopts("old", 0);
+    o.begin_timeout_ms = 1500;
+    ackq_t *q = NULL;
+    /* 색인이 없고 다른 거래가 writer를 쥐면 기다린 뒤 이전 경로로 열린다 */
+    session_t *writer = begin_txn(db);
+    assert(writer != NULL);
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "색인을 만들지 못해도 열린다");
+    ackq_close(&q);
+    rollback_txn(&writer);
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "writer가 없으면 색인을 만든다");
+    ackq_close(&q);
+    CHECK(!exec_ok(db, "CREATE INDEX streamlite_queue_old_lease ON streamlite_queue_old (lease_until)"), "색인이 있다");
+    /* 색인이 이미 있으면 다른 writer가 있어도 기다리지 않고, 그 색인을 쓴다 */
+    g_now = 1000;
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "다시 열기");
+    for (int i = 0; i < 300; i++) {
+        uint64_t id;
+        assert(enq(q, db, "leased", NULL, &id, NULL) == ACKQ_OK);
+    }
+    CHECK(claim_n(q, db, 300, 3600000) == 300, "만료 전 LEASED 300건");
+    ackq_claims_release(g_items, 300);
+    ackq_close(&q);
+    writer = begin_txn(db);
+    assert(writer != NULL);
+    struct timespec start;
+    clock_gettime(CLOCK_MONOTONIC, &start);
+    CHECK(ackq_open(db, &o, &q) == ACKQ_OK, "writer가 있는 동안 열기");
+    uint64_t waited = elapsed_ms(&start);
+    CHECK(waited < 500, "begin_timeout_ms(1500)를 기다리지 않는다 (%llu ms)", (unsigned long long)waited);
+    rollback_txn(&writer);
+    database_scan_stats_t mark;
+    database_scan_stats(raw_db(db), &mark);
+    size_t n = 9;
+    CHECK(ackq_recover(q, db, 10, &n) == ACKQ_OK && n == 0, "recover 0건");
+    read_cost_t cost = read_cost(db, &mark);
+    CHECK(cost.scanned == 0 && cost.lookups <= 2 && cost.pages <= 8,
+          "그 핸들은 lease 색인으로 찾는다 (lookups %llu, pages %llu)", (unsigned long long)cost.lookups,
+          (unsigned long long)cost.pages);
+    ackq_close(&q);
+    close_db(db);
+}
+
 int main(void)
 {
     set_dir(DIR);
@@ -929,6 +1688,20 @@ int main(void)
     test_restart_recovery();
     test_wrong_database_and_read_only();
     test_session_contract_db_and_queue();
+    test_recover_release_revoke_claim();
+    test_clock_guard();
+    test_clock_unavailable_and_return();
+    test_release_loop_reaches_attempt_limit();
+    test_key_expiry_order();
+    test_name_collision();
+    test_claim_order_and_backlog();
+    test_last_attempt_band();
+    test_previous_format_queue();
+    test_empty_claim_without_writer();
+    test_recover_cost_independent_of_ready();
+    test_due_queue_gains_lease_index();
+    test_wrong_due_is_not_claimed();
+    test_open_reads_lease_index_first();
     printf("\ntest_ack_queue: %d checks, %d failed\n", g_run, g_fail);
     if (g_fail == 0) remove_dir();
     return g_fail == 0 ? 0 : 1;

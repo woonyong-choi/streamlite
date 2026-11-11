@@ -21,7 +21,7 @@
  */
 
 #define DIR_NAME "build/test_database_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 
 static int g_run = 0;
 static int g_fail = 0;
@@ -637,6 +637,124 @@ static void check_primary_key_ranges(database_t *db)
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) expect_same_as_scan(db, cases[i][0], cases[i][1]);
 }
 
+static void test_scalar_subquery_probes(void)
+{
+    printf("\n[test_scalar_subquery_probes]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (id INTEGER PRIMARY KEY, state INTEGER, tag TEXT)");
+    exec_ok(db, "CREATE INDEX by_state ON t (state)");
+    for (int i = 1; i <= 64; i++) {
+        char sql[128];
+        snprintf(sql, sizeof(sql), "INSERT INTO t VALUES (%d, %d, 'key%d')", i, i % 2, i);
+        exec_ok(db, sql);
+    }
+    static const char *const cases[] = {
+        "SELECT id FROM t WHERE id = (SELECT 17)",
+        "SELECT id FROM t WHERE (SELECT 17) = id",
+        "SELECT id FROM t WHERE id = (SELECT id FROM t WHERE id = 17)",
+        "SELECT id FROM t WHERE tag = (SELECT 'key17')",
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        expect_text(db, cases[i], "[1] 17");
+    }
+    static const char *const indexed[] = {
+        "SELECT id FROM t WHERE id = (SELECT 17)",
+        "SELECT id FROM t WHERE (SELECT 17) = id",
+        "SELECT id FROM t WHERE id = (SELECT id FROM t WHERE id = 17)",
+    };
+    for (size_t i = 0; i < sizeof(indexed) / sizeof(indexed[0]); i++) {
+        database_scan_stats_t before, after;
+        database_scan_stats(db, &before);
+        expect_text(db, indexed[i], "[1] 17");
+        database_scan_stats(db, &after);
+        CHECK(after.rows_scanned == before.rows_scanned, "scalar key equality avoids full scan: %s", indexed[i]);
+        CHECK(after.index_lookups > before.index_lookups, "scalar key equality uses index: %s", indexed[i]);
+    }
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT 1000)", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT NULL)", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT id FROM t WHERE id = 1000)", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT 17.0)", "[1] 17");
+    expect_text(db, "SELECT id FROM t WHERE id = (SELECT 17.5)", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id < 0 UNION ALL SELECT id FROM t WHERE id < 0", "[0]");
+    expect_text(db, "SELECT id FROM t WHERE id = 17 UNION ALL SELECT id FROM t WHERE id < 0", "[1] 17");
+    expect_text(db, "SELECT id FROM t WHERE id < 0 UNION ALL SELECT id FROM t WHERE id = 17", "[1] 17");
+    expect_text(db, "SELECT id FROM t WHERE id < 0 UNION SELECT id FROM t WHERE id < 0", "[0]");
+    expect_text(db, "SELECT count(*) FROM t a WHERE id = (SELECT a.id)", "[1] 64");
+    expect_class(db, "SELECT id FROM t WHERE id = (SELECT id FROM t)", RESULT_E_SEMANTIC);
+    expect_class(db, "UPDATE t SET state = 9 WHERE id = (SELECT id, state FROM t LIMIT 1)", RESULT_E_SEMANTIC);
+    expect_text(db, "SELECT count(*) FROM t WHERE state = 9", "[1] 0");
+    assert(database_close(db) == DATABASE_OK);
+    clean_dir();
+}
+
+static void test_conditional_minimum_subquery(void)
+{
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (id INTEGER PRIMARY KEY, state INTEGER)");
+    exec_ok(db, "CREATE INDEX by_state ON t (state)");
+    exec_ok(db, "INSERT INTO t VALUES (1, 2), (2, 0), (3, 2), (4, 0), (17, 1), (18, 1)");
+    const char *candidate =
+        "(SELECT id FROM (SELECT id FROM (SELECT id FROM t WHERE state = 0 ORDER BY id LIMIT 1) r "
+        "UNION ALL SELECT id FROM (SELECT id FROM t WHERE state = 1 ORDER BY id LIMIT 1) l) c "
+        "ORDER BY id LIMIT 1)";
+    char sql[768];
+    snprintf(sql, sizeof(sql), "UPDATE t SET state = 2 WHERE id = %s RETURNING id, state", candidate);
+    database_scan_stats_t before, after;
+    database_scan_stats(db, &before);
+    expect_text(db, sql, "[1] 2|2");
+    database_scan_stats(db, &after);
+    printf("minimum UPDATE: scanned=%llu lookups=%llu\n",
+           (unsigned long long)(after.rows_scanned - before.rows_scanned),
+           (unsigned long long)(after.index_lookups - before.index_lookups));
+    CHECK(after.rows_scanned == before.rows_scanned, "minimum from two indexed states avoids outer full scan");
+    CHECK(after.index_lookups >= before.index_lookups + 3, "two candidate indexes and final key probe");
+    db = reopen(db, true);
+    snprintf(sql, sizeof(sql), "DELETE FROM t WHERE id = %s RETURNING id", candidate);
+    database_scan_stats(db, &before);
+    expect_text(db, sql, "[1] 4");
+    database_scan_stats(db, &after);
+    printf("minimum DELETE: scanned=%llu lookups=%llu\n",
+           (unsigned long long)(after.rows_scanned - before.rows_scanned),
+           (unsigned long long)(after.index_lookups - before.index_lookups));
+    CHECK(after.rows_scanned == before.rows_scanned, "reopened conditional delete avoids outer full scan");
+    expect_text(db, "SELECT id, state FROM t ORDER BY id", "[5] 1|2/ 2|2/ 3|2/ 17|1/ 18|1");
+    assert(database_close(db) == DATABASE_OK);
+    clean_dir();
+}
+
+static void test_bound_scalar_probe_results_own_values(void)
+{
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE scalar_text (k TEXT PRIMARY KEY, v TEXT)");
+    exec_ok(db, "INSERT INTO scalar_text VALUES ('one', 'a'), ('two', 'b')");
+    const char *sql = "UPDATE scalar_text SET v = ? WHERE k = (SELECT ?) RETURNING k, v";
+    char key[] = "one";
+    value_view_t params[2] = {{VALUE_TEXT, 0, 0, (const uint8_t *)"first", 5},
+                              {VALUE_TEXT, 0, 0, (const uint8_t *)key, 3}};
+    database_scan_stats_t before, after;
+    database_scan_stats(db, &before);
+    result_t *first = run_bound(db, sql, params, 2);
+    memcpy(key, "two", 3);
+    params[0].bytes = (const uint8_t *)"second";
+    params[0].size_bytes = 6;
+    result_t *second = run_bound(db, sql, params, 2);
+    memset(key, 'x', 3);
+    database_scan_stats(db, &after);
+    CHECK(after.rows_scanned == before.rows_scanned, "bound text scalar updates use key indexes");
+    CHECK(after.index_lookups == before.index_lookups + 2, "each bound scalar update probes its current key");
+    assert(database_close(db) == DATABASE_OK);
+
+    char *text = dump(first, false);
+    CHECK(strcmp(text, "[1] 'one'|'first'") == 0, "first result owns original binding after close: %s", text);
+    free(text);
+    text = dump(second, false);
+    CHECK(strcmp(text, "[1] 'two'|'second'") == 0, "second result owns current binding after close: %s", text);
+    free(text);
+    result_release(&first);
+    result_release(&second);
+    clean_dir();
+}
+
 static void test_primary_key_range(void)
 {
     printf("\n[test_primary_key_range]\n");
@@ -1024,7 +1142,7 @@ static void test_open_rejects_other_files_without_change(void)
     CHECK(memcmp(after, legacy, sizeof(legacy)) == 0, "열기 시도가 파일을 바꾸지 않음");
     CHECK(access(DB_PATH "-lock", F_OK) != 0, "다른 형식 파일 옆에 writer 잠금 파일을 만들지 않음");
     CHECK(database_create(DB_PATH, &db) == DATABASE_EXISTS, "이미 있으면 create는 거절");
-    CHECK(database_open(DIR_NAME "/missing.totedb", false, &db) == DATABASE_IO, "없는 파일은 IO");
+    CHECK(database_open(DIR_NAME "/missing.streamlite", false, &db) == DATABASE_IO, "없는 파일은 IO");
     clean_dir();
 }
 
@@ -1351,6 +1469,78 @@ static void test_ordered_secondary_index(void)
     clean_dir();
 }
 
+/* 정수 열 보조 색인의 구간 조회(#260): 색인 없는 같은 표와 결과·순서가 같고 전체 스캔 없이 LIMIT에서 멈춘다 */
+static void check_index_ranges(database_t *db)
+{
+    static const char *const cases[][2] = {
+        {"SELECT id, k FROM t WHERE k >= -50 AND k <= 40 ORDER BY k LIMIT 7",
+         "SELECT id, k FROM plain WHERE k >= -50 AND k <= 40 ORDER BY k LIMIT 7"},
+        {"SELECT id FROM t WHERE k > 100 AND k < 300 AND id % 3 = 1 ORDER BY k LIMIT 5 OFFSET 2",
+         "SELECT id FROM plain WHERE k > 100 AND k < 300 AND id % 3 = 1 ORDER BY k LIMIT 5 OFFSET 2"},
+        {"SELECT id, k FROM t WHERE k <= -290 ORDER BY k", "SELECT id, k FROM plain WHERE k <= -290 ORDER BY k"},
+        {"SELECT id, k FROM t WHERE k >= 690 ORDER BY k", "SELECT id, k FROM plain WHERE k >= 690 ORDER BY k"},
+        {"SELECT count(*) FROM t WHERE k BETWEEN 0 AND 99", "SELECT count(*) FROM plain WHERE k BETWEEN 0 AND 99"},
+        {"SELECT id FROM t WHERE k >= 10 AND k <= 5", "SELECT id FROM plain WHERE k >= 10 AND k <= 5"},
+        {"SELECT id, k FROM t WHERE k >= 9223372036854775800 ORDER BY k",
+         "SELECT id, k FROM plain WHERE k >= 9223372036854775800 ORDER BY k"},
+        {"SELECT id, k FROM t WHERE k <= -9223372036854775800 ORDER BY k",
+         "SELECT id, k FROM plain WHERE k <= -9223372036854775800 ORDER BY k"},
+        {"SELECT id FROM t WHERE k >= 0 ORDER BY id LIMIT 4", "SELECT id FROM plain WHERE k >= 0 ORDER BY id LIMIT 4"},
+        {"SELECT id, k FROM t WHERE k >= 0 AND k <= 30 ORDER BY k DESC LIMIT 3",
+         "SELECT id, k FROM plain WHERE k >= 0 AND k <= 30 ORDER BY k DESC LIMIT 3"},
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) expect_same_order(db, cases[i][0], cases[i][1]);
+    database_scan_stats_t before, after;
+    database_scan_stats(db, &before);
+    char *got = query(db, "SELECT id FROM t WHERE k >= -300 AND k <= 699 ORDER BY k LIMIT 2");
+    free(got);
+    database_scan_stats(db, &after);
+    CHECK(after.rows_scanned == before.rows_scanned && after.index_lookups == before.index_lookups + 1 &&
+              after.index_pages_read - before.index_pages_read <= 4,
+          "정수 색인 구간 LIMIT은(stamp 확인 포함) 전체 스캔과 나머지 색인 페이지 방문 없이 멈춤 (scanned %llu, pages %llu)",
+          (unsigned long long)(after.rows_scanned - before.rows_scanned),
+          (unsigned long long)(after.index_pages_read - before.index_pages_read));
+}
+
+static void test_secondary_index_ranges(void)
+{
+    printf("\n[test_secondary_index_ranges]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (id INTEGER PRIMARY KEY, k INTEGER, v TEXT)");
+    exec_ok(db, "CREATE TABLE plain (id INTEGER PRIMARY KEY, k INTEGER, v TEXT)");
+    exec_ok(db, "CREATE INDEX t_k ON t (k)");
+    /* k는 -300..699의 서로 다른 값이고 id 순서와 다르다. NULL과 극단 값도 둔다 */
+    for (int start = 1; start <= 1000; start += 100) {
+        char sql[8192], plain[8192];
+        size_t used = (size_t)snprintf(sql, sizeof(sql), "INSERT INTO t VALUES ");
+        for (int id = start; id < start + 100; id++) {
+            used += (size_t)snprintf(sql + used, sizeof(sql) - used, "%s(%d, %d, 'v%d')", id == start ? "" : ", ", id,
+                                     (id * 7919) % 1000 - 300, id);
+        }
+        exec_ok(db, sql);
+        snprintf(plain, sizeof(plain), "INSERT INTO plain VALUES %s", sql + strlen("INSERT INTO t VALUES "));
+        exec_ok(db, plain);
+    }
+    const char *extra = "VALUES (2001, NULL, 'n1'), (2002, NULL, 'n2'), (2003, 9223372036854775807, 'max'), "
+                        "(2004, -9223372036854775808, 'min'), (2005, 9223372036854775806, 'near')";
+    char sql[512];
+    snprintf(sql, sizeof(sql), "INSERT INTO t %s", extra);
+    exec_ok(db, sql);
+    snprintf(sql, sizeof(sql), "INSERT INTO plain %s", extra);
+    exec_ok(db, sql);
+    check_index_ranges(db);
+    /* 값을 옮기고 지운 뒤, 다시 연 뒤에도 같다 */
+    exec_ok(db, "UPDATE t SET k = k + 1000 WHERE id % 9 = 0");
+    exec_ok(db, "UPDATE plain SET k = k + 1000 WHERE id % 9 = 0");
+    exec_ok(db, "DELETE FROM t WHERE id % 13 = 0");
+    exec_ok(db, "DELETE FROM plain WHERE id % 13 = 0");
+    check_index_ranges(db);
+    db = reopen(db, true);
+    check_index_ranges(db);
+    assert(database_close(db) == DATABASE_OK);
+    clean_dir();
+}
+
 /* #81·#91: 데이터 페이지는 닿거나(카탈로그·heap·overflow·색인) 빈 목록에 정확히 한 번 있다. 고아와 이중 소유가 없다 */
 static void expect_pages_accounted(database_t *db, const char *when)
 {
@@ -1446,6 +1636,9 @@ static void test_defaults_survive_reopen(void)
 
 int main(void)
 {
+    test_scalar_subquery_probes();
+    test_conditional_minimum_subquery();
+    test_bound_scalar_probe_results_own_values();
     test_defaults_survive_reopen();
     test_two_schemas_crud_and_reopen();
     test_values_round_trip_across_page_sizes();
@@ -1465,6 +1658,7 @@ int main(void)
     test_order_and_distinct_respect_budget();
     test_aggregate_memory_scales_with_groups();
     test_ordered_secondary_index();
+    test_secondary_index_ranges();
     test_page_accounting_with_large_values();
     test_page_list_with_deep_index();
     clean_dir();

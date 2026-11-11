@@ -1,9 +1,9 @@
 """다른 프로세스가 계속 쓰는 동안 조회 지연을 SQLite와 비교한다(#200).
 
 writer 프로세스는 거래마다 20KB 행 20개를 넣고 commit한다. reader 프로세스는 같은 시간 동안 `SELECT COUNT(*)`를 반복하며
-문장마다 걸린 시간을 잰다. 내구성은 거래마다 디스크 동기화(ToteDB COW+fsync, SQLite synchronous=FULL)다.
+문장마다 걸린 시간을 잰다. 내구성은 거래마다 디스크 동기화(StreamLite COW+fsync, SQLite synchronous=FULL)다.
 
-사용: TOTEDB_LIB=build/lib/libtotedb.so PYTHONPATH=python python3 bench/read_during_write.py --seconds 3 --repeats 3
+사용: STREAMLITE_LIB=build/lib/libstreamlite.so PYTHONPATH=python python3 bench/read_during_write.py --seconds 3 --repeats 3
 """
 
 from __future__ import annotations
@@ -23,8 +23,8 @@ PAD = b"w" * 20000
 
 
 def _open(engine: str, path: str):
-    if engine == "totedb":
-        from totedb import Database
+    if engine == "streamlite":
+        from streamlite import Database
 
         return Database(path, create=False, busy_timeout_s=60)
     db = sqlite3.connect(path, timeout=60, isolation_level=None)
@@ -37,7 +37,7 @@ def _writer(engine: str, path: str, start: multiprocessing.Event, stop: multipro
     start.wait()
     txns = 0
     while not stop.is_set():
-        if engine == "totedb":
+        if engine == "streamlite":
             with db.begin() as txn:
                 for _ in range(ROWS_PER_TXN):
                     txn.execute("INSERT INTO t (pad) VALUES (?)", (PAD,))
@@ -57,7 +57,7 @@ def _reader(engine: str, path: str, start: multiprocessing.Event, stop: multipro
     latencies = []
     while not stop.is_set():
         began = time.perf_counter()
-        if engine == "totedb":
+        if engine == "streamlite":
             db.execute("SELECT COUNT(*) FROM t")
         else:
             db.execute("SELECT COUNT(*) FROM t").fetchone()
@@ -67,8 +67,8 @@ def _reader(engine: str, path: str, start: multiprocessing.Event, stop: multipro
 
 
 def _prepare(engine: str, path: Path) -> None:
-    if engine == "totedb":
-        from totedb import Database
+    if engine == "streamlite":
+        from streamlite import Database
 
         db = Database(path)
         db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT, pad BLOB)")
@@ -112,7 +112,7 @@ def run_once(engine: str, seconds: float, workdir: Path) -> dict[str, object]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--seconds", type=float, default=3.0)
-    parser.add_argument("--engines", default="totedb,sqlite-delete,sqlite-wal")
+    parser.add_argument("--engines", default="streamlite,sqlite-delete,sqlite-wal")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--output", type=Path, default=Path("build/bench/read_during_write.json"))
     args = parser.parse_args()

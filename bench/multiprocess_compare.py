@@ -1,10 +1,10 @@
 """여러 프로세스가 같은 파일의 작업을 나눠 처리하는 처리량을 SQLite와 비교한다(#199).
 
 거래 하나: 상태가 0인 가장 작은 id 하나를 고르고, 상태를 1로 바꾸고, 처리 기록을 넣는다. 두 엔진이 같은 SQL을 쓴다.
-내구성: 거래마다 디스크 동기화(ToteDB COW+fsync, SQLite synchronous=FULL). SQLite는 DELETE(rollback)와 WAL 두 모드.
-다른 프로세스가 쓰는 중이면 두 엔진 모두 짧게 쉬며 다시 시도한다(ToteDB 바인딩의 BUSY 재시도, SQLite busy_timeout).
+내구성: 거래마다 디스크 동기화(StreamLite COW+fsync, SQLite synchronous=FULL). SQLite는 DELETE(rollback)와 WAL 두 모드.
+다른 프로세스가 쓰는 중이면 두 엔진 모두 짧게 쉬며 다시 시도한다(StreamLite 바인딩의 BUSY 재시도, SQLite busy_timeout).
 
-사용: TOTEDB_LIB=build/lib/libtotedb.so PYTHONPATH=python python3 bench/multiprocess_compare.py --jobs 800 --repeats 3
+사용: STREAMLITE_LIB=build/lib/libstreamlite.so PYTHONPATH=python python3 bench/multiprocess_compare.py --jobs 800 --repeats 3
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ TAKE = "UPDATE jobs SET state = 1 WHERE id = ? AND state = 0"
 RECORD = "INSERT INTO done (id, worker) VALUES (?, ?)"
 
 
-def _tote_worker(path: str, worker: int, start: multiprocessing.Event, out: multiprocessing.Queue) -> None:
-    from totedb import Database
+def _streamlite_worker(path: str, worker: int, start: multiprocessing.Event, out: multiprocessing.Queue) -> None:
+    from streamlite import Database
 
     db = Database(path, create=False, busy_timeout_s=120)
     start.wait()
@@ -69,8 +69,8 @@ def _sqlite_worker(path: str, worker: int, start: multiprocessing.Event, out: mu
 
 def _prepare(engine: str, path: Path, jobs: int) -> None:
     payload = b"p" * 256
-    if engine == "totedb":
-        from totedb import Database
+    if engine == "streamlite":
+        from streamlite import Database
 
         db = Database(path)
         for sql in SCHEMA:
@@ -92,8 +92,8 @@ def _prepare(engine: str, path: Path, jobs: int) -> None:
 
 
 def _verify(engine: str, path: Path, jobs: int) -> bool:
-    if engine == "totedb":
-        from totedb import Database
+    if engine == "streamlite":
+        from streamlite import Database
 
         db = Database(path, create=False)
         done = db.execute("SELECT COUNT(*), COUNT(DISTINCT id) FROM done").rows[0]
@@ -112,7 +112,7 @@ def run_once(engine: str, processes: int, jobs: int, workdir: Path) -> dict[str,
     _prepare(engine, path, jobs)
     start = SPAWN.Event()
     out = SPAWN.Queue()
-    target = _tote_worker if engine == "totedb" else _sqlite_worker
+    target = _streamlite_worker if engine == "streamlite" else _sqlite_worker
     workers = [SPAWN.Process(target=target, args=(str(path), w, start, out)) for w in range(processes)]
     for worker in workers:
         worker.start()
@@ -132,7 +132,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--jobs", type=int, default=800)
     parser.add_argument("--processes", default="1,4,16")
-    parser.add_argument("--engines", default="totedb,sqlite-delete,sqlite-wal")
+    parser.add_argument("--engines", default="streamlite,sqlite-delete,sqlite-wal")
     parser.add_argument("--repeats", type=int, default=3)
     parser.add_argument("--output", type=Path, default=Path("build/bench/multiprocess_compare.json"))
     args = parser.parse_args()

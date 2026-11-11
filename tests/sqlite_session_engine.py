@@ -23,7 +23,7 @@ class FaultReplyError(EngineError):
 
 
 def case_database_name(label: str) -> str:
-    return "sqlite.db" if label == "sqlite" else "subject.totedb"
+    return "sqlite.db" if label == "sqlite" else "subject.streamlite"
 
 
 def _expect_ok(frame: list[str], what: str) -> None:

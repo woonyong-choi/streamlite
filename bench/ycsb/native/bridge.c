@@ -5,11 +5,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "totedb.h"
+#include "streamlite.h"
 
 typedef struct {
     int engine;
-    tote_db_t *tote;
+    streamlite_db_t *streamlite;
     sqlite3 *sqlite;
 } connection_t;
 
@@ -123,7 +123,7 @@ static jobject finish_reply(reply_t *reply)
         (*env)->SetObjectArrayElement(env, rows, index, row);
         (*env)->DeleteLocalRef(env, row);
     }
-    jclass reply_class = (*env)->FindClass(env, "org/totedb/ycsb/NativeReply");
+    jclass reply_class = (*env)->FindClass(env, "org/streamlite/ycsb/NativeReply");
     jmethodID constructor = (*env)->GetMethodID(env, reply_class, "<init>",
         "(IILjava/lang/String;[Ljava/lang/String;[[[BJ)V");
     jstring error = (*env)->NewStringUTF(env, reply->error);
@@ -172,7 +172,7 @@ static void decode_cell(reply_t *reply, reader_t *reader, jobjectArray row, size
     reader->failed = 1;
 }
 
-static jobject decode_tote(JNIEnv *env, const uint8_t *data, size_t size)
+static jobject decode_streamlite(JNIEnv *env, const uint8_t *data, size_t size)
 {
     reader_t reader = {data, size, 0, 0};
     unsigned kind = (unsigned)number(&reader, 1);
@@ -218,38 +218,38 @@ static jobject decode_tote(JNIEnv *env, const uint8_t *data, size_t size)
     if (reader.failed || reader.offset != reader.size) {
         reply.status = 2;
         reply.code = -1;
-        reply.error = "malformed ToteDB result";
+        reply.error = "malformed StreamLite result";
     }
     return finish_reply(&reply);
 }
 
-static jobject execute_tote(JNIEnv *env, connection_t *connection, const char *sql,
-                            tote_param_t *params, size_t count)
+static jobject execute_streamlite(JNIEnv *env, connection_t *connection, const char *sql,
+                                  streamlite_param_t *params, size_t count)
 {
     uint8_t *data = NULL;
     size_t size = 0;
-    int status = tote_exec(connection->tote, NULL, sql, params, count, &data, &size);
+    int status = streamlite_exec(connection->streamlite, NULL, sql, params, count, &data, &size);
     jobject result = NULL;
-    if (status == TOTE_OK) {
-        result = decode_tote(env, data, size);
+    if (status == STREAMLITE_OK) {
+        result = decode_streamlite(env, data, size);
     } else {
         reply_t reply;
         if (init_reply(&reply, env, 0)) {
-            reply.status = status == TOTE_BUSY ? 1 : 2;
+            reply.status = status == STREAMLITE_BUSY ? 1 : 2;
             reply.code = status;
-            reply.error = tote_status_name(status);
+            reply.error = streamlite_status_name(status);
             result = finish_reply(&reply);
         }
     }
-    tote_free(data);
+    streamlite_free(data);
     return result;
 }
 
-static int bind_sqlite(sqlite3_stmt *statement, tote_param_t *params, size_t count)
+static int bind_sqlite(sqlite3_stmt *statement, streamlite_param_t *params, size_t count)
 {
     if ((size_t)sqlite3_bind_parameter_count(statement) != count) return SQLITE_MISUSE;
     for (size_t index = 0; index < count; index++) {
-        int status = params[index].type == TOTE_PARAM_TEXT
+        int status = params[index].type == STREAMLITE_PARAM_TEXT
             ? sqlite3_bind_text(statement, (int)index + 1, (const char *)params[index].bytes, (int)params[index].size, SQLITE_STATIC)
             : sqlite3_bind_blob(statement, (int)index + 1, params[index].bytes, (int)params[index].size, SQLITE_STATIC);
         if (status != SQLITE_OK) return status;
@@ -258,7 +258,7 @@ static int bind_sqlite(sqlite3_stmt *statement, tote_param_t *params, size_t cou
 }
 
 static jobject execute_sqlite(JNIEnv *env, connection_t *connection, const char *sql,
-                              tote_param_t *params, size_t count)
+                              streamlite_param_t *params, size_t count)
 {
     sqlite3_stmt *statement = NULL;
     const char *tail = NULL;
@@ -305,7 +305,7 @@ static jobject execute_sqlite(JNIEnv *env, connection_t *connection, const char 
     return result;
 }
 
-JNIEXPORT jlong JNICALL Java_org_totedb_ycsb_Native_open(JNIEnv *env, jclass type, jint engine,
+JNIEXPORT jlong JNICALL Java_org_streamlite_ycsb_Native_open(JNIEnv *env, jclass type, jint engine,
                                                        jbyteArray path, jboolean create)
 {
     (void)type;
@@ -315,7 +315,7 @@ JNIEXPORT jlong JNICALL Java_org_totedb_ycsb_Native_open(JNIEnv *env, jclass typ
     if (connection == NULL) { free(name); throw_error(env, "connection allocation failed"); return 0; }
     connection->engine = engine;
     int status;
-    if (engine == 0) status = tote_open(name, create, &connection->tote);
+    if (engine == 0) status = streamlite_open(name, create, &connection->streamlite);
     else status = sqlite3_open_v2(name, &connection->sqlite,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX | (create ? SQLITE_OPEN_CREATE : 0), NULL);
     free(name);
@@ -327,17 +327,17 @@ JNIEXPORT jlong JNICALL Java_org_totedb_ycsb_Native_open(JNIEnv *env, jclass typ
     return (jlong)(intptr_t)connection;
 }
 
-JNIEXPORT jint JNICALL Java_org_totedb_ycsb_Native_close(JNIEnv *env, jclass type, jlong handle)
+JNIEXPORT jint JNICALL Java_org_streamlite_ycsb_Native_close(JNIEnv *env, jclass type, jlong handle)
 {
     (void)env;
     (void)type;
     connection_t *connection = (connection_t *)(intptr_t)handle;
-    int status = connection->engine == 0 ? tote_close(&connection->tote) : sqlite3_close(connection->sqlite);
+    int status = connection->engine == 0 ? streamlite_close(&connection->streamlite) : sqlite3_close(connection->sqlite);
     if (status == 0) free(connection);
     return status;
 }
 
-JNIEXPORT jobject JNICALL Java_org_totedb_ycsb_Native_execute(JNIEnv *env, jclass type, jlong handle,
+JNIEXPORT jobject JNICALL Java_org_streamlite_ycsb_Native_execute(JNIEnv *env, jclass type, jlong handle,
     jbyteArray sql, jobjectArray values, jbooleanArray text)
 {
     (void)type;
@@ -346,7 +346,7 @@ JNIEXPORT jobject JNICALL Java_org_totedb_ycsb_Native_execute(JNIEnv *env, jclas
     if ((*env)->GetArrayLength(env, text) != count) { throw_error(env, "parameter count mismatch"); return NULL; }
     char *query = copy_string(env, sql);
     if (query == NULL) return NULL;
-    tote_param_t *params = calloc((size_t)count + 1, sizeof(*params));
+    streamlite_param_t *params = calloc((size_t)count + 1, sizeof(*params));
     jboolean *types = (*env)->GetBooleanArrayElements(env, text, NULL);
     if (params == NULL || types == NULL) {
         if (types != NULL) (*env)->ReleaseBooleanArrayElements(env, text, types, JNI_ABORT);
@@ -361,13 +361,13 @@ JNIEXPORT jobject JNICALL Java_org_totedb_ycsb_Native_execute(JNIEnv *env, jclas
         if (bytes == NULL) { (*env)->DeleteLocalRef(env, value); throw_error(env, "value allocation failed"); break; }
         (*env)->GetByteArrayRegion(env, value, 0, size, (jbyte *)bytes);
         (*env)->DeleteLocalRef(env, value);
-        params[index] = (tote_param_t){.type = types[index] ? TOTE_PARAM_TEXT : TOTE_PARAM_BLOB, .bytes = bytes, .size = (size_t)size};
+        params[index] = (streamlite_param_t){.type = types[index] ? STREAMLITE_PARAM_TEXT : STREAMLITE_PARAM_BLOB, .bytes = bytes, .size = (size_t)size};
     }
     (*env)->ReleaseBooleanArrayElements(env, text, types, JNI_ABORT);
     jobject result = NULL;
     if (!(*env)->ExceptionCheck(env)) {
-        result = connection->engine == 0 ? execute_tote(env, connection, query, params, (size_t)count)
-                                        : execute_sqlite(env, connection, query, params, (size_t)count);
+        result = connection->engine == 0 ? execute_streamlite(env, connection, query, params, (size_t)count)
+                                           : execute_sqlite(env, connection, query, params, (size_t)count);
     }
     for (jsize index = 0; index < count; index++) free((void *)params[index].bytes);
     free(params);
@@ -375,50 +375,50 @@ JNIEXPORT jobject JNICALL Java_org_totedb_ycsb_Native_execute(JNIEnv *env, jclas
     return result;
 }
 
-JNIEXPORT jstring JNICALL Java_org_totedb_ycsb_Native_version(JNIEnv *env, jclass type, jint engine)
+JNIEXPORT jstring JNICALL Java_org_streamlite_ycsb_Native_version(JNIEnv *env, jclass type, jint engine)
 {
     (void)type;
-    return (*env)->NewStringUTF(env, engine == 0 ? tote_version() : sqlite3_libversion());
+    return (*env)->NewStringUTF(env, engine == 0 ? streamlite_version() : sqlite3_libversion());
 }
 
-JNIEXPORT jlong JNICALL Java_org_totedb_ycsb_Native_begin(JNIEnv *env, jclass type, jlong handle)
+JNIEXPORT jlong JNICALL Java_org_streamlite_ycsb_Native_begin(JNIEnv *env, jclass type, jlong handle)
 {
     (void)env;
     (void)type;
     connection_t *connection = (connection_t *)(intptr_t)handle;
     if (connection->engine == 0) {
-        tote_txn_t *transaction = NULL;
-        int status = tote_begin(connection->tote, &transaction);
+        streamlite_txn_t *transaction = NULL;
+        int status = streamlite_begin(connection->streamlite, &transaction);
         return status == 0 ? (jlong)(intptr_t)transaction : -(jlong)status;
     }
     int status = sqlite3_exec(connection->sqlite, "BEGIN IMMEDIATE", NULL, NULL, NULL);
     return status == SQLITE_OK ? 1 : -(jlong)status;
 }
 
-JNIEXPORT jint JNICALL Java_org_totedb_ycsb_Native_rollback(JNIEnv *env, jclass type, jlong handle, jlong token)
+JNIEXPORT jint JNICALL Java_org_streamlite_ycsb_Native_rollback(JNIEnv *env, jclass type, jlong handle, jlong token)
 {
     (void)env;
     (void)type;
     connection_t *connection = (connection_t *)(intptr_t)handle;
     if (connection->engine == 0) {
-        tote_txn_t *transaction = (tote_txn_t *)(intptr_t)token;
-        return tote_rollback(&transaction);
+        streamlite_txn_t *transaction = (streamlite_txn_t *)(intptr_t)token;
+        return streamlite_rollback(&transaction);
     }
     return sqlite3_exec(connection->sqlite, "ROLLBACK", NULL, NULL, NULL);
 }
 
-JNIEXPORT jobject JNICALL Java_org_totedb_ycsb_Native_decode(JNIEnv *env, jclass type, jbyteArray encoded)
+JNIEXPORT jobject JNICALL Java_org_streamlite_ycsb_Native_decode(JNIEnv *env, jclass type, jbyteArray encoded)
 {
     (void)type;
     jsize size = (*env)->GetArrayLength(env, encoded);
     jbyte *bytes = (*env)->GetByteArrayElements(env, encoded, NULL);
     if (bytes == NULL) return NULL;
-    jobject result = decode_tote(env, (const uint8_t *)bytes, (size_t)size);
+    jobject result = decode_streamlite(env, (const uint8_t *)bytes, (size_t)size);
     (*env)->ReleaseByteArrayElements(env, encoded, bytes, JNI_ABORT);
     return result;
 }
 
-JNIEXPORT jobjectArray JNICALL Java_org_totedb_ycsb_Native_compileOptions(JNIEnv *env, jclass type)
+JNIEXPORT jobjectArray JNICALL Java_org_streamlite_ycsb_Native_compileOptions(JNIEnv *env, jclass type)
 {
     (void)type;
     int count = 0;

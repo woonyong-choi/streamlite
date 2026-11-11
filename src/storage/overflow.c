@@ -57,7 +57,7 @@ static void encode_page(uint8_t *page, size_t page_bytes, page_header_t header,
                         const uint8_t *chunk)
 {
     memset(page, 0, page_bytes);
-    memcpy(page, "LRO2", 4);
+    memcpy(page, "SLO2", 4);
     write_u32(page + 4, header.index);
     write_u32(page + 8, header.next);
     write_u32(page + 12, header.chunk);
@@ -69,7 +69,7 @@ static void encode_page(uint8_t *page, size_t page_bytes, page_header_t header,
 
 static bool decode_page(const uint8_t *page, size_t page_bytes, page_header_t *header)
 {
-    if (memcmp(page, "LRO2", 4) != 0) return false;
+    if (memcmp(page, "SLO2", 4) != 0) return false;
     header->index = read_u32(page + 4);
     header->next = read_u32(page + 8);
     header->chunk = read_u32(page + 12);
@@ -198,13 +198,27 @@ static overflow_status_t check_page(const overflow_io_t *io, const uint8_t *page
     return OVERFLOW_OK;
 }
 
-/* 체인을 검증하며 ids와 dest를 채운다. 둘 다 호출자가 크기를 보장하고 없으면 NULL이다. */
-static overflow_status_t walk_chain(const overflow_io_t *io, overflow_ref_t ref,
+/*
+ * 머리 페이지를 읽어 ref와 대조한다. ref의 크기는 호출자가 준 값이므로 이 검사를 지난 뒤에만 할당에 쓴다.
+ * 머리글의 전체 크기가 ref와 같아야 하므로 손상된 ref가 큰 할당을 일으키지 못한다.
+ */
+static overflow_status_t read_head(const overflow_io_t *io, overflow_ref_t ref, uint8_t *page,
+                                   page_header_t *header)
+{
+    if (!io->read(io->context, ref.head, page)) return OVERFLOW_IO;
+    return check_page(io, page, 0, ref, ref.size_bytes, header);
+}
+
+/*
+ * 머리 다음 페이지부터 체인을 검증하며 ids와 dest를 채운다. 둘 다 호출자가 크기를 보장하고 없으면 NULL이다.
+ * head는 read_head가 검증한 머리글이고 머리 페이지의 몫은 호출자가 이미 채웠다.
+ */
+static overflow_status_t walk_chain(const overflow_io_t *io, overflow_ref_t ref, page_header_t head,
                                     uint8_t *page, uint32_t *ids, uint8_t *dest)
 {
-    size_t remaining = ref.size_bytes;
-    uint32_t id = ref.head;
-    for (size_t index = 0; remaining > 0; index++) {
+    size_t remaining = ref.size_bytes - head.chunk;
+    uint32_t id = head.next;
+    for (size_t index = 1; remaining > 0; index++) {
         if (id == OVERFLOW_NO_PAGE) return OVERFLOW_CORRUPT;
         if (!io->read(io->context, id, page)) return OVERFLOW_IO;
         page_header_t header;
@@ -235,13 +249,20 @@ overflow_status_t overflow_read(const overflow_io_t *io, overflow_ref_t ref,
         return OVERFLOW_OK;
     }
     uint8_t *page = malloc(io->page_bytes);
-    uint8_t *data = malloc(ref.size_bytes);
-    if (page == NULL || data == NULL) {
+    if (page == NULL) return OVERFLOW_NOMEM;
+    page_header_t head;
+    overflow_status_t status = read_head(io, ref, page, &head);
+    if (status != OVERFLOW_OK) {
         free(page);
-        free(data);
+        return status;
+    }
+    uint8_t *data = malloc(ref.size_bytes);
+    if (data == NULL) {
+        free(page);
         return OVERFLOW_NOMEM;
     }
-    overflow_status_t status = walk_chain(io, ref, page, NULL, data);
+    memcpy(data, page + OVERFLOW_HEADER_BYTES, head.chunk);
+    status = walk_chain(io, ref, head, page, NULL, data);
     free(page);
     if (status != OVERFLOW_OK) {
         free(data);
@@ -257,14 +278,21 @@ overflow_status_t overflow_free(const overflow_io_t *io, overflow_ref_t ref)
     if (ref.size_bytes == 0) return OVERFLOW_OK;
     size_t count = page_count(io, ref.size_bytes);
     if (count > SIZE_MAX / sizeof(uint32_t)) return OVERFLOW_LIMIT;
-    uint32_t *ids = malloc(count * sizeof(uint32_t));
     uint8_t *page = malloc(io->page_bytes);
-    if (ids == NULL || page == NULL) {
-        free(ids);
+    if (page == NULL) return OVERFLOW_NOMEM;
+    page_header_t head;
+    overflow_status_t status = read_head(io, ref, page, &head);
+    if (status != OVERFLOW_OK) {
+        free(page);
+        return status;
+    }
+    uint32_t *ids = malloc(count * sizeof(uint32_t));
+    if (ids == NULL) {
         free(page);
         return OVERFLOW_NOMEM;
     }
-    overflow_status_t status = walk_chain(io, ref, page, ids, NULL);
+    ids[0] = ref.head;
+    status = walk_chain(io, ref, head, page, ids, NULL);
     if (status == OVERFLOW_OK) {
         bool failed = false;
         release_all(io, ids, count, &failed);

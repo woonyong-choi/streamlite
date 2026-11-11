@@ -1,0 +1,16 @@
+{
+  "issue": 158,
+  "runtime_commit": "9d70c9b4e5747985a094eaa618f9653627992c14",
+  "library": "build-regression/conditional-baseline/lib/libstreamlite.dylib",
+  "library_sha256": "2fa582b507c5905270aa1fcc1937e918cfc901955a6cb7fcd283696911230566",
+  "library_fingerprint": "build-regression/conditional-baseline/.build-fingerprint",
+  "library_fingerprint_sha256": "fec55200167b8983edb62b2ec6bfbaf171220d1ade0083f652bca223ed320a26",
+  "driver": "build-regression/primary_key_scale_driver",
+  "python": "build/check-env/bin/python",
+  "campaign_seconds": 1800,
+  "disk_bytes": 8589934592,
+  "disk_headroom_bytes": 2147483648,
+  "scope": "original #137 autocommit fixture, six read queries and warmup/order; primary-key latency and native scan gates; descriptive latency only",
+  "sqlite_scan_rows": "unavailable; native heap scan counters are not SQLite VM steps",
+  "historical_180_seconds": "separate changed-limit observation, not completion of the original 120-second condition"
+}

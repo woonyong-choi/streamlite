@@ -395,12 +395,12 @@ def _environment() -> dict[str, object]:
     sources = sorted((ROOT / "bench/queue_contention").glob("*.py"))
     library = Path(
         os.environ.get(
-            "TOTEDB_LIB",
+            "STREAMLITE_LIB",
             ROOT
             / (
-                "build/lib/libtotedb.dylib"
+                "build/lib/libstreamlite.dylib"
                 if sys.platform == "darwin"
-                else "build/lib/libtotedb.so"
+                else "build/lib/libstreamlite.so"
             ),
         )
     )
@@ -416,7 +416,7 @@ def _environment() -> dict[str, object]:
         "git_and_tools": observed,
         "environment": {
             name: os.environ[name]
-            for name in ("TOTEDB_LIB", "PYTHONPATH", "CC", "CFLAGS", "LDFLAGS")
+            for name in ("STREAMLITE_LIB", "PYTHONPATH", "CC", "CFLAGS", "LDFLAGS")
             if name in os.environ
         },
         "source_sha256": {

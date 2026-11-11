@@ -5,8 +5,20 @@
 #include "storage/catalog.h"
 
 #define NUMBER_BUFFER_BYTES 4097u
-/* 식 트리 높이 한도. 괄호·연산자 사슬이 이보다 깊으면 LIMIT다(파싱·평가·해제가 재귀라 스택을 지킨다) */
-#define SQLSTMT_MAX_DEPTH 512u
+/*
+ * 재귀 한도 세 가지. 파싱·복제·컴파일·평가·해제가 재귀라 어떤 입력도 스택을 넘기지 못하게 parser가 막는다(#272).
+ *   HEIGHT  식 트리 높이(잎이 1). 왼쪽으로 치우친 연산자 사슬도 노드마다 한 단계다. 서브쿼리를 가진 노드는
+ *           그 질의 안에서 가장 높은 식을 더한다(바깥 식을 계산하는 중에 안쪽 식을 계산한다).
+ *   DEPTH   괄호·함수 인자·CASE·IN 목록·단항 연산의 중첩. parser가 한 단계마다 여러 함수를 거친다.
+ *   QUERIES 질의 중첩(식 자리·FROM·WITH의 괄호 질의). 실행기가 한 단계마다 질의 하나를 통째로 돌린다.
+ *   SOURCES 한 질의의 FROM 원본 수에 그 식 안 서브쿼리의 원본 수를 더한 값. 결합은 원본마다 한 단계씩 재귀하고
+ *           바깥 열을 보는 서브쿼리는 그 가장 안쪽에서 다시 실행된다. FROM·WITH의 질의는 결합보다 먼저 끝나므로
+ *           더하지 않고 큰 쪽만 본다.
+ * 넘으면 SQLSTMT_LIMIT다. 값의 근거는 sql_statement.h에 적었다.
+ */
+#define SQLSTMT_MAX_HEIGHT SQLSTMT_MAX_EXPR_HEIGHT
+#define SQLSTMT_MAX_DEPTH SQLSTMT_MAX_EXPR_NESTING
+#define SQLSTMT_MAX_QUERIES SQLSTMT_MAX_QUERY_NESTING
 /* 목록(함수 인자·IN·CASE·여러 행 INSERT의 값) 한도 */
 #define SQLSTMT_MAX_LIST 65536u
 
@@ -21,6 +33,10 @@ typedef struct {
     size_t error_offset;
     value_status_t value_status;
     size_t depth;              /* 지금 파싱 중인 식의 중첩 깊이 */
+    size_t queries;            /* 지금 파싱 중인 괄호 질의의 중첩 깊이 */
+    size_t peak;               /* 지금 질의 안에서 만든 식 노드의 가장 큰 높이 */
+    size_t expr_sources;       /* 지금 질의의 식 안 서브쿼리가 쌓는 원본 수의 최댓값 */
+    size_t from_sources;       /* 지금 질의의 FROM·WITH 질의가 쌓는 원본 수의 최댓값 */
 } parser_t;
 
 /* 이름 자리에 쓸 수 없는 예약어. 따옴표로 감싸면 쓸 수 있다. */
@@ -502,14 +518,27 @@ static sqlexpr_t *new_expr(parser_t *p, sqlexpr_kind_t kind, size_t offset)
     }
     expr->kind = kind;
     expr->offset = offset;
+    expr->height = 1;
+    if (p->peak < 1) p->peak = 1;
     return expr;
+}
+
+/* node의 높이를 height 이상으로 올린다. 한도를 넘으면 LIMIT이고 node는 그대로다 */
+static bool raise_height(parser_t *p, sqlexpr_t *node, size_t height)
+{
+    if (height > SQLSTMT_MAX_HEIGHT) return fail(p, SQLSTMT_LIMIT, SQLSTMT_REASON_TOO_MANY_ITEMS, node->offset);
+    if (height > node->height) node->height = (uint32_t)height;
+    if (height > p->peak) p->peak = height;
+    return true;
 }
 
 /* child를 parent의 인자로 붙인다. 실패하면 child를 해제한다(parent는 그대로 호출자 소유). */
 static bool push_arg(parser_t *p, sqlexpr_t *parent, sqlexpr_t *child, size_t *capacity)
 {
-    void *grown = reserve_up_to(p, parent->args, capacity, parent->arg_count, sizeof(*parent->args),
-                                child->offset, SQLSTMT_MAX_LIST);
+    void *grown = raise_height(p, parent, (size_t)child->height + 1)
+                      ? reserve_up_to(p, parent->args, capacity, parent->arg_count, sizeof(*parent->args),
+                                      child->offset, SQLSTMT_MAX_LIST)
+                      : NULL;
     if (grown == NULL) {
         expr_free(child);
         return false;
@@ -535,7 +564,7 @@ static sqlexpr_t *make_node(parser_t *p, sqlexpr_kind_t kind, size_t offset, sql
 }
 
 static bool parse_expr(parser_t *p, sqlexpr_t **out);
-static bool parse_subquery(parser_t *p, sqlstmt_select_t **out);
+static bool parse_subquery(parser_t *p, sqlstmt_select_t **out, bool in_expr);
 
 /* 현재 토큰이 괄호 안 질의의 시작인지 */
 static bool starts_query(const lexer_token_t *token) { return word_is(token, "SELECT") || word_is(token, "WITH"); }
@@ -547,10 +576,26 @@ static bool enter(parser_t *p)
     return true;
 }
 
+/*
+ * node에 딸린 괄호 질의( 다음부터 닫는 )까지). 질의 안의 가장 높은 식만큼 node의 높이를 올린다. 실패해도 읽은 데까지는
+ * node가 가지므로 호출자는 node만 해제한다.
+ */
+static bool parse_node_subquery(parser_t *p, sqlexpr_t *node)
+{
+    size_t outer = p->peak;
+    p->peak = 0;
+    bool ok = parse_subquery(p, &node->subquery, true);
+    size_t inner = p->peak;
+    p->peak = outer > inner ? outer : inner;
+    return ok && raise_height(p, node, inner + 1);
+}
+
 static bool literal(parser_t *p, sqlexpr_t **out, size_t offset, bool (*read)(parser_t *, value_t *))
 {
     sqlexpr_t *expr = new_expr(p, SQLEXPR_LITERAL, offset);
     if (expr == NULL) return false;
+    const lexer_token_t *token = current(p);
+    if (token != NULL && token->kind == LEXER_PARAMETER) expr->parameter_id = token->parameter_id;
     if (!read(p, &expr->value)) {
         expr_free(expr);
         return false;
@@ -650,7 +695,7 @@ static bool parse_primary(parser_t *p, sqlexpr_t **out)
         p->pos++;
         sqlexpr_t *node = new_expr(p, SQLEXPR_SUBQUERY, offset);
         if (node == NULL) return false;
-        if (!parse_subquery(p, &node->subquery)) {
+        if (!parse_node_subquery(p, node)) {
             expr_free(node);
             return false;
         }
@@ -705,7 +750,7 @@ static bool parse_primary(parser_t *p, sqlexpr_t **out)
         if (!starts_query(current(p))) return syntax_here(p, SQLSTMT_REASON_EXPECTED_KEYWORD);
         sqlexpr_t *node = new_expr(p, SQLEXPR_EXISTS, offset);
         if (node == NULL) return false;
-        if (!parse_subquery(p, &node->subquery)) {
+        if (!parse_node_subquery(p, node)) {
             expr_free(node);
             return false;
         }
@@ -760,7 +805,7 @@ static bool parse_unary(parser_t *p, sqlexpr_t **out)
     return parse_primary(p, out);
 }
 
-/* 왼쪽 결합 이항 연산 한 단계. ops·kinds는 같은 길이다 */
+/* 왼쪽 결합 이항 연산 한 단계. ops·kinds는 같은 길이다. 사슬은 노드마다 높이가 하나씩 늘어 make_node가 한도를 본다 */
 typedef bool (*level_fn)(parser_t *, sqlexpr_t **);
 
 static bool binary_level(parser_t *p, sqlexpr_t **out, level_fn next, const char *const *puncts,
@@ -768,17 +813,12 @@ static bool binary_level(parser_t *p, sqlexpr_t **out, level_fn next, const char
 {
     sqlexpr_t *left = NULL;
     if (!next(p, &left)) return false;
-    size_t chained = 0;
     for (;;) {
         size_t which = count;
         for (size_t i = 0; i < count; i++) {
             if (punct_is(current(p), puncts[i])) which = i;
         }
         if (which == count) break;
-        if (++chained + p->depth > SQLSTMT_MAX_DEPTH) {
-            expr_free(left);
-            return fail(p, SQLSTMT_LIMIT, SQLSTMT_REASON_TOO_MANY_ITEMS, here_offset(p));
-        }
         size_t offset = here_offset(p);
         p->pos++;
         sqlexpr_t *right = NULL;
@@ -882,7 +922,7 @@ static bool parse_predicate(parser_t *p, sqlexpr_t **out)
             return false;
         }
         if (starts_query(current(p))) {
-            if (!parse_subquery(p, &node->subquery)) {
+            if (!parse_node_subquery(p, node)) {
                 expr_free(node);
                 return false;
             }
@@ -953,12 +993,7 @@ static bool word_level(parser_t *p, sqlexpr_t **out, level_fn next, const char *
 {
     sqlexpr_t *left = NULL;
     if (!next(p, &left)) return false;
-    size_t chained = 0;
     while (word_is(current(p), word)) {
-        if (++chained + p->depth > SQLSTMT_MAX_DEPTH) {
-            expr_free(left);
-            return fail(p, SQLSTMT_LIMIT, SQLSTMT_REASON_TOO_MANY_ITEMS, here_offset(p));
-        }
         size_t offset = here_offset(p);
         p->pos++;
         sqlexpr_t *right = NULL;
@@ -1130,7 +1165,7 @@ static bool parse_source(parser_t *p, sqlstmt_select_t *query, size_t *capacity,
             return fail(p, SQLSTMT_UNSUPPORTED, SQLSTMT_REASON_UNSUPPORTED_CLAUSE, here_offset(p));
         }
         p->pos++;
-        if (!parse_subquery(p, &source->subquery) || !parse_alias(p, &source->alias)) return false;
+        if (!parse_subquery(p, &source->subquery, false) || !parse_alias(p, &source->alias)) return false;
     } else if (!parse_name(p, &source->table, false) || !parse_alias(p, &source->alias)) {
         return false;
     }
@@ -1299,7 +1334,7 @@ static bool parse_ctes(parser_t *p, sqlstmt_select_t *query)
         }
         if (!expect_word(p, "AS") || !expect_punct(p, "(")) return false;
         if (!starts_query(current(p))) return syntax_here(p, SQLSTMT_REASON_EXPECTED_KEYWORD);
-        if (!parse_subquery(p, &cte->query)) return false;
+        if (!parse_subquery(p, &cte->query, false)) return false;
     } while (take_punct(p, ","));
     return true;
 }
@@ -1317,12 +1352,37 @@ static bool parse_query(parser_t *p, sqlstmt_select_t *query)
     return parse_query_body(p, query);
 }
 
-/* ( 다음의 질의와 닫는 ). 여는 괄호는 호출자가 읽었다 */
-static bool parse_subquery(parser_t *p, sqlstmt_select_t **out)
+/*
+ * 다 읽은 질의가 실행 중에 쌓는 결합 단계 수를 *stacked에 준다: 자기 원본 수(집합 연산이면 가장 큰 쪽)에 식 안
+ * 서브쿼리의 몫을 더한 값과 FROM·WITH 질의의 몫 중 큰 쪽. 한도를 넘으면 LIMIT다.
+ */
+static bool check_sources(parser_t *p, const sqlstmt_select_t *query, size_t own, size_t offset, size_t *stacked)
 {
+    for (; query != NULL; query = query->next) {
+        if (query->source_count > own) own = query->source_count;
+    }
+    size_t total = own + p->expr_sources;
+    if (total < p->from_sources) total = p->from_sources;
+    if (total > SQLSTMT_MAX_SOURCES) return fail(p, SQLSTMT_LIMIT, SQLSTMT_REASON_TOO_MANY_ITEMS, offset);
+    *stacked = total;
+    return true;
+}
+
+/* ( 다음의 질의와 닫는 ). 여는 괄호는 호출자가 읽었다. in_expr는 식 자리의 질의인지(FROM·WITH가 아닌지)다 */
+static bool parse_subquery(parser_t *p, sqlstmt_select_t **out, bool in_expr)
+{
+    size_t offset = here_offset(p);
+    if (p->queries >= SQLSTMT_MAX_QUERIES) return fail(p, SQLSTMT_LIMIT, SQLSTMT_REASON_TOO_MANY_ITEMS, offset);
     if (!enter(p)) return false;
+    p->queries++;
+    size_t outer_expr = p->expr_sources, outer_from = p->from_sources, stacked = 0;
+    p->expr_sources = p->from_sources = 0;
     sqlstmt_select_t *query = calloc(1, sizeof(*query));
     bool ok = query != NULL ? parse_query(p, query) && expect_punct(p, ")") : nomem(p, here_offset(p));
+    ok = ok && check_sources(p, query, 0, offset, &stacked);
+    p->expr_sources = in_expr && stacked > outer_expr ? stacked : outer_expr;
+    p->from_sources = !in_expr && stacked > outer_from ? stacked : outer_from;
+    p->queries--;
     p->depth--;
     *out = query;
     return ok;
@@ -1592,7 +1652,7 @@ static bool parse_create(parser_t *p, sqlstmt_t *statement)
             return fail(p, SQLSTMT_UNSUPPORTED, SQLSTMT_REASON_UNSUPPORTED_CONSTRAINT,
                         here_offset(p));
         }
-        return expect_punct(p, ")");
+        return expect_punct(p, ")") && parse_end(p);
     }
     sqlstmt_create_t *create = &statement->create;
     statement->kind = SQLSTMT_CREATE_TABLE;
@@ -1713,7 +1773,9 @@ size_t sqlstmt_parse_peak_bytes(const lexer_statement_t *statement, const lexer_
             case LEXER_PARAMETER:
                 if (binding != NULL && binding->values != NULL && token->parameter_id >= 1 &&
                     token->parameter_id <= binding->count) {
-                    total += binding->values[token->parameter_id - 1].size_bytes;
+                    size_t bytes = binding->values[token->parameter_id - 1].size_bytes;
+                    if (bytes > SIZE_MAX - total) return SIZE_MAX;
+                    total += bytes;
                 }
                 break;
             default: break;
@@ -1776,6 +1838,12 @@ sqlstmt_status_t sqlstmt_parse(const lexer_statement_t *statement, const lexer_b
         ok = parse_finish(&parser, built, SQLSTMT_ROLLBACK);
     } else {
         ok = fail(&parser, SQLSTMT_SYNTAX, SQLSTMT_REASON_UNKNOWN_STATEMENT, first->offset);
+    }
+    if (ok) {
+        /* 맨 바깥 문장의 결합 단계. SELECT가 아닌 문장은 고칠 표 하나를 훑는 동안 식을 계산한다 */
+        size_t stacked = 0;
+        bool is_select = built->kind == SQLSTMT_SELECT;
+        ok = check_sources(&parser, is_select ? &built->select : NULL, is_select ? 0 : 1, first->offset, &stacked);
     }
     if (ok) {
         *out = built;

@@ -31,7 +31,7 @@
 #include "storage/value.h"
 
 #define DIR_NAME "__test__database_txn"
-#define DB DIR_NAME "/db.totedb"
+#define DB DIR_NAME "/db.streamlite"
 
 static int g_run, g_fail;
 
@@ -705,7 +705,7 @@ static int h_unlink(const char *p)
 
 static void hooks_on(void)
 {
-    page_file_io_t pio = {pread, h_pwrite, h_fsync, h_link, h_unlink};
+    page_file_io_t pio = {pread, h_pwrite, h_fsync, h_link, h_unlink, NULL};
     page_file_set_default_io(&pio);
 }
 

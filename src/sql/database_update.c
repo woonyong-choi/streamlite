@@ -343,9 +343,53 @@ static database_exec_status_t keep_other_key(void *context, const value_t *row)
     return DATABASE_EXEC_OK;
 }
 
-static bool same_locator_ref(heap_locator_t a, heap_locator_t b)
+static int compare_locators(heap_locator_t a, heap_locator_t b)
 {
-    return a.directory_index == b.directory_index && a.slot == b.slot;
+    if (a.directory_index != b.directory_index) return a.directory_index < b.directory_index ? -1 : 1;
+    if (a.slot != b.slot) return a.slot < b.slot ? -1 : 1;
+    return 0;
+}
+
+static void sift_order(size_t *order, size_t root, size_t count, const match_t *items)
+{
+    for (;;) {
+        size_t child = 2 * root + 1;
+        if (child >= count) return;
+        if (child + 1 < count && compare_locators(items[order[child]].locator, items[order[child + 1]].locator) < 0) child++;
+        if (compare_locators(items[order[root]].locator, items[order[child]].locator) >= 0) return;
+        size_t swap = order[root];
+        order[root] = order[child];
+        order[child] = swap;
+        root = child;
+    }
+}
+
+/* 일치한 행 번호를 locator 순으로 늘어놓는다(제자리 힙 정렬. sort_keys와 같은 이유로 qsort를 쓰지 않는다) */
+static void order_by_locator(size_t *order, size_t count, const match_t *items)
+{
+    for (size_t i = 0; i < count; i++) order[i] = i;
+    if (count < 2) return;
+    for (size_t i = count / 2; i > 0; i--) sift_order(order, i - 1, count, items);
+    for (size_t end = count - 1; end > 0; end--) {
+        size_t swap = order[0];
+        order[0] = order[end];
+        order[end] = swap;
+        sift_order(order, 0, end, items);
+    }
+}
+
+/* locator가 일치한 행의 것이면 그 번호, 아니면 SIZE_MAX. order는 order_by_locator가 만든 순서다 */
+static size_t match_at(const size_t *order, size_t count, const match_t *items, heap_locator_t at)
+{
+    size_t low = 0, high = count;
+    while (low < high) {
+        size_t mid = low + (high - low) / 2;
+        int cmp = compare_locators(items[order[mid]].locator, at);
+        if (cmp == 0) return order[mid];
+        if (cmp < 0) low = mid + 1;
+        else high = mid;
+    }
+    return SIZE_MAX;
 }
 
 database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *update, result_t **out)
@@ -372,6 +416,9 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
     size_t fresh_bytes = 0;
     key_ref_t *keys = NULL;
     size_t keys_bytes = 0;
+    size_t *by_locator = NULL;  /* 일치한 행 번호를 locator 순으로(색인 있는 표의 기본 키 갱신) */
+    bool *vacates = NULL;       /* 일치한 다른 행이 이 행의 옛 키를 새 키로 가져간다 */
+    size_t by_locator_bytes = 0, vacates_bytes = 0;
     other_keys_t other = {db, view.primary_key_column, NULL, 0, 0};
     heap_t *heap = NULL;
     heap_batch_t *batch = NULL;
@@ -439,22 +486,38 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
     for (size_t m = 0; m < matches.count; m++) {
         for (size_t i = 0; i < assign_count; i++) {
             value_t computed = {0};
+            const sqlexpr_t *expr = update->assignments[i].value;
+            size_t literal_bytes = expr->kind == SQLEXPR_LITERAL ? value_bytes(&expr->value) : 0;
+            if (!q_reserve(db, literal_bytes)) {
+                status = DATABASE_EXEC_NOMEM;
+                goto done;
+            }
             sqleval_error_t error = {SQLEVAL_OK, 0, NULL};
             if (sqleval_run(progs[i], matches.items[m].cells, &computed, &error) != SQLEVAL_OK) {
+                q_release(db, literal_bytes);
                 status = eval_failure(db, &error);
                 goto done;
             }
             bool cast = cast_for_column(db, &computed.view, &view.columns[targets[i]], &fresh[m * assign_count + i],
                                         &status);
             value_clear(&computed);
+            q_release(db, literal_bytes);
             if (!cast) goto done;
-            if (view.columns[targets[i]].not_null && fresh[m * assign_count + i].view.type == VALUE_NULL) {
+            /* 기본 키는 NOT NULL을 적지 않아도(AUTOINCREMENT) NULL로 바꿀 수 없다. NULL이 번호를 받는 것은 INSERT뿐이다 */
+            if ((view.columns[targets[i]].not_null || targets[i] == pk) &&
+                fresh[m * assign_count + i].view.type == VALUE_NULL) {
                 status = not_null_violation(db, &view.columns[targets[i]]);
                 goto done;
             }
         }
     }
 
+    /*
+     * 기본 키를 바꾸는 갱신은 적용하기 전에 판정한다. 끝난 결과에서 키가 유일하면 허용이다: 새 키가 일치하지 않은
+     * 행의 키와 같거나 새 키끼리 같으면 여기서 거절하고, 일치한 다른 행의 옛 키로 옮기는 것(id = id + 1, 맞바꾸기)은
+     * 허용한다. batch는 같은 키가 잠시 두 행에 겹치는 갱신을 받지 않으므로(heap_store.h) 키를 내주는 행을 표시해
+     * 두고 적용할 때 먼저 지운 뒤 새 키로 다시 넣는다. 그래서 허용한 것은 그대로 적용된다.
+     */
     if (pk_assigned) {
         size_t pk_slot = 0;
         while (targets[pk_slot] != pk) pk_slot++;
@@ -465,10 +528,20 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
             status = DATABASE_EXEC_NOMEM;
             goto done;
         }
+        if (is_indexed) {
+            by_locator_bytes = matches.count * sizeof(*by_locator);
+            vacates_bytes = matches.count * sizeof(*vacates);
+            by_locator = q_malloc(db, by_locator_bytes);
+            vacates = q_calloc(db, matches.count, sizeof(*vacates));
+            if (by_locator == NULL || vacates == NULL) {
+                status = DATABASE_EXEC_NOMEM;
+                goto done;
+            }
+            order_by_locator(by_locator, matches.count, matches.items);
+        }
         size_t key_count = 0;
         for (size_t m = 0; m < matches.count; m++) {
             const value_view_t *key = &fresh[m * assign_count + pk_slot].view;
-            if (key->type == VALUE_NULL) continue;
             keys[key_count++].view = key;
             if (!is_indexed) continue;
             /* 색인에서 같은 키를 가진 행이 있으면 그 행도 이번에 키가 바뀌어야 한다 */
@@ -480,14 +553,12 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
                 goto done;
             }
             if (found == HEAP_OK) {
-                bool is_matched = false;
-                for (size_t j = 0; j < matches.count && !is_matched; j++) {
-                    is_matched = same_locator_ref(matches.items[j].locator, at);
-                }
-                if (!is_matched) {
+                size_t holder = match_at(by_locator, matches.count, matches.items, at);
+                if (holder == SIZE_MAX) {
                     status = duplicate_key(db, &view);
                     goto done;
                 }
+                if (holder != m) vacates[holder] = true;
             }
         }
         for (size_t i = 0; i < other.count; i++) keys[key_count++].view = &other.keys[i].view;
@@ -515,6 +586,15 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
             goto done;
         }
     }
+    /* 키를 내주는 행을 먼저 지운다. 그 키를 받는 행이 어느 순서로 와도 색인에서 겹치지 않는다 */
+    for (size_t m = 0; vacates != NULL && m < matches.count; m++) {
+        if (!vacates[m]) continue;
+        heap_status_t removed = heap_batch_delete(batch, matches.items[m].locator);
+        if (removed != HEAP_OK) {
+            status = heap_failure(db, removed, "update");
+            goto done;
+        }
+    }
     for (size_t m = 0; m < matches.count; m++) {
         if (cancel_requested(db)) {
             status = cancelled_result(db);
@@ -523,10 +603,16 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
         for (size_t i = 0; i < n; i++) views[i] = matches.items[m].cells[i].view;
         for (size_t i = 0; i < assign_count; i++) views[targets[i]] = fresh[m * assign_count + i].view;
         heap_locator_t placed;
-        heap_status_t changed = heap_batch_update(batch, matches.items[m].locator, views, n, &placed);
-        if (changed == HEAP_OK) changed = heap_batch_secondary_insert(batch, views, n, placed);
+        heap_status_t changed = vacates != NULL && vacates[m]
+                                    ? heap_batch_insert(batch, views, n, &placed)
+                                    : heap_batch_update(batch, matches.items[m].locator, views, n, &placed);
         if (changed != HEAP_OK) {
             status = heap_failure(db, changed, "update");
+            goto done;
+        }
+        changed = heap_batch_secondary_insert(batch, views, n, placed);
+        if (changed != HEAP_OK) {
+            status = index_failure(db, changed, "update");
             goto done;
         }
         if (ret != NULL) {
@@ -554,6 +640,8 @@ done:
     if (other.keys != NULL) owned_clear(db, other.keys, other.count);
     q_free(db, other.keys, other.cap * sizeof(value_t));
     q_free(db, keys, keys_bytes);
+    q_free(db, by_locator, by_locator_bytes);
+    q_free(db, vacates, vacates_bytes);
     if (row != NULL) clear_cells(row, n);
     q_free(db, row, row_bytes);
     q_free(db, views, views_bytes);

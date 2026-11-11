@@ -85,7 +85,7 @@ def evidence(tmp_path: Path, compact_protocol: None) -> Path:
 def _result(config: dict[str, Any]) -> dict[str, Any]:
     n, body_bytes = config["n"], config["payload_bytes"]
     ack = config["engine"] in QUEUE.ENGINES[:3]
-    scale = 1 if config["engine"] == "totedb" else 2
+    scale = 1 if config["engine"] == "streamlite" else 2
     raw = {
         "put": [10 * scale] * n,
         "read": [20 * scale] * n,
@@ -97,7 +97,7 @@ def _result(config: dict[str, Any]) -> dict[str, Any]:
     counts = {"pending": 0, "completed": n if ack else 0, "failed": 0}
     package = (
         {"native_benchmark": {"enabled": False}}
-        if config["engine"] == "totedb"
+        if config["engine"] == "streamlite"
         else {"version": QUEUE.PINS[config["engine"]]}
     )
     return {
@@ -155,19 +155,19 @@ def test_latency_uses_nearest_rank_and_total_not_median() -> None:
     assert QUEUE.latency([])["count"] == 0
 
 
-def test_analysis_pairs_all_five_repeats_with_tote_ack_only(evidence: Path) -> None:
+def test_analysis_pairs_all_five_repeats_with_streamlite_ack_only(evidence: Path) -> None:
     summary = QUEUE.analyze(evidence)
     assert summary["audit"]["complete_success"]
     assert summary["overall_ranking"] is None
     persist = next(
         group for group in summary["groups"] if group["engine"] == "persist-queue"
     )
-    assert persist["paired_totedb_over_baseline"]["median"] == 2
-    assert persist["paired_totedb_over_baseline"]["pairs"] == 5
+    assert persist["paired_streamlite_over_baseline"]["median"] == 2
+    assert persist["paired_streamlite_over_baseline"]["pairs"] == 5
     assert persist["jobs_per_s"]["median"] == 1e9 / 120
     for group in summary["groups"]:
         if group["tier"] == "FIFO":
-            assert group["paired_totedb_over_baseline"] is None
+            assert group["paired_streamlite_over_baseline"] is None
 
 
 @pytest.mark.parametrize("status", ["failed", "unavailable", "timeout"])
@@ -193,7 +193,7 @@ def test_failure_or_unavailable_is_retained_and_prevents_partial_publish(
     group = next(row for row in summary["groups"] if row["engine"] == "persist-queue")
     assert not group["publishable"]
     assert group["jobs_per_s"] is None
-    assert group["paired_totedb_over_baseline"] is None
+    assert group["paired_streamlite_over_baseline"] is None
     assert summary["audit"]["failed_trials"] == [failed["id"]]
     assert any(row["status"] == status for row in summary["raw_trials"])
 
@@ -202,12 +202,12 @@ def test_missing_pair_does_not_produce_ratio(compact_protocol: None) -> None:
     rows = [
         {**config, **_result(config)}
         for config in QUEUE.plan()
-        if config["engine"] != "totedb" or config["repeat"] != 3
+        if config["engine"] != "streamlite" or config["repeat"] != 3
     ]
     group = next(
         row for row in QUEUE.summarize_groups(rows) if row["engine"] == "persist-queue"
     )
-    assert group["paired_totedb_over_baseline"] is None
+    assert group["paired_streamlite_over_baseline"] is None
 
 
 @pytest.mark.parametrize("repeat", [0, 2])
@@ -297,14 +297,14 @@ def test_actual_package_worker_n4_reopens_and_audits(
 ) -> None:
     if not QUEUE.DEPS.is_dir():
         pytest.skip("isolated pinned packages not installed")
-    library = ROOT / "build/totedb-native-release/lib/libtotedb.dylib"
-    if engine == "totedb" and not library.exists() and not os.environ.get("TOTEDB_LIB"):
+    library = ROOT / "build/streamlite-native-release/lib/libstreamlite.dylib"
+    if engine == "streamlite" and not library.exists() and not os.environ.get("STREAMLITE_LIB"):
         pytest.skip("native release build unavailable")
     directory = (
         ROOT / ".local/runs/local-db-comparison/queue-test-runs" / str(uuid.uuid4())
     )
     directory.mkdir(parents=True)
-    env = {**os.environ, "TOTEDB_LIB": os.environ.get("TOTEDB_LIB", str(library))}
+    env = {**os.environ, "STREAMLITE_LIB": os.environ.get("STREAMLITE_LIB", str(library))}
     command = [
         sys.executable,
         str(ROOT / "bench/python_queue_compare.py"),

@@ -14,7 +14,7 @@
  * 색인 페이지가 행 페이지와 같은 fresh·old 목록으로 게시된다).
  *
  * 노드 본문(little-endian, PAGE_KIND_INDEX, 8160바이트):
- *   0..3   magic "LPK1"
+ *   0..3   magic "SLK1"
  *   4..5   version u16 = 1
  *   6      level u8 (0이 leaf)
  *   8..11  table ID u32
@@ -31,7 +31,7 @@
  * root는 호출자에게 돌려주지 않으므로 호출자는 batch 전체를 버려야 한다.
  */
 
-#define PK_TREE_MAGIC "LPK1"
+#define PK_TREE_MAGIC "SLK1"
 #define PK_TREE_VERSION 1u
 #define PK_TREE_HEADER_BYTES 24u
 #define PK_TREE_LEAF_ENTRY_BYTES 16u

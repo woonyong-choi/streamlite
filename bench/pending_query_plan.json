@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "issue": 265,
+  "backlogs": [
+    128,
+    1024,
+    10000
+  ],
+  "body_bytes": [
+    256,
+    4096
+  ],
+  "pages": [
+    16,
+    100
+  ],
+  "queries": [
+    "metadata",
+    "payload",
+    "sequential",
+    "accumulate"
+  ],
+  "conditions": [
+    "vendor",
+    "compat",
+    "native"
+  ],
+  "formal_blocks": 10,
+  "seed": 26518,
+  "vendor_version": "1.1.0",
+  "vendor_path": ".local/runs/local-db-comparison/deps-queue",
+  "python": "build/check-env/bin/python",
+  "library": "build-regression/conditional-baseline/lib/libstreamlite.dylib",
+  "diagnostic_library": "build-regression/conditional-baseline-on/lib/libstreamlite.dylib",
+  "driver": "build-regression/conditional-baseline-on/pending_query_driver",
+  "runtime_commit": "9d70c9b4e5747985a094eaa618f9653627992c14",
+  "worker_seconds": 120,
+  "campaign_seconds": 1800,
+  "disk_bytes": 8589934592,
+  "disk_headroom_bytes": 2147483648,
+  "rss_bytes": 268435456,
+  "python_peak_bytes": 134217728,
+  "native_shared_bytes": 134217728,
+  "native_query_bytes": 33554432,
+  "native_growth_bytes": 1048576,
+  "python_growth_bytes": 1048576,
+  "rss_growth_bytes": 16777216,
+  "peak_ratio_upper": 0.75,
+  "latency_ratio_upper": 1.05,
+  "confidence": 0.95,
+  "bootstrap_resamples": 20000,
+  "interval_family": 192,
+  "serializer": "json.dumps(defaults).encode(utf-8); json.loads(utf-8)",
+  "timestamp_seconds": 1.0,
+  "fixture_batch": 32,
+  "pinned_artifacts": {
+    "build-regression/conditional-baseline/lib/libstreamlite.dylib": "2fa582b507c5905270aa1fcc1937e918cfc901955a6cb7fcd283696911230566",
+    "build-regression/conditional-baseline-on/lib/libstreamlite.dylib": "1553c63c32df79c30de91264b28bceda9ddcb3cda0a9774067b1b4e133ced370",
+    "build-regression/conditional-baseline-on/pending_query_driver": "ce4074f98609379647576b186ce39a141a78f45a01271e6b222a67b603a46aad",
+    "build-regression/test_pending_query_native": "d45cc1113e6a4ffd547a1fb37ce0a5e2073b7b816c379a825596480fab03ca72",
+    "build-regression/.build-fingerprint": "fec55200167b8983edb62b2ec6bfbaf171220d1ade0083f652bca223ed320a26",
+    "build-regression/conditional-baseline/.build-fingerprint": "fec55200167b8983edb62b2ec6bfbaf171220d1ade0083f652bca223ed320a26",
+    "build-regression/conditional-baseline-on/.build-fingerprint": "9e71f73cf64c40ee326a1b1bb8e2baae3491aab8217098ae701e9648f5e9beca"
+  }
+}

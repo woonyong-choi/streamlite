@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "sql/session.h"
+#include "../src/sql/database_cache.h"
 #include "storage/page_file.h"
 
 /*
@@ -25,7 +26,7 @@
  */
 
 #define DIR_NAME "build/test_session_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 
 static int g_run, g_fail;
 #define CHECK(cond, ...)                              \
@@ -147,6 +148,24 @@ static summary_t run(session_t *session, const char *sql, result_t **keep)
     return s;
 }
 
+static size_t hold_until_refused(session_t *session, result_t **held, size_t count, size_t capacity)
+{
+    while (count < capacity) {
+        result_t *next = NULL;
+        summary_t s = run(session, "SELECT * FROM t", &next);
+        if (s.kind == RESULT_KIND_ROWS && s.rows == 20) {
+            held[count++] = next;
+            continue;
+        }
+        CHECK(s.error_class == RESULT_E_NOMEM || s.code == 1000 + DATABASE_EXEC_NOMEM,
+              "결과 누적의 거절은 NOMEM (class %d code %d)", s.error_class, s.code);
+        result_release(&next);
+        return count;
+    }
+    CHECK(false, "결과 %zu개 한도 안에서 예산 거절 관측", capacity);
+    return count;
+}
+
 /* 모든 invariant: 지금 쥔 결과 몫은 제외하고 query는 비었다 */
 static void check_idle(session_pool_t *pool, session_t *session, const char *what)
 {
@@ -218,7 +237,8 @@ static void test_lifecycle(void)
     CHECK(during.result_used > 0, "결과를 쥐는 동안 몫이 유지된다");
     CHECK(sess.result_used == during.result_used, "세션 몫 %zu 풀 몫 %zu", sess.result_used, during.result_used);
     CHECK(sess.query_used == 0, "끝난 문장의 query 몫 %zu", sess.query_used);
-    CHECK(during.shared_used == before.shared_used + during.result_used, "shared는 결과 몫만큼만 늘었다");
+    CHECK(during.shared_used - during.resident_used == before.shared_used - before.resident_used + during.result_used,
+          "상주 cache 외 shared는 결과 몫만큼만 늘었다");
     check_idle(f.pool, f.session, "결과를 쥔 채");
 
     /* 쥔 채 후속 문장이 돌고 몫이 쌓인다 */
@@ -513,7 +533,6 @@ static void test_result_counts_against_limits(void)
     result_release(&held);
     close_fixture(&f);
 
-    /* session_limit이 질의 하나의 peak면 결과를 쥔 채 두 번째 질의는 거절되고 release 뒤에는 돈다 */
     limits = big_limits();
     limits.session_limit = peak;
     session_pool_t *pool;
@@ -524,10 +543,10 @@ static void test_result_counts_against_limits(void)
     session_t *session;
     assert(session_open(db, &session) == SESSION_OK);
     CHECK(run(session, "SELECT * FROM t", &held).rows == 20, "한도 안의 첫 질의");
-    summary_t s = run(session, "SELECT * FROM t", NULL);
-    CHECK(s.kind == RESULT_KIND_ERROR && s.error_class == RESULT_E_NOMEM, "쥔 결과 때문에 둘째 거절");
+    result_t *held_results[64] = {held};
+    size_t held_count = hold_until_refused(session, held_results, 1, 64);
     check_idle(pool, session, "거절 뒤");
-    result_release(&held);
+    for (size_t i = 0; i < held_count; i++) result_release(&held_results[i]);
     CHECK(run(session, "SELECT * FROM t", NULL).rows == 20, "release 뒤 다시 돈다");
     check_idle(pool, session, "release 뒤");
     assert(session_close(session) == SESSION_OK);
@@ -662,9 +681,10 @@ static void test_threads(void)
     for (int i = 0; i < N; i++) assert(session_open(db, &workers[i].session) == SESSION_OK);
     CHECK(pool_stats(pool).shared_used == base, "같은 기준 %zu vs %zu", pool_stats(pool).shared_used, base);
 
-    /* 1단계(결정적): 결과를 쥔 동안 다른 스레드의 질의는 모두 거절된다 */
     result_t *held = NULL;
     CHECK(run(holder, "SELECT * FROM t", &held).rows == 20, "홀더 질의");
+    result_t *held_results[64] = {held};
+    size_t held_count = hold_until_refused(holder, held_results, 1, 64);
     for (int i = 0; i < N; i++) assert(pthread_create(&threads[i], NULL, worker_main, &workers[i]) == 0);
     for (int i = 0; i < N; i++) assert(pthread_join(threads[i], NULL) == 0);
     int refused1 = 0, done1 = 0, bad = 0;
@@ -674,7 +694,7 @@ static void test_threads(void)
         bad += workers[i].bad;
     }
     CHECK(done1 == 0 && refused1 == N * 60, "홀더가 쥔 동안 전부 거절: 실행 %d 거절 %d", done1, refused1);
-    result_release(&held);
+    for (size_t i = 0; i < held_count; i++) result_release(&held_results[i]);
     check_idle(pool, holder, "1단계 뒤");
 
     /* 2단계: 경쟁. 결과는 실행 또는 NOMEM 거절뿐이고 끝난 뒤 기준으로 돌아온다 */
@@ -694,7 +714,10 @@ static void test_threads(void)
     CHECK(done > 0, "일부는 실행된다 %d", done);
     CHECK(done + refused == N * 60, "모든 문장이 끝났다");
     CHECK(stats.shared_peak <= limits.shared_limit, "peak %zu <= 한도 %zu", stats.shared_peak, limits.shared_limit);
-    CHECK(stats.shared_used == base && stats.result_used == 0, "끝난 뒤 기준으로 복귀 %zu vs %zu", stats.shared_used, base);
+    database_cache_stats_t cache;
+    database_cache_stats(session_db_handle(db), &cache);
+    CHECK(stats.shared_used - cache.bytes == base && stats.result_used == 0,
+          "cache 외 몫은 기준으로 복귀 %zu vs %zu", stats.shared_used - cache.bytes, base);
     CHECK(stats.accounting_faults == 0, "faults %llu", (unsigned long long)stats.accounting_faults);
     printf("  (경쟁 단계 실행 %d, 거절 %d, peak %zu / 한도 %zu)\n", done, refused, stats.shared_peak,
            limits.shared_limit);

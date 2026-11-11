@@ -21,9 +21,10 @@
 #include <unistd.h>
 
 #include "sql/session.h"
+#include "../src/sql/database_cache.h"
 
 #define DIR_NAME "__test__session_txn"
-#define DB DIR_NAME "/db.totedb"
+#define DB DIR_NAME "/db.streamlite"
 
 static int g_run, g_fail;
 
@@ -396,6 +397,8 @@ static void test_budget(void)
     schema(s);
     session_pool_stats_t base;
     session_pool_stats(env.pool, &base);
+    database_cache_stats_t base_cache;
+    database_cache_stats(session_db_handle(env.db), &base_cache);
     expect(s, "BEGIN", "CMD BEGIN 0");
     for (int i = 0; i < 20; i++) {
         char sql[96];
@@ -404,13 +407,18 @@ static void test_budget(void)
     }
     session_pool_stats_t during;
     session_pool_stats(env.pool, &during);
-    CHECK(during.shared_used > base.shared_used, "열린 트랜잭션의 작업 카탈로그와 목록이 상주 몫으로 계상된다 (%zu -> %zu)",
+    database_cache_stats_t during_cache;
+    database_cache_stats(session_db_handle(env.db), &during_cache);
+    CHECK(during.shared_used - during_cache.bytes > base.shared_used - base_cache.bytes,
+          "cache를 제외한 작업 카탈로그와 목록이 상주 몫으로 계상된다 (%zu -> %zu)",
           base.shared_used, during.shared_used);
     CHECK(during.accounting_faults == 0 && during.result_used == 0, "회계 불변식 위반 없음");
     expect(s, "ROLLBACK", "CMD ROLLBACK 0");
     session_pool_stats_t after;
     session_pool_stats(env.pool, &after);
-    CHECK(after.shared_used <= base.shared_used + 8192,
+    database_cache_stats_t after_cache;
+    database_cache_stats(session_db_handle(env.db), &after_cache);
+    CHECK(after.shared_used - after_cache.bytes <= base.shared_used - base_cache.bytes + 8192,
           "rollback 뒤 작업 몫이 돌아온다 (%zu -> %zu -> %zu)", base.shared_used, during.shared_used, after.shared_used);
     CHECK(after.accounting_faults == 0, "회계 불변식 위반 없음");
 

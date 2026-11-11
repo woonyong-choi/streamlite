@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 
 import pytest
-from totedb import Database, SqlError
+from streamlite import Database, SqlError
 
 JOBS = 60
 WORKERS = 6
@@ -45,7 +45,7 @@ def run_workers(target, count: int = WORKERS) -> None:
 
 
 def test_conditional_claim_gives_each_row_to_one_worker(tmp_path: Path) -> None:
-    path = tmp_path / "claim.totedb"
+    path = tmp_path / "claim.streamlite"
     main = Database(path, busy_timeout_s=10.0)
     make_jobs(main)
     claimed: dict[int, list[int]] = {}
@@ -70,7 +70,7 @@ def test_conditional_claim_gives_each_row_to_one_worker(tmp_path: Path) -> None:
 
 
 def test_concurrent_increments_lose_nothing(tmp_path: Path) -> None:
-    path = tmp_path / "count.totedb"
+    path = tmp_path / "count.streamlite"
     main = Database(path, busy_timeout_s=10.0)
     make_jobs(main)
     rounds = 20
@@ -92,7 +92,7 @@ def test_concurrent_increments_lose_nothing(tmp_path: Path) -> None:
 
 
 def test_returning_after_failed_statement_leaves_rows(tmp_path: Path) -> None:
-    db = Database(tmp_path / "fail.totedb")
+    db = Database(tmp_path / "fail.streamlite")
     make_jobs(db)
     db.execute("CREATE UNIQUE INDEX jobs_owner ON jobs (owner)")
     db.execute("UPDATE jobs SET owner = 1 WHERE id = 1")
@@ -107,7 +107,7 @@ def test_returning_after_failed_statement_leaves_rows(tmp_path: Path) -> None:
 
 # #47 완료 조건 2: 동시 충돌 삽입에서 유일성 유지, 부분 성공 금지
 def test_concurrent_upserts_lose_nothing(tmp_path: Path) -> None:
-    db = Database(tmp_path / "upsert.totedb", busy_timeout_s=10.0)
+    db = Database(tmp_path / "upsert.streamlite", busy_timeout_s=10.0)
     db.execute("CREATE TABLE counters (k INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
     rounds = 30
 
@@ -140,7 +140,7 @@ def test_concurrent_upserts_lose_nothing(tmp_path: Path) -> None:
     ],
 )
 def test_function_signature_errors_are_distinct(tmp_path: Path, sql: str, code: int) -> None:
-    db = Database(tmp_path / "fn.totedb")
+    db = Database(tmp_path / "fn.streamlite")
     db.execute("CREATE TABLE t (x INTEGER)")
     with pytest.raises(SqlError) as raised:
         db.execute(sql)
@@ -150,9 +150,9 @@ def test_function_signature_errors_are_distinct(tmp_path: Path, sql: str, code: 
 
 # #79·#64: 다른 스레드의 취소는 실행 중인 문장을 성공과 구별되는 오류로 끝내고, 다음 문장은 정상 실행된다
 def test_cancel_from_another_thread_is_distinct_from_success(tmp_path: Path) -> None:
-    from totedb.database import RESULT_E_CANCELLED
+    from streamlite.database import RESULT_E_CANCELLED
 
-    db = Database(tmp_path / "cancel.totedb")
+    db = Database(tmp_path / "cancel.streamlite")
     db.execute("CREATE TABLE n (id INTEGER PRIMARY KEY)")
     with db.begin() as tx:
         for start in range(1, 3001, 500):
@@ -185,9 +185,9 @@ def test_cancel_from_another_thread_is_distinct_from_success(tmp_path: Path) -> 
 
 # #64 완료 조건 1: NULL·빈 값·NUL 포함 값·페이지보다 큰 값과 열 정보가 바인딩까지 손실 없이 온다
 def test_values_and_column_info_round_trip(tmp_path: Path) -> None:
-    from totedb import Column
+    from streamlite import Column
 
-    db = Database(tmp_path / "values.totedb")
+    db = Database(tmp_path / "values.streamlite")
     db.execute("CREATE TABLE v (id INTEGER PRIMARY KEY, t TEXT, b BLOB, r REAL, n INTEGER NOT NULL)")
     big_text = "한글" * 60_000 + "\x00끝"
     big_blob = bytes(range(256)) * 1200
@@ -214,21 +214,21 @@ def test_values_and_column_info_round_trip(tmp_path: Path) -> None:
 
 # #64 완료 조건 2: 결과 상한을 넘으면 부분 행을 주지 않고 LimitError, 문장 오류는 분류·코드가 있는 SqlError
 def test_limit_and_errors_are_distinct_from_success(tmp_path: Path) -> None:
-    from totedb import LimitError
-    from totedb.database import _lib
+    from streamlite import LimitError
+    from streamlite.database import _lib
 
-    db = Database(tmp_path / "limits.totedb")
+    db = Database(tmp_path / "limits.streamlite")
     db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, s TEXT)")
     for i in range(1, 21):
         db.execute("INSERT INTO t VALUES (?, ?)", (i, "x" * 100))
-    previous = _lib.tote_max_result_bytes()
+    previous = _lib.streamlite_max_result_bytes()
     try:
-        _lib.tote_set_max_result_bytes(1000)
+        _lib.streamlite_set_max_result_bytes(1000)
         with pytest.raises(LimitError):
             db.execute("SELECT s FROM t")
         assert len(db.execute("SELECT s FROM t WHERE id = 1").rows) == 1
     finally:
-        _lib.tote_set_max_result_bytes(previous)
+        _lib.streamlite_set_max_result_bytes(previous)
     with pytest.raises(SqlError) as raised:
         db.execute("SELECT * FROM missing")
     assert raised.value.error_class != 0 and raised.value.error_code != 0
@@ -237,7 +237,7 @@ def test_limit_and_errors_are_distinct_from_success(tmp_path: Path) -> None:
 
 # #64 완료 조건 3: 디코딩이 실패해도 C 버퍼는 해제된다
 def test_result_buffer_is_freed_when_decoding_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from totedb import database as module
+    from streamlite import database as module
 
     freed: list[int] = []
     real_lib = module._lib
@@ -246,14 +246,14 @@ def test_result_buffer_is_freed_when_decoding_fails(tmp_path: Path, monkeypatch:
         def __getattr__(self, name: str) -> object:
             return getattr(real_lib, name)
 
-        def tote_free(self, pointer: object) -> None:
+        def streamlite_free(self, pointer: object) -> None:
             freed.append(1)
-            real_lib.tote_free(pointer)
+            real_lib.streamlite_free(pointer)
 
     def broken_decode(data: bytes) -> module.Result:
         raise ValueError("decoder failure")
 
-    db = Database(tmp_path / "free.totedb")
+    db = Database(tmp_path / "free.streamlite")
     monkeypatch.setattr(module, "_lib", CountingLib())
     monkeypatch.setattr(module, "decode_result", broken_decode)
     with pytest.raises(ValueError):
@@ -266,10 +266,52 @@ def test_result_buffer_is_freed_when_decoding_fails(tmp_path: Path, monkeypatch:
 def test_package_header_and_library_versions_match() -> None:
     import re
 
-    import totedb
-    from totedb.database import _lib
+    import streamlite
+    from streamlite.database import _lib
 
-    header = (Path(__file__).resolve().parent.parent / "include" / "totedb.h").read_text(encoding="utf-8")
-    declared = re.search(r'#define TOTE_VERSION "([^"]+)"', header)
+    header = (Path(__file__).resolve().parent.parent / "include" / "streamlite.h").read_text(encoding="utf-8")
+    declared = re.search(r'#define STREAMLITE_VERSION "([^"]+)"', header)
     assert declared is not None
-    assert totedb.__version__ == declared.group(1) == _lib.tote_version().decode("ascii")
+    assert streamlite.__version__ == declared.group(1) == _lib.streamlite_version().decode("ascii")
+
+
+def test_cancel_stops_waiting_for_another_writer(tmp_path: Path) -> None:
+    """다른 writer를 기다리는 begin·execute는 cancel을 받으면 busy_timeout_s를 다 쓰지 않고 끝난다."""
+    from streamlite import CancelledError
+    from streamlite.database import RESULT_E_CANCELLED
+
+    path = tmp_path / "wait.streamlite"
+    holder = Database(path, create=True)
+    holder.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    waiter = Database(path, busy_timeout_s=30.0)
+    held = holder.begin()
+    try:
+        for action in ("begin", "execute"):
+            caught: list[BaseException] = []
+
+            def run(kind: str = action) -> None:
+                try:
+                    if kind == "begin":
+                        waiter.begin()
+                    else:
+                        waiter.execute("INSERT INTO t VALUES (1)")
+                except BaseException as err:  # noqa: BLE001 - 주 스레드에서 판정한다
+                    caught.append(err)
+
+            worker = threading.Thread(target=run, daemon=True)
+            started = time.monotonic()
+            worker.start()
+            time.sleep(0.3)
+            waiter.cancel()
+            worker.join(timeout=5)
+            assert not worker.is_alive(), f"{action} kept waiting after cancel"
+            assert time.monotonic() - started < 5
+            assert len(caught) == 1
+            if action == "begin":
+                assert isinstance(caught[0], CancelledError)
+            else:
+                assert isinstance(caught[0], SqlError) and caught[0].error_class == RESULT_E_CANCELLED
+    finally:
+        held.rollback()
+        waiter.close()
+        holder.close()

@@ -6,9 +6,11 @@ ToteDB의 현재 목적은 SQLite 기반 Python 큐에서 겪는 사용성·기�
 
 ## 읽는 기준과 근거의 범위
 
-이 문서는 CTO와 미래 기여자가 주요 제품·아키텍처·보장·측정 선택의 문제, 대안, 이유, 검증과 현재 상태를 함께 이해하도록 쓴 설명이다. D01~D51은 이 보고서의 추적 번호다. 당시 작성된 ADR이나 51번의 순차 회의를 뜻하지 않는다. 개별 lint·서식·rename 수정의 전수 Git 감사와 기록되지 않은 모든 선택은 범위 밖이다. 코드의 기초 선택 이유가 없으면 미확인으로 남긴다.
+이 문서는 CTO와 미래 기여자가 주요 제품·아키텍처·보장·측정 선택의 문제, 대안, 이유, 검증과 현재 상태를 함께 이해하도록 쓴 설명이다. D01~D52는 이 보고서의 추적 번호다. 당시 작성된 ADR이나 52번의 순차 회의를 뜻하지 않는다. 개별 lint·서식·rename 수정의 전수 Git 감사와 기록되지 않은 모든 선택은 범위 밖이다. 코드의 기초 선택 이유가 없으면 미확인으로 남긴다.
 
-공개 코드의 현재 해석 기준은 `e49a3d2f252c0e501bc7e76cc064e77e6ec98673`이다. 과거 선택에는 해당 커밋을, 수치에는 실험별 제품·도구 버전과 공개 결과를 사용한다. 이슈 본문은 수정 가능하므로 생성 시각을 최초 발견일이나 본문 전체의 작성일로 단정하지 않는다. first-parent 이력의 반영 순서와 커밋 작성 시각도 다를 수 있다. 이번 보고서 작성에서는 빌드·성능·장애 실험을 재실행하지 않았다. 시험 통과는 연결한 공개 기록의 보고값이다. ([기준 코드](https://github.com/woonyong-choi/totedb/tree/e49a3d2f252c0e501bc7e76cc064e77e6ec98673), [보고 범위 #246](https://github.com/woonyong-choi/totedb/issues/246))
+기초 코드의 해석 기준은 `e49a3d2f252c0e501bc7e76cc064e77e6ec98673`이다. 과거 선택에는 해당 커밋을, 수치에는 실험별 제품·도구 버전과 공개 결과를 사용한다. 이슈 본문은 수정 가능하므로 생성 시각을 최초 발견일이나 본문 전체의 작성일로 단정하지 않는다. first-parent 이력의 반영 순서와 커밋 작성 시각도 다를 수 있다. 기준 코드의 시험 통과는 연결한 공개 기록의 보고값이며 이번 문서 교정에서 빌드·성능·장애 실험을 재실행하지 않았다. 이후 내부 비교 구현과 그 회귀 검증은 아래 상태 표에서 구분하며, 과거 실측을 새 구현의 효과로 바꾸지 않는다. ([기준 코드](https://github.com/woonyong-choi/totedb/tree/e49a3d2f252c0e501bc7e76cc064e77e6ec98673), [보고 범위 #246](https://github.com/woonyong-choi/totedb/issues/246))
+
+StreamLite 리뉴얼의 현재 구조 권고와 과거 COW·WAL 선택의 관계는 D52에서 다룬다. 새 엔진의 설계 방향은 WAL 계열이며, 위 기준 코드의 COW 구현이나 기존 실험 결과가 그에 맞춰 바뀌었다는 뜻은 아니다.
 
 기여는 팀 과제의 공동 결과, 개인 주도 엔진 구현, 과제 종료 뒤 개인 확장을 구분한다. 팀은 5인이며 병합 기여자는 4인이라는 출처 설명을 따른다. 팀 전체 구현을 개인 성과로 합산하지 않는다. 과거 문서의 짧은 해시·커밋 수·변경 줄 수도 현재 이력의 통계로 다시 쓰지 않는다. ([기여와 출처](attribution.md))
 
@@ -209,7 +211,7 @@ WAL은 없었던 기능이 아니라 D15에서 실제 연결한 구현이다. 10
 
 당시 명시 이유는 data fsync, control write, fsync가 원자성과 응답 뒤 보존을 제공해 문장 WAL이 해당 계약에 중복된다는 것이었다. 느리다는 추정이나 거래 내부 원자성만 필요하다는 설명으로 바꾸지 않는다. WAL·durable_pair와 관련 경로를 제거했다.
 
-현재 `BEGIN DURABLE/VOLATILE`, WAL path·변환·정보, 큐·C/Python durability 선택은 없다. 달성 보증은 항상 DURABLE이다. 초기 #139의 두 모드 요구는 역사이며 현재 무내구 선택 모드로 소개하지 않는다. COW 게시 선택을 유지한다. ([제거 전 결정](https://github.com/woonyong-choi/totedb/issues/9#issuecomment-6205475634), [제거 구현](https://github.com/woonyong-choi/totedb/commit/d137130))
+현재 `BEGIN DURABLE/VOLATILE`, WAL path·변환·정보, 큐·C/Python durability 선택은 없다. 달성 보증은 항상 DURABLE이다. 초기 #139의 두 모드 요구는 역사이며 현재 무내구 선택 모드로 소개하지 않는다. 제거 이후 현행 구현은 COW 게시를 사용한다. StreamLite 새 엔진의 구조 권고는 D52로 구분한다. ([제거 전 결정](https://github.com/woonyong-choi/totedb/issues/9#issuecomment-6205475634), [제거 구현](https://github.com/woonyong-choi/totedb/commit/d137130))
 
 ### D22 조건부 1-fsync와 두 번 동기화 경로 병존
 
@@ -472,7 +474,7 @@ Litequeue에도 claim_id·retry_expired가 있고 persist-queue에도 auto_resum
 
 `publish_inner`는 `heap_batch_finish`를 끝낸 뒤 명시적 거래의 `stage_adopt`로 간다. `page_file_write`는 단순 dirty 표시가 아니라 encode·`write_full`·cache 갱신이며 하위에서 pwrite한다. batch32의 512→16 commit 감소에도 한 commit 안 INSERT 64개의 문장별 복제·heap 완료·페이지 쓰기는 남는다. 모든 문장이 fsync한다는 뜻은 아니다.
 
-정상 no-idempotency·재시도 없음·첫 ACK 경로의 정적 대조는 ToteDB put/get/ack가 1/3/2SQL로 합계 6SQL·3쓰기 거래, persist-queue가 4SQL·3거래, Litequeue가 3SQL·3거래다. BEGIN/COMMIT·하위 SELECT·trigger 전체 수나 동적 counter가 아니다. 구조는 확인되지만 파싱·복제·I/O·FFI의 시간 기여율은 미확정이다. ([clone](../src/storage/catalog.c#L249-L257), [실행·게시](../src/sql/database.c), [heap 완료](../src/storage/heap_store.c), [쓰기](../src/storage/page_file.c#L1186-L1197), [큐 경로와 원인 분석](experiments/local-db-comparison/report.md#성능-우위-기대가-충족되지-않은-이유), [persist-queue 고정 소스](https://github.com/peter-wangxu/persist-queue/tree/b4fb6d186e375850b2d9ac49fc635779be95f173), [Litequeue 0.14 배포 소스](https://files.pythonhosted.org/packages/c1/3c/4a065c1e63f39682ea88422fcec8cd3387c8df2fb53205160026c9b5d2dc/litequeue-0.14.tar.gz))
+정상 no-idempotency·재시도 없음·첫 ACK 경로의 정적 대조는 ToteDB put/get/ack가 1/3/2SQL로 합계 6SQL·3쓰기 거래, persist-queue가 4SQL·3거래, Litequeue가 3SQL·3거래다. BEGIN/COMMIT·하위 SELECT·trigger 전체 수나 동적 counter가 아니다. 구조는 확인되지만 파싱·복제·I/O·FFI의 시간 기여율은 미확정이다. ([clone](../src/storage/catalog.c#L249-L257), [실행·게시](../src/sql/database.c), [heap 완료](../src/storage/heap_store.c), [쓰기](https://github.com/woonyong-choi/totedb/blob/e49a3d2f252c0e501bc7e76cc064e77e6ec98673/src/storage/page_file.c#L1186-L1197), [큐 경로와 원인 분석](experiments/local-db-comparison/report.md#성능-우위-기대가-충족되지-않은-이유), [persist-queue 고정 소스](https://github.com/peter-wangxu/persist-queue/tree/b4fb6d186e375850b2d9ac49fc635779be95f173), [Litequeue 0.14 배포 소스](https://files.pythonhosted.org/packages/c1/3c/4a065c1e63f39682ea88422fcec8cd3387c8df2fb53205160026c9b5d2dc/litequeue-0.14.tar.gz))
 
 SQLite는 이미 writeable인 페이지의 재사용과 dirty list를 제공한다. CPython sqlite3도 문장 cache를 경유한다. 실제 DB 기준군은 `cached_statements=128`이지만 실측 hit율은 미확인이다. Litequeue 0.14는 cache를 끄므로 경쟁 큐의 모든 우위를 prepared cache 하나로 설명할 수 없다. upstream SQLite 3.45.1·CPython 3.12.15와 배포 바이너리의 정확한 patch·revision 일치는 확인하지 않았다. ([SQLite pager](https://raw.githubusercontent.com/sqlite/sqlite/version-3.45.1/src/pager.c), [SQLite page cache](https://raw.githubusercontent.com/sqlite/sqlite/version-3.45.1/src/pcache.c), [CPython cache 경로](https://raw.githubusercontent.com/python/cpython/v3.12.15/Modules/_sqlite/cursor.c), [실제 runner](../bench/local_db_compare.py), 2026-10-19 확인)
 
@@ -484,32 +486,106 @@ FFI에도 SQL result에서 native payload로, ctypes에서 Python bytes로 복�
 
 #239의 확정 목표에는 SQL 문장·준비 결과의 제한된 cache가 포함된다. 현재 parser는 실행 binding을 `value_clone`하므로 SQL text를 key로 AST 자체를 재사용하면 실행별 값이 섞일 수 있다. template와 binding 소유권, schema 무효화, 예산·eviction·실패 보존을 분리해야 한다.
 
-이 cache는 미구현이다. 채택 조건은 hit뿐 아니라 miss·반복 없는 SQL 비용과 비계측 end-to-end 효과다. H2/H3를 근거 없이 재도입하거나 먼저 개선 배수를 약속하지 않는다. 코어의 큐 의존은 없지만 Python Database 생성자의 `_queues=set()`과 close의 목록 순회는 남아 있어 미사용 전용 비용 0을 달성했다고 쓰지 않는다.
+기준 코드에는 이 cache가 없다. 이후 내부 구현은 아래 상태 표에서 구분한다. 채택 조건은 hit뿐 아니라 miss·반복 없는 SQL 비용과 비계측 end-to-end 효과다. H2/H3를 근거 없이 재도입하거나 먼저 개선 배수를 약속하지 않는다. 기준 코드의 코어에는 큐 의존이 없지만 Python Database 생성자의 `_queues=set()`과 close의 목록 순회가 남는다. 이후 생성 경로를 바꾸더라도 import·공통 상태·전체 메모리까지 미사용 비용 0을 달성했다고 쓰지 않는다.
 
-원래 요구의 다음 판정에는 불편·미지원 시나리오와 우회 코드를 고정한 실제 pending 조회 메모리 비교가 필요하다. 빈번한 변경 효율은 일정 backlog에서 put·claim·ack·purge/DELETE를 반복하며 cleanup 포함 처리량·tail·쓰기량·파일 성장·재사용으로 판정해야 한다. 기존 fresh DB 처리량과 측정 밖 purge는 이 조건을 충족하지 않는다. 다중 writer는 #238의 별도 미결이다. ([#239](https://github.com/woonyong-choi/totedb/issues/239), [Python lifecycle](../python/totedb/database.py#L206-L279), [현재 parser](../src/sql/sql_statement.c), [기존 측정 범위](experiments/local-db-comparison/report.md#ack-큐-네-조건의-정상-처리량), [#238](https://github.com/woonyong-choi/totedb/issues/238))
+원래 요구의 다음 판정에는 불편·미지원 시나리오와 우회 코드를 고정한 실제 pending 조회 메모리 비교가 필요하다. 빈번한 변경 효율은 일정 backlog에서 put·claim·ack·purge/DELETE를 반복하며 cleanup 포함 처리량·tail·쓰기량·파일 성장·재사용으로 판정해야 한다. 기존 fresh DB 처리량과 측정 밖 purge는 이 조건을 충족하지 않는다. 다중 writer의 위험은 #238로 분리했으며, 이후 StreamLite 검토는 D52와 #257로 잇는다. ([#239](https://github.com/woonyong-choi/totedb/issues/239), [기준 코드의 Python lifecycle](https://github.com/woonyong-choi/totedb/blob/e49a3d2f252c0e501bc7e76cc064e77e6ec98673/python/totedb/database.py#L206-L279), [현재 parser](../src/sql/sql_statement.c), [기존 측정 범위](experiments/local-db-comparison/report.md#ack-큐-네-조건의-정상-처리량), [#238](https://github.com/woonyong-choi/totedb/issues/238))
+
+### D52 StreamLite의 새 요구와 COW 유지·교체의 판단 근거
+
+2026-10-24의 현재 권고는 새 엔진을 page/redo WAL·bounded buffer pool·MVCC·조기 key/range 잠금으로 개발하는 것이다. 현행 COW를 무조건 확장하는 방향에서 변경한다. 작은 ACK·행 상태 변경이 잦고 독립 writer가 같은 page를 공유하는 요구에서는, commit의 로그 영속화와 data page writeback을 분리하는 쪽을 우선한다. 기존 단일 writer COW 제품은 새 구현·복구·동등 조건 검증과 별도 이관 판단이 끝날 때까지 보존한다. 이 권고는 설계 추론이며 새 backend의 구현·실측 우위·배포 완료가 아니다. ([현재 구조 권고](design/streamlite.md#성능과-안전을-함께-고르는-순서))
+
+[비교 후보의 저장·복구 계약](design/streamlite.md#비교-후보의-저장복구-계약)은 불변 행 version·논리 abort·초기 NO-STEAL과 영속 요청 ID·결과 조회를 선택한다. redo만으로 미확정 제자리 변경을 취소하는 안은 이전 값을 보존하지 못하므로 제외한다. NO-STEAL의 frame 압력, 결과 본문·ID 보존, owner fencing과 checkpoint/GC 비용은 새 부담으로 남긴다. 같은 결과·보존 계약을 buffered COW에도 적용하며, 이 선택의 구현·중단 복구·실측은 아직 완료하지 않았다.
+
+로컬 후속 구현의 [분할 WAL transport](../include/storage/candidate_wal.h)는 codec·파일 append/force·재시작 scan을 제공한다. [실파일 시험](../tests/test_candidate_wal.c)의 tail 절단·손상·짧은 I/O·실패·process 종료 검사는 이 계층의 근거다. 기존 COW 제품의 변경이나 WAL 성능 우위로 쓰지 않는다.
+
+파일 소유권 검토에서는 상대 경로로 append한 뒤 cwd가 바뀌면 다른 파일을 fsync하고도 내구 LSN을 올리는 결함을 재현했다. 디렉터리 fd와 segment inode·열린 fd를 보유하고 작업 전후 누락·교체를 거절하도록 수리했다. [회귀 시험](../tests/test_candidate_wal_files.c)은 cwd 변경 8조건과 파일 누락·교체 12조건에서 올바른 barrier 또는 IO·poison·내구 LSN 보존을 확인한다. 이 추가 fd와 metadata 조회는 WAL의 비용이며 후속 비교에서 제외하지 않는다. 외부 파일 변경·악의적 경로 경합을 지원하는 복구 프로토콜로 확대하지 않는다.
+
+뒤따른 로컬 [witness 분석](../include/storage/candidate_wal_witness.h)은 transaction chain·terminal·CSN 순서, 완성 image/delta group과 commit 의존 참조를 실제 WAL 파일에서 대조한다. 결과 본문은 별도 version/overflow page에 보관한다는 계약을 유지하므로 참조 digest만으로 APPLIED를 반환하지 않는다. [전용 시험](../tests/test_candidate_wal_witness.c)의 record 경계·재서명 손상·자원/읽기 실패 검사는 부분 분석의 근거다. 기본 모드와 system 확장의 차이를 아래에 구분하며 내구 예약·checkpoint·data redo·복구 조정자·실제 writer·총비용 판정은 남긴다.
+
+로컬 [page codec·본문 reader](../include/storage/candidate_page.h)는 version/overflow bytes와 SHA-256 대조를 구현했다. codec의 34096검사와 135개 digest 대조는 기존 record codec의 NULL·한글·내장 NUL·9000B BLOB을 포함한다. 후속 [metadata catalog](../include/storage/candidate_catalog.h)는 type 4 root/node·bounded 4096개 요청 표·raw ID 조회를 추가했다. 50978개 검사는 중복/보존/세대·부분 읽기·OOM·소유권을 확인한다. 이 빌드의 catalog 소유 요청량은 788,000B이며 RSS나 전체 앱 cap이 아니다.
+
+확장된 WAL/page fixture의 892검사는 1MiB 본문 131page와 metadata 2page를 4group·16결과 참조로 force/reopen한다. 새 합성 data 파일의 fsync/reopen 뒤 raw ID 기록과 witness 참조를 대조하고 같은 본문 bytes를 읽는다. 별도 Python 계산도 metadata와 page 전체 bytes·WAL chain/group CRC·결과 참조를 재구성했다. 이 raw MATCH는 APPLIED·NOT_APPLIED가 아니며 system ID 예약/epoch 전이·내구 abort 게시·일반 재생/복구 활성화·실제 writer는 아직 구현하지 않았다. 두 후보의 metadata·결과 보존 비용을 후속 총비교에 포함하며 이 부분 검증으로 제품을 완료 처리하지 않는다.
+
+후속 [control 구현](../include/storage/candidate_control.h)은 두 slot의 codec·소유 파일과 검증된 fallback을 보존하는 내구 게시를 추가했다. 16978검사는 slot 형식·불확정 짧은 쓰기·fsync·세대 소진·파일/의존성 실패·fork와 성공 확인 뒤 SIGKILL을 포함한다. 이번 빌드의 소유 요청량은 8944B이며 stack·OS fd 자원·allocator overhead·RSS는 별도다. 합성 dependency verifier를 사용한 파일 계층 검증이고 checkpoint/WAL/data 정합은 아직 연결하지 않았다. 실제 복구 조정자와 system/할당 상태·다중 writer의 완료로 표시하지 않는다. 두 slot의 이전 root·redo 참조도 후속 회수 비용에 포함한다.
+
+예를 들어 같은 leaf의 서로 다른 두 행을 두 transaction이 바꾸더라도, 나중 transaction이 옛 root를 그대로 게시하면 먼저 확정한 변경을 잃을 수 있다. 쓰기 잠금만 없애는 변경으로는 이 문제를 풀지 못한다. 현재 `database_work_begin`은 작업 종료까지 배타 잠금을 유지한다. 따라서 현재의 단일 writer COW와, 검증·병합을 추가할 다중 writer COW는 같은 구현이 아니다. 이 설명은 현재 코드와 제안의 대조이며 동시 갱신 실험 결과가 아니다. ([현재 잠금](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1163-L1172), [작업 종료](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1229-L1251), [리뉴얼 구조](design/streamlite.md#다중-writer의-검증병합게시))
+
+후속 [할당 snapshot](../include/storage/candidate_allocation.h)은 type 5 root/node와 원시 LIVE/FREE 표·메모리 batch 전이를 추가했다. 236823개 검사는 최대 65,536개 기록, 세대 소진·오래된/중복 변경·부분 실패의 전체 불변, root/node 보호·loader/OOM·소유 해제와 파일 재열기를 확인한다. 별도 Python 계산은 326page/65,536개 기록 및 작은 양수/0LSN snapshot의 전체 bytes·CRC32C를 대조했다. 이 빌드의 고정 소유 요청량은 2,626,736B이며 RSS·전체 앱 cap과 다르다. FREE 기록은 버리지 않고 재사용 때 generation을 올린다. 같은 형식·유지 비용을 buffered COW에도 적용한다. 내구 번호 예약·참조 해제·실제 회수와 일반 복구는 아직 연결하지 않았다.
+
+후속 [system witness](../include/storage/candidate_wal_system.h)는 완성 group의 일반 metadata image와 할당/해제·highwater 예약·요청 epoch/floor를 연결했다. 22236개 검사는 force/reopen·중단 prefix·재서명한 의미 오류·관측한 세대 교대, ABORT 뒤 구조 보존·활성 요청 pin, 한도/할당·읽기 실패의 부분 결과 차단을 확인한다. 기존 witness10237·결과 본문892검사도 별도 새 binary에서 통과했다. 독립 Python 계산은31record/5완성group/12image/6event의 정확한 bytes와 CRC, 다섯 segment의68group·4156event 중4094개 완성 prefix를 대조했다. options 사본과 이전 epoch 범위의 반례도 수정 전후로 대조했다. 이 빌드의 활성 분석 소유 요청량은1,681,736B이며 transport·stack·allocator overhead·RSS는 별도다. 최초 이전 값과 전체 checkpoint/할당 이력·reader/fallback 참조 해제는 미확정이고, 이 event 목록은 번호 발급·회수·APPLIED를 허가하지 않는다.
+
+후속 [checkpoint reader](../include/storage/candidate_checkpoint.h)는 control이 지정한 실제 BEGIN/CHUNK/END의 선언 상태를 읽는다. 2731개 검사는 8192개 dirty/4096개 transaction·두 WAL segment, 일반 record의 중간 삽입, 불완전 prefix·chunk/정렬/CSN/위치/digest 오류·OOM과 END 뒤 I/O 실패를 대조했다. 실제 checkpoint 부분 verifier를 연결한 control 시험은 최신 digest 불량의 fallback과 UNSUPPORTED·LIMIT·OOM 차단을 확인했다. 별도 Python struct/CRC32C/hashlib 계산은 작은/최대 checkpoint와 두 control slot의 전체 bytes를 재구성했다. 최초 표본은 수치상 불가능한 terminal 길이도 허용했다. 같은 보강 시험에서8B COMMIT을 통과시키는 반례를 재현한 뒤 ABORT128B·COMMIT248B 이상/16B 간격과 chain 최소 길이를 검사하도록 고쳤다. 이전 성공·실패 표본은 보존하며 현재 정상 snapshot으로 사용하지 않는다. 이 빌드의 한 소유 할당426,320B는 transport·stack·allocator overhead·RSS와 별도다. 이 합성 snapshot의 산술 완전성은 terminal/data 이력의 완전성이 아니며 root loading·page redo·fuzzy writeback/로그 회수·배타 복구 활성화와 실제 writer·총비용 비교는 남는다.
+
+후속 [checkpoint 이력 대조](../tests/test_candidate_wal_checkpoint.c)는 선언된 snapshot과 실제 WAL 거래·완성 group을 연결했다. 일반5368검사와 별도 용량58864검사는 BEGIN 시점의 활성 거래 누락·phantom·위조 terminal/owner/highwater·dirty 위치, 중간 commit/system 갱신과 두 scan 사이 변경·뒤쪽 오류·OOM을 대조했다. 최대8192개 실제 image·4096개 거래·96chunk는17개 segment에 걸쳤고 활성64개는 성공,65개와 거래4097개는 LIMIT이었다. 기존 witness10237·system22236·결과 본문892검사도 통과했다. 초기 시험의 END exclusive 위치 비교와 구 options header로 만든 object의 잘못된 연결은 바로잡고 원 실패를 보존했다. 독립 struct/CRC32C/hashlib 계산은32개 일반 fixture와4개 용량 fixture의52개 파일에서 snapshot chain과 실제 cut·group 참조를 대조했다. 최고 소유 요청량2,108,056B는 checkpoint 해제 뒤1,681,736B로 줄며 stack·transport·allocator/RSS는 별도다. 회수한 이력의 seed·data/root/terminal 참조 완전성·redo·복구 활성화와 실제 writer·동등 COW/WAL 총비용은 남는다.
+
+후속 [물리 redo 실행](../include/storage/candidate_redo.h)은 완성된 image/delta group을 실제 test data 파일에 복원했다. 초기 후보는 별도 fingerprint scan과 의미 검증을 분리했다. 읽기 시 COMMIT 의존 개수만 바꿔 보이는 반례에서 잘못된 원본 WAL을 받아들이고7개 page 쓰기·data sync 뒤 성공했다. 같은 시험 object로 의미 검증 scan 자체의 bytes를 hash에 묶은 뒤 쓰기 전에 CORRUPT로 차단했다. 새 API의 초기 결함이며 기존 배포 backend의 회귀 수리로 표시하지 않는다. 최종6925검사는 missing/torn·이미 최신인 page, delta/세대/previousLSN·미완성/ABORT group, 부분 쓰기·barrier 실패·재실행과5개 process 종료 경계를 확인했다. 복원한 allocation/catalog를 기존 owning reader로 열고520개 page·두 segment를 대조했다. 독립 Python 계산은3개 복원 fixture와 반례의8개 파일에서 group CRC·거래 chain/commit 의존 참조와 최종 data 전체 bytes를 재구성했다. workspace 소유 요청량7,866,584B는 transport·stack·allocator overhead/RSS와 별도다. caller의 배타 소유권·파일 생성 내구성, root/전체 할당·pin·terminal/결과 정합과 일반 복구 활성화는 아직 연결하지 않았다. 반복 scan·고정 이력 표·WAL/data barrier의 비용은 동등한 COW 비교에서 빼지 않는다.
+
+2026-10-23의 StreamLite 리뉴얼은 SQL·영속 재생 스트림·ACK를 각각 사용하거나 같은 transaction으로 결합하는 제품 가설을 더했다. 채택하려면 필요한 로컬 JetStream 전달 의미를 충족하고, 같은 보장에서 전체 자원·배포·연동 부담을 줄이며, SQLite 조합 대비 자체 엔진의 이익을 보여야 한다. 실제 동시 writer의 안전성과 작업당 비용 절감도 함께 요구한다. 완료된 수요 분석과 표시명 변경은 이 조건의 구현·실측 완료가 아니다. ([구조 결정 #257](https://github.com/woonyong-choi/totedb/issues/257), [표시명·구조 제안 PR259](https://github.com/woonyong-choi/totedb/pull/259), [제품 가설과 대안](design/streamlite.md#해결하는-문제))
+
+기존 공개 검토에는 이미 “현재 COW+SQL 재실행 WAL을 기본안으로 유지할 근거는 없음”과 “현행 COW+SQL 로그를 기본 후보에서 내리고 증분 COW와 실제 페이지 WAL을 분리”한다는 판단이 있다. 당시 제외한 결합 경로, 이후 문장 WAL 제거, 이번 새 엔진의 WAL 권고는 다른 선택이다. 댓글은 후속 내용을 누적한 기록이므로 본문의 모든 판단을 댓글 생성일의 결정으로 소급하지 않는다. 이번 권고를 당시 이미 WAL을 선택·구현했다는 역사로 바꾸지도 않는다. ([기존 결합 경로 제외](https://github.com/woonyong-choi/totedb/issues/137#issuecomment-6202455142))
+
+| 선택과 상태 | 직접 근거 | 말할 수 있는 이유와 한계 |
+|---|---|---|
+| 기존 COW+SQL 재실행 WAL, 기본 후보 제외 | [#137의 당시 검토](https://github.com/woonyong-choi/totedb/issues/137#issuecomment-6202455142) | SQL 로그 뒤에도 COW 게시 비용을 내는 결합 경로를 기본 후보에서 내린다. 개선 COW와 실제 page WAL은 별도 후보로 남긴 판단이며, 모든 COW의 철회나 대안 구현 완료가 아니다. |
+| 2026-10-16 문장 재실행 WAL 제거, 반영 완료 | [D21의 제거 커밋](https://github.com/woonyong-choi/totedb/commit/d1371303cc3a7da670eb80a5c101d043ee2a3815) | 당시 COW의 data sync·control write·sync가 제공하는 보존 계약에 SQL 재실행 로그가 중복된다는 판단이다. WAL·buffer pool·MVCC와 성능을 대조해 COW가 이겼다는 기록이 아니다. |
+| 같은 날 뒤이은 조건부 1-fsync 추가, 유지 | [D22의 후속 커밋](https://github.com/woonyong-choi/totedb/commit/e3023e7), [현재 게시 계약](../include/storage/page_file.h#L221-L243) | manifest 조건을 충족할 때만 한 번 동기화한다. WAL 제거의 이유와 이후 sync 횟수 변경을 구분한다. 전원 차단 안전성 전체를 입증한 것은 아니다. |
+| H2 직접 clone·H3 버퍼 재사용, 제품 후보 철회 | [D46의 평가](experiments/queue-contention/report.md#단일-writer-후속-비용-평가), [원 결과](experiments/queue-contention/results/single-writer-cost.json) | 정확성 실패가 아니라 누적 업무 성능의 채택 근거 부족이다. COW나 transaction workspace 전체를 시험해 포기한 것이 아니다. |
+| 현재 단일 writer COW, 제품 구현 보존 | [현재 잠금](https://github.com/woonyong-choi/totedb/blob/6bb8b2e8/src/sql/database.c#L1163-L1172), [페이지 회수 계약](../include/storage/page_file.h#L183-L209) | 기존 DB·게시·오류·fallback·fresh 재사용을 보존한다. 새 엔진의 기본 구조로 다시 채택했다는 뜻이 아니며, 병렬 writer 회수의 안전성 증거도 아니다. |
+| 새 엔진의 page/redo WAL·buffer pool·MVCC·조기 잠금, 현재 권고 | [리뉴얼 구조](design/streamlite.md#성능과-안전을-함께-고르는-순서), [복구 계약](design/streamlite.md#wal-권고안의-복구정리-경계) | 작은 변경의 page writeback을 durable group 사이에도 합칠 수 있다는 구조적 이익을 우선한다. 복구·공유 상태·checkpoint·version GC를 새로 구현하고 검증하는 부담을 감수하는 설계안이다. |
+| buffered COW, 동등 조건 비교 후보 유지 | [권고를 바꾸는 조건](design/streamlite.md#권고를-바꾸는-조건과-보존할-것) | 같은 조기 잠금·cache·workspace·group 정책으로 비교한다. 요구를 충족하고 WAL의 추가 비용이 이익을 없애면 다시 선택할 수 있다. 비교 가능한 두 후보와 실측은 미완료다. |
+
+기준 코드에서 문장마다 남는 `catalog_clone`의 encode/decode와 `heap_batch_finish` 뒤 페이지 쓰기는 공통 개선 대상이다. 이를 COW의 필수 비용으로 확정하거나 WAL을 붙이면 파싱·복사도 사라진다고 계산하지 않는다. 읽기 cache와 fresh 재사용도 이미 있다. 기존 게시·오류·회수 경계를 회귀 기준으로 보존하는 이유와 새 엔진의 기본 방향을 고르는 이유를 구분한다. 이 설명은 현재 코드 해석이며 최초 COW 채택 동기의 복원이 아니다. ([clone](../src/storage/catalog.c#L249-L257), [문장 완료](https://github.com/woonyong-choi/totedb/blob/e49a3d2f252c0e501bc7e76cc064e77e6ec98673/src/sql/database.c#L718-L755), [페이지 쓰기](https://github.com/woonyong-choi/totedb/blob/e49a3d2f252c0e501bc7e76cc064e77e6ec98673/src/storage/page_file.c#L1186-L1198), [회수 계약](../include/storage/page_file.h#L183-L209))
+
+공통 개선을 적용한 direct page-COW도 각 durable group에서 공개할 변경 page와 참조 경로를 영속화해야 한다. 같은 leaf의 다른 행을 바꾼 writer도 최신 tree에 변경을 병합하고 root 게시를 조정해야 한다. WAL은 변경 로그를 먼저 영속화한 뒤 같은 data page의 변경을 여러 group에 걸쳐 모아 쓸 수 있다. 이 저장 단위 차이가 작은 변경이 잦은 새 요구에서 WAL을 우선하는 이유다. COW의 group 누적·fresh 재사용·조건부 1-sync도 공정한 대조에 포함하며, 매 변경에 새 물리 page를 할당한다고 가정하지 않는다. 큰 bulk·큰 group·읽기 중심 입력에서는 이 이점이 줄 수 있다. ([비용 모형과 소스](design/streamlite.md#소스에서-확인한-비용과-저장-단위))
+
+조기 key/range 잠금은 같은 행·범위의 충돌을 작업 초기에 조정하고 transaction 끝까지 유지하는 권고다. MVCC는 version 가시성과 회수를 맡는다. 이 정책은 buffered COW에도 적용할 수 있으므로 WAL만의 이익으로 세지 않는다. page latch만으로 거래 격리가 생기지는 않으며, 같은 leaf의 서로 다른 행 변경도 유실 없이 진행해야 한다. 기존 SNAPSHOT의 고정된 읽기 시점은 유지하고, 대기 뒤 충돌 실패가 필요한 경우도 구분한다. 자동 callback 재실행이나 deadlock·timeout이 전혀 없다는 약속은 하지 않는다. ([writer 범위와 격리](design/streamlite.md#writer-범위와-격리))
+
+WAL 권고로 새로 부담하는 것은 redo·full-page image·공유 frame·거래 상태·checkpoint·version GC·재시작 경로다. page LSN까지 로그를 먼저 영속화하고 commit barrier 뒤에만 성공을 반환해야 한다. 미확정 version의 영구 식별·abort 뒤 비가시성·구조 변경 복구를 증명하기 전에는 미확정 page writeback을 허용하지 않는다. checkpoint도 긴 snapshot의 옛 version이나 소비자의 replay payload를 지울 근거가 아니다. COW의 root·manifest 복구보다 시작·정리 비용이 커질 수 있고, 옛 COW page가 차지한 디스크 bytes를 전부 RSS로 셀 수도 없다. 호출자가 전체 pending payload를 모으는 비용은 backend 변경으로 사라지지 않는다. ([새 복구·정리 의무](design/streamlite.md#wal-권고안의-복구정리-경계), [목록 메모리 비교](design/streamlite.md#pending-목록의-메모리와-호출-경계))
+
+현재 포기하는 방향은 새 엔진에서 현행 COW 게시를 무조건 확장하는 것이다. B+Tree·행 codec·SQL·선택형 ACK·소유권·오류 경계도 모두 폐기하는 결정은 아니다. 대조군에는 같은 cache·workspace·payload/소비자 상태 배치와 격리·writer·내구성·전체 예산을 적용한다. COW의 재작성·병합·pin·회수와 WAL의 로그·writeback·checkpoint·GC·복구를 정리 완료까지 비교한다. buffered COW가 필요한 tail·공정성·메모리·복구 기준을 채우고 WAL의 추가 부담이 이익을 없애면 권고를 바꾼다. WAL 후보가 correctness나 자원 한도를 위반하면 채택하지 않는다. 일반 SQLite는 제품 구현 부담을 줄일 대안으로 남기되 한 writer 제약을 실제 독립 writer의 충족으로 계산하지 않는다. ([대안](design/streamlite.md#대안), [비교·채택 기준](design/streamlite.md#분리-비교의-범위))
+
+이 절의 이전 ‘COW를 철회하지 않았다’와 ‘실패하면 WAL을 검토한다’는 표현은 기존 구현의 보존과 새 구조의 선택을 구분하지 못했다. 현재 블로그에 쓸 수 있는 판단은 ‘작은 변경과 실제 독립 writer를 위해 WAL 계열로 개발 방향을 바꾸도록 권고하고 복구·정리 부담을 감수한다’이다. 구현 완료나 성능 해결로 쓰지 않는다. workload·수치 예산, 후보 commit·설정과 실패·중단 표본을 포함한 원 결과, 원인 경로·반례와 기존 DB 복원 범위는 후속 구현·실측에서 연결할 근거다. [#257](https://github.com/woonyong-choi/totedb/issues/257)의 남은 계약과 [후속 구현·검증](design/streamlite.md#후속-구현과-검증)은 이 기록으로 완료되지 않는다.
 
 ### 유지·철회·보류와 다음 판정 조건
+
+기준 코드 이후에는 [구문 template cache](../src/sql/database_cache.c)·[transaction workspace](../src/sql/database_workspace.c)와 Python의 첫 큐 사용 시 등록부를 생성하는 경로를 구현하고 소유권·오류·수명 회귀를 검증했다. [캐시 시험](../tests/test_database_cache.c)·[workspace 시험](../tests/test_database_workspace.c)과 [Python 수명 시험](../tests/test_queue_lifecycle.py)은 이 내부 구현의 검증 범위다. cache와 workspace는 기본 OFF인 비교 경로다. cache는 [실행 성공 뒤 저장하는 계약](design/streamlite.md#공통-실행-계약)을 따르며 workspace는 작업 catalog와 최신 COW 사본을 문장 사이에 보유한다. 문장별 heap·색인 계산은 남는다. 이 작업본의 구현·회귀를 기본 브랜치 통합·배포나 비계측 성능·전체 메모리 개선의 근거로 쓰지 않는다. 새 backend·실제 동시 writer·영속 fanout stream의 완료와도 구분한다.
 
 | 현재 상태 | 대상 | 다음 판정 조건 |
 |---|---|---|
 | 유지 | 독립 SQL·선택형 ACK·호출자 거래 결합 | 세 사용 방식의 계약·실패·미사용 비용을 따로 검사 |
-| 유지 | 가변 값·catalog·색인·COW 게시·지연 회수·예산·소유권 | 실패 때 옛/새 상태와 회계·소유권 보존 |
+| 현행 제품 보존 | 가변 값·catalog·색인·COW 게시·지연 회수·예산·소유권 | 실패 때 옛/새 상태와 회계·소유권 보존, 새 엔진 재사용은 별도 계약 검사 |
 | 유지 | TEXT 구간 순회·안전한 LIMIT, 매크로 계측·배포 격리 | 지원 정렬 의미와 OFF/ON 분리의 회귀 방지 |
 | 철회 | PG 전체 호환, 구 서버·엔진, 문장 WAL·두 durability 모드 | 현재 제품의 기능으로 다시 소개하지 않는 조건 |
 | 철회 | H2 직접 clone·H3 cache buffer 재사용 제품 후보 | 동일 계약의 새 전후 근거 없이는 재채택 금지 |
-| 보류 | 병렬 writer·WAL 재설계·공개 prepared API | 주병목·충돌·복구·효과의 사전 기준 필요 |
-| 미구현 | 제한 SQL 문장·준비 결과 cache | binding·schema·예산·hit/miss와 OFF 업무 효과 |
-| 요구 미충족 | 현재 메모리 우위·기존 큐 대비 속도·미사용 전용 비용 배제 | 원 소비 경로 메모리·정상/실패 계약별 비교와 lifecycle 비용 분리 |
+| 기본 개발 방향 권고, 미구현 | StreamLite page/redo WAL·buffer pool·MVCC·조기 잠금·실제 독립 writer | 설계 G1–G6와 복구·자원·전체 비용 검증, 기존 제품 전환은 별도 판단 |
+| 비교 후보 유지 | buffered COW와 동등한 조기 잠금·공통 개선 | 정리·복구 포함 같은 조건의 tail·공정성·전체 자원, WAL 권고의 반증 여부 |
+| 검토 중 | 공개 prepared API | binding·schema·소유권·예산 계약과 공개 범위 확정 |
+| 후속 내부 구현·회귀와 첫 실측, 채택 보류 | 제한 SQL 문장·준비 결과 cache, 기본 OFF | 넓은 처리량·tail/CPU 구간과 RSS 구간 퇴화를 보존, 독립 추가 근거와 제품 통합 판정 |
+| 후속 내부 구현·회귀와 첫 실측, 채택 보류 | 거래별 catalog 재사용·최신 COW 사본 보유, 기본 OFF | 네 조건의 보류 근거와 장기 정리 포함 수명주기, H4 barrier 비용·최종 채택 판정 |
+| 후속 내부 구현·회귀와 첫 실측, 채택 보류 | 조건부 claim·ACK·fail, 기본 OFF | 정상 SQL 감소에도 처리량·p99·CPU 기준 미충족, query·배치 비용을 보존하고 독립 추가 근거로 재판정 |
+| 후속 내부 구현·회귀와 첫 실측, 성능 우위 보류 | Python 첫 큐 사용의 지연 등록·기존 종료 소유권 | SQL 단독·큐 사용 생성/실행/종료 관측 유지, 전용 빈 set/list 제거와 전체 앱 성능·RSS 우위 구분 |
+| 후속 실측, 표본 내 지지 | backlog 10,000건의 native 한 page Q1/Q2와 Q1–Q3 메모리 증가 | 같은 결과의 16개 RSS·지연 비교와 12개 증가 기준 통과, 전체 순차 소비 시간·caller 축적·실제 소비자 효과 분리 |
+| 제품 요구 미완료 | 원 caller 전체 메모리·기존 큐의 완전 대체·미사용 전용 비용 배제 | 한 page의 근거를 전체 축적이나 앱 교체로 확대하지 않고 정상/실패 계약·lifecycle 비용 분리 |
 | 미검증 | 새 엔진의 총 편익·장기 INSERT/UPDATE/DELETE 효율 | SQLite 직접 ACK 대안의 기능·개발·검증·운영 비용, cleanup 포함 수명주기 비교 |
+
+2026-10-24의 [공통 비용 첫 실측](design/streamlite.md#공통-비용-수집의-첫-판정)은 수리한 계획 commit `94552080`의 단일 writer COW 비교다. 예정 576건을 모두 완료하고 원자료 검증·같은 분석 JSON 재생성을 통과했지만 cache와 workspace는 사전 보호 기준에서 모두 보류했다. 내부 clone·pwrite 감소를 전체 앱의 개선이나 새 WAL 엔진의 성능으로 바꾸지 않는다. 다음 비용 가설은 같은 내구성과 barrier 횟수 아래 commit barrier의 대기·CPU를 분리하는 H4다. 기존 WAL 권고, 동등한 buffered-COW 대조와 실제 독립 writer 요구는 유지한다. 세부 원자료의 공개 발행·제품 통합은 남아 있다.
+
+2026-10-24의 [수명·조건부 SQL 첫 실측](design/streamlite.md#선택형-수명과-조건부-sql의-첫-실측)은 사전 등록한 120건을 모두 완료했지만 두 성능 가설을 보류했다. 수명 SQL 단독의 처리량 대응 비 중앙값은 1.001, 조정 구간은 0.652–1.109였고 조건부 256B는 0.963, 0.723–1.044였다. p99·CPU 보호 기준도 미충족이다. 조건부 경로는 기본 OFF로 두고 lazy 등록은 소유권 계약으로 유지하며, 메모리 우위·미사용 비용 0이나 새 backend의 결과로 확대하지 않는다. 단계별 수명·나머지 입력·자원·진단 범위와 재현 근거는 같은 설계 절에 연결한다.
+
+2026-10-24의 [pending 조회 첫 판정](design/streamlite.md#pending-조회-수집의-첫-판정)은 계획/source `c0cb4216`에서 정식 1,440건·사전 144건·진단 144건을 모두 수집했다. backlog 10,000건의 native 한 page 16개 RSS·지연 보호 기준과 Q1–Q3의 12개 메모리 증가 기준을 모두 충족했고, 분석은 두 번 byte 동일했다. 작은 backlog의 page 조회는 vendor보다 느린 cell도 남았다. 10,000건 전체 순차 소비의 vendor 대비 wall 대응 중앙값은 약 3.0–13.6배였다. 전체 축적의 진단 메모리도 전체-list 기준군과 가까워졌다. 보관된 원 소비자 소스의 읽기 전용 감사와 분리한 loop 대조는 iterator producer라도 request 사전을 계속 유지하는 경계를 확인했다. 실제 앱의 메모리 해결·소비자 교체나 새 WAL backend의 효과로 확대하지 않는다.
+
+2026-10-24의 [기본키 규모 첫 판정](design/streamlite.md#기본키-규모-실측의-첫-판정)은 계획/source `ff3af84d`에서 원래 seed137·120초 조건의1천/1만/10만 행을 각각3회 완료했다. native INSERT·point/missing의 heap 스캔0과 비기본키 스캔 양성 대조, 같은 typed 결과·재열기를 확인했다. 반복별 p50/p95/p99는 같은 설계 절에 남겼다. 원120초 실패·변경된180초 성공과 새 결과를 구분하며, 옛 환경 대비 개선율이나 새로운 WAL/다중 writer 우위는 판정하지 않는다. 원자료는 로컬 보존 상태이며 공개 발행·이슈 완료와 구분한다.
 
 ### 독자가 확인해야 할 미확인 범위
 
 원형에서 자료구조·언어를 처음 고른 비교 이유, 이슈 본문의 변경 시점 전체, 구 엔진의 현재 보존 ref는 이번 근거로 확정하지 못했다. 이 공백은 현재 구조의 합리성으로 메우지 않는다. 보고서에 연결한 공개 파일과 커밋은 추적 근거이며, CI 원시 로그 전체와 외부 배포 바이너리의 소스 일치를 전수 감사했다는 주장은 하지 않는다.
 
-제품 차원에서는 실제 소비 프로젝트의 완전 대체, 기존 불편·미지원의 구체 재현, pending 메모리 개선량이 남아 있다. 새 엔진이 필요했던 필연성과 현재 총 편익도 미입증이다. 안전성 차원에서는 power-cut·lost write·network FS, 성능 차원에서는 장기 cleanup·회수·재사용과 각 반복 비용의 기여율이 미검증이다. 이 범위는 캐시 구현 완료나 정상 재개방 PASS로 대신할 수 없다. ([현재 목표](https://github.com/woonyong-choi/totedb/issues/239), [안전성 한계](safety.md#검증하지-않은-것), [실제 비교 한계](experiments/local-db-comparison/report.md#한계))
+제품 차원에서는 실제 소비 프로젝트의 완전 대체, 기존 불편·미지원의 구체 재현, 원 caller 전체 pending 메모리 개선이 남아 있다. 한 page의 표본 내 지지가 이 완료 조건을 대신하지 않는다. 새 엔진이 필요했던 필연성과 현재 총 편익도 미입증이다. 안전성 차원에서는 power-cut·lost write·network FS, 성능 차원에서는 장기 cleanup·회수·재사용과 각 반복 비용의 기여율이 미검증이다. 이 범위는 캐시 구현 완료나 정상 재개방 PASS로 대신할 수 없다. ([현재 목표](https://github.com/woonyong-choi/totedb/issues/239), [안전성 한계](safety.md#검증하지-않은-것), [실제 비교 한계](experiments/local-db-comparison/report.md#한계))
 
 ## 결론
 
 현재 선택의 기준은 ‘새 엔진으로 구현할 수 있다’가 아니라 ‘필요한 보장을 유지하면서 사용·실행·정리 비용을 줄였다는 근거가 있다’여야 한다. TEXT 개선과 H2/H3 철회의 차이는 내부 작업 제거가 아니라 비계측 업무 효과를 확인했는지에 있다. 같은 기준을 원래 요구에 적용하면 기능 경계는 구현됐지만 메모리·반복 삭제 효율·실제 교체 편익은 아직 완료라고 부를 수 없다.
 
 다음 판단은 SQLite 위 직접 ACK라는 대안을 남긴 채 필요한 사용 장면을 고정하는 것이다. 문장 cache나 페이지 변경 누적은 그 장면의 비용을 줄일 후보이지 제품 필요성의 대체 증거가 아니다. 일정 backlog와 cleanup을 포함한 수명주기 비교가 목표를 충족하지 못하면 그 결과도 후보 철회와 같은 수준의 결정 근거로 남겨야 한다. 이 보고서는 기존 공개 근거를 종합한 Markdown 정본이며, 새 실험·코드·배포 결과를 만들지 않는다.
+
+StreamLite의 새 엔진에는 WAL·bounded buffer pool·MVCC·조기 잠금을 현재 개발 방향으로 권고한다. 이유는 작은 변경의 로그 영속화와 data writeback을 분리하고 독립 writer를 조정하는 데 있다. D52는 이전 결합 경로 제외·문장 WAL 제거·현행 COW 보존과 이 권고를 구분한다. 새 복구·checkpoint·GC 부담을 포함한 구현·실측은 남아 있으며, 동등 조건의 buffered COW 결과가 권고를 뒤집을 수도 있다.

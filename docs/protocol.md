@@ -1,6 +1,6 @@
 # 프로토콜
 
-ToteDB 0.2.0의 `tote_exec`는 같은 프로세스의 C 호출자에게 길이가 있는 바이너리 결과 버퍼를 반환한다. PostgreSQL wire, 소켓 서버나 JSON-RPC 프로토콜이 아니다. 예를 들어 `SELECT 42 AS answer`의 결과는 kind `0`으로 시작하는 28바이트다.
+StreamLite 0.3.0의 `streamlite_exec`는 같은 프로세스의 C 호출자에게 길이가 있는 바이너리 결과 버퍼를 반환한다. PostgreSQL wire, 소켓 서버나 JSON-RPC 프로토콜이 아니다. 예를 들어 `SELECT 42 AS answer`의 결과는 kind `0`으로 시작하는 28바이트다.
 
 ## 전송 방식
 
@@ -16,23 +16,23 @@ ToteDB 0.2.0의 `tote_exec`는 같은 프로세스의 C 호출자에게 길이�
 
 ## 연결 순서
 
-1. 호출자가 `tote_open`으로 DB 핸들을 연다.
-2. 호출자가 출력 포인터를 NULL, 길이를 0으로 초기화하고 `tote_exec`를 부른다.
-3. 호출자가 C status를 검사한다. `TOTE_OK`일 때만 버퍼 kind를 읽는다.
-4. 호출자가 결과를 소비하고 `tote_free(out)`으로 한 번 해제한다.
-5. 호출자가 큐와 트랜잭션 핸들을 끝내고 `tote_close`로 DB를 닫는다.
+1. 호출자가 `streamlite_open`으로 DB 핸들을 연다.
+2. 호출자가 출력 포인터를 NULL, 길이를 0으로 초기화하고 `streamlite_exec`를 부른다.
+3. 호출자가 C status를 검사한다. `STREAMLITE_OK`일 때만 버퍼 kind를 읽는다.
+4. 호출자가 결과를 소비하고 `streamlite_free(out)`으로 한 번 해제한다.
+5. 호출자가 큐와 트랜잭션 핸들을 끝내고 `streamlite_close`로 DB를 닫는다. 핸들을 끝내는 호출은 그 핸들을 쓰는 다른 호출이 모두 돌아온 뒤에 부른다.
 
 성공한 반환 버퍼는 호출자 소유이며 다음 실행, rollback, DB close 뒤에도 해제 전까지 유효하다. CAPI는 내부 `result_t`를 인코딩 직후 해제한다. DB mutex는 실행·인코딩·내부 결과 해제 구간을 보호하며 호출자가 반환 버퍼를 읽고 해제하는 동안 보유하는 잠금이 아니다. Python은 바이트를 복사해 decode하고 `finally`에서 native 버퍼를 해제한다.
 
 ## 요청
 
-### `tote_exec`
+### `streamlite_exec`
 
 SQL 문장 하나를 실행하고 행, 명령 또는 SQL 오류 결과를 반환한다.
 
 | 항목 | 값 |
 |---|---|
-| 방향 | 호출자에서 `libtotedb`, 결과는 호출자에게 반환 |
+| 방향 | 호출자에서 `libstreamlite`, 결과는 호출자에게 반환 |
 | 부작용 | SQL에 따른 DB 변경, 트랜잭션 밖 변경 문장은 자동 commit |
 | 순서 | `db`와 선택적 `txn`이 유효해야 하며 `txn`은 같은 DB 소속 |
 
@@ -40,10 +40,10 @@ SQL 문장 하나를 실행하고 행, 명령 또는 SQL 오류 결과를 반환
 
 | 이름 | 타입 | 필수 | 뜻 |
 |---|---|---|---|
-| `db` | `tote_db_t *` | 예 | 열린 DB |
-| `txn` | `tote_txn_t *` | 아니오 | NULL이면 기본 세션, 아니면 명시적 트랜잭션 |
+| `db` | `streamlite_db_t *` | 예 | 열린 DB |
+| `txn` | `streamlite_txn_t *` | 아니오 | NULL이면 기본 세션, 아니면 명시적 트랜잭션 |
 | `sql` | `const char *` | 예 | NUL 종료 SQL, 내부 `strlen` 길이 |
-| `params` | `const tote_param_t *` | 인자가 있으면 예 | type과 값 필드를 담은 배열 |
+| `params` | `const streamlite_param_t *` | 인자가 있으면 예 | type과 값 필드를 담은 배열 |
 | `param_count` | `size_t` | 예 | 배열 길이, 인자가 없으면 0 |
 | `out` | `uint8_t **` | 예 | 성공한 소유 버퍼 주소 |
 | `out_size` | `size_t *` | 예 | 성공한 전체 버퍼 바이트 수 |
@@ -99,10 +99,10 @@ NULL에는 길이 필드도 없다. 빈 TEXT와 빈 BLOB은 각각 type `3`과 `
 
 | 조건 | 반환 |
 |---|---|
-| SQL 문장 오류 | `TOTE_OK`, kind `2` |
+| SQL 문장 오류 | `STREAMLITE_OK`, kind `2` |
 | 잘못된 C 인자 | 비OK, 결과 판독 금지 |
-| 인코딩 cap 또는 u32 길이 초과 | `TOTE_LIMIT`, 부분 버퍼 없음 |
-| 인코딩 할당 실패 | `TOTE_NOMEM`, 부분 버퍼 없음 |
+| 인코딩 cap 또는 u32 길이 초과 | `STREAMLITE_LIMIT`, 부분 버퍼 없음 |
+| 인코딩 할당 실패 | `STREAMLITE_NOMEM`, 부분 버퍼 없음 |
 | 행 공급 중 실패 | 이미 모은 행을 버리고 kind `2`로 교체, 오류 자체 인코딩 실패 시 비OK |
 
 초기 C 인자 검증은 출력 초기화보다 먼저 끝날 수 있으므로 실패 시 모든 out 인자가 항상 초기화된다고 가정하지 않는다. 오류 번호의 뜻과 실패 뒤 DB 상태는 [오류](errors.md)에 있다. 결과 cap과 내부 결과 생성 한도는 [설정](configuration.md#sql-입력과-결과-한도)에 있다. 부분 결과 없음은 commit 미반영 보장이 아니다.
@@ -120,8 +120,8 @@ NULL에는 길이 필드도 없다. 빈 TEXT와 빈 BLOB은 각각 type `3`과 `
 
 ## 호환성
 
-버퍼에는 버전 헤더나 format negotiation이 없다. 헤더의 `TOTE_VERSION`과 `tote_version()`은 현재 `0.2.0`이며 `1.0` 전에는 API와 파일 형식이 바뀔 수 있다. 버전 문자열이 미래 decoder 호환이나 자동 migration을 보장하지 않는다.
+버퍼에는 버전 헤더나 format negotiation이 없다. 헤더의 `STREAMLITE_VERSION`과 `streamlite_version()`은 현재 `0.3.0`이며 `1.0` 전에는 API와 파일 형식이 바뀔 수 있다. 버전 문자열이 미래 decoder 호환이나 자동 migration을 보장하지 않는다.
 
 바인딩은 매 필드에서 남은 길이를 확인한 뒤 수와 바이트를 읽고, 길이·개수 계산의 overflow를 거절해야 한다. 알 수 없는 kind·cell type, 잘린 필드, 잘못된 행 marker와 불필요한 뒤쪽 바이트도 정상 응답으로 해석하지 않는다. 이 조건은 바인딩 작성 시 필요한 검사이며 현재 Python decoder가 모두 강제한다는 뜻은 아니다. Python decoder는 신뢰하는 native 버퍼를 소비하며 임의 외부 바이트를 검증하는 네트워크 parser가 아니다.
 
-형식의 구현은 [totedb.c](../src/capi/totedb.c)의 `encode_result`, 선언은 [totedb.h](../include/totedb.h), Python 해석은 [database.py](../python/totedb/database.py)의 `decode_result`에 있다. 별도 알림이나 연결 handshake는 없다.
+형식의 구현은 [streamlite.c](../src/capi/streamlite.c)의 `encode_result`, 선언은 [streamlite.h](../include/streamlite.h), Python 해석은 [database.py](../python/streamlite/database.py)의 `decode_result`에 있다. 별도 알림이나 연결 handshake는 없다.

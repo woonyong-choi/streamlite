@@ -10,10 +10,10 @@
 
 /*
  * 새 저장 형식의 파일 I/O 드라이버. OS 페이지 크기와 독립적으로 물리 페이지 8192바이트를 쓴다.
- * ToteDB 파일이 아닌 파일은 열거나 해석하거나 바꾸지 않는다.
+ * StreamLite 파일이 아닌 파일은 열거나 해석하거나 바꾸지 않는다.
  *
  * 페이지 배치(모든 정수는 little-endian):
- *   0..31   envelope: "LRPG", 버전 u16, 종류 u16, page ID u32, table ID u32,
+ *   0..31   envelope: "SLPG", 버전 u16, 종류 u16, page ID u32, table ID u32,
  *           본문 길이 u32, 예약 8바이트(0), 체크섬 u32(CRC32C, 체크섬 필드 제외 전체)
  *   32..8191 본문 8160바이트. 본문 길이 뒤는 0이어야 한다.
  * page 0, 1은 제어 페이지 두 장이다. 세대 번호가 큰 쪽이 현재 값이고 commit은 작은 쪽에 쓴다.
@@ -22,8 +22,9 @@
  * - 부분 쓰기(torn)는 체크섬으로 탐지하지만, 성공을 돌려준 뒤 저장 장치가 버린 쓰기(lost)는
  *   옛 페이지가 자기 일관적이라 탐지하지 못한다. 가장 최근 제어 페이지 쓰기가 사라지면
  *   한 세대 전 상태로 정상 열리며 "게시되지 않은 것"과 구분되지 않는다.
- * - 제어 페이지 한쪽이 손상됐을 때 다른 쪽으로 열리는 fallback은 open_info.damaged_slots로
- *   알리지만, 손상된 쪽이 최신이었는지는 알 수 없다.
+ * - 제어 페이지 한쪽이 손상됐거나 최신 commit이 끝나지 않아 이전 세대로 열리는 fallback은 open_info로 알린다.
+ *   물러난 까닭이 "fsync 전에 멈춘 commit"인지 "성공을 돌려준 commit의 손상"인지는 파일만으로는 구분되지 않는다.
+ *   잠금 파일의 내구 확인 기록이 남아 있을 때만 뒤쪽을 확정한다(page_file_loss_t).
  * - 여러 페이지 갱신의 원자성은 없다. commit 순서는 page_file_commit에 있다.
  * 빈 페이지 목록(재사용 가능·한 세대 대기)은 commit마다 제어 페이지에 함께 쓴다. 제어 페이지 본문에 다 들어가지
  * 않으면 나머지를 PAGE_KIND_FREE_LIST 사슬 페이지에 쓴다. 그래서 다시 열어도 놓은 페이지가 새지 않는다.
@@ -35,7 +36,7 @@
 #define PAGE_BODY_BYTES (PAGE_FILE_PAGE_BYTES - PAGE_ENVELOPE_BYTES)
 #define PAGE_FILE_CONTROL_PAGES 2u
 #define PAGE_FILE_NO_PAGE 0u
-#define PAGE_FILE_FORMAT_VERSION 3u
+#define PAGE_FILE_FORMAT_VERSION 4u
 #define PAGE_FILE_MAX_PAGES 0xFFFFFFF0u
 
 typedef enum {
@@ -55,24 +56,49 @@ typedef enum {
     PAGE_FILE_INVALID,      /* 인자·범위·이중 해제 */
     PAGE_FILE_IO,           /* 읽기·쓰기·fsync·열기 실패. errno를 남긴다 */
     PAGE_FILE_CORRUPT,      /* 체크섬·magic·page ID·길이·세대 불일치, 잘린 파일 */
-    PAGE_FILE_UNSUPPORTED,  /* 알 수 없는 version·페이지 크기·byte order, ToteDB 파일이 아님 */
+    PAGE_FILE_UNSUPPORTED,  /* 알 수 없는 version·페이지 크기·byte order, StreamLite 파일이 아님 */
     PAGE_FILE_NO_CONTROL,   /* 유효한 제어 페이지가 없음. 게시되지 않은 파일 */
     PAGE_FILE_EXISTS,       /* 목적지 또는 partial 파일이 이미 있음 */
     PAGE_FILE_LOCKED,       /* 다른 핸들이 잠금을 쥐고 있어 대기 상한 안에 얻지 못함 */
     PAGE_FILE_NOMEM,
     PAGE_FILE_LIMIT,        /* 페이지 번호 한계 */
     PAGE_FILE_PUBLISHED_DIRTY,  /* 게시는 됐으나 partial 삭제 또는 디렉터리 fsync가 실패함 */
-    PAGE_FILE_FORKED        /* 핸들을 연 프로세스가 아님(fork한 자식). 파일을 바꾸지 않았다 */
+    PAGE_FILE_FORKED,       /* 핸들을 연 프로세스가 아님(fork한 자식). 파일을 바꾸지 않았다 */
+    PAGE_FILE_LOST_COMMIT   /* 쓰기 열기: 성공을 돌려준 최신 commit이 손상돼 이전 세대로만 열 수 있다. 파일을 바꾸지 않았다 */
 } page_file_status_t;
 
-/* 테스트가 실패를 주입하는 자리. 기본값은 libc다. */
+/*
+ * 테스트가 실패를 주입하는 자리. 기본값은 libc다. fsync는 NORMAL 단계의 동기화(fsync(2))이고 full_sync는 FULL 단계의
+ * 동기화다. 기본 full_sync는 Apple 플랫폼에서 fcntl(F_FULLFSYNC)를 먼저 쓴다(그 플랫폼의 fsync(2)는 저장 장치의 쓰기
+ * 캐시를 비우지 않는다). 파일 시스템이 F_FULLFSYNC를 지원하지 않으면(ENOTSUP·EINVAL·ENOTTY·ENODEV) fsync로 물러나고, 그
+ * 밖의 실패는 그대로 실패다. 다른 플랫폼에서는 fsync(2)다. full_sync가 NULL이면 FULL 단계도 fsync를 쓴다(앞 다섯 칸만
+ * 채운 주입 진입점은 모든 단계의 동기화가 그 fsync를 거친다).
+ */
 typedef struct {
     ssize_t (*pread)(int fd, void *buf, size_t size, off_t offset);
     ssize_t (*pwrite)(int fd, const void *buf, size_t size, off_t offset);
     int (*fsync)(int fd);
     int (*link)(const char *from, const char *to);
     int (*unlink)(const char *path);
+    int (*full_sync)(int fd);
 } page_file_io_t;
+
+/*
+ * commit의 동기화 단계. 어느 단계든 쓰기 순서(새 데이터 페이지 → 제어 페이지)와 COW는 같으므로 프로세스 종료 뒤에는
+ * 이전 또는 새 세대 중 하나로 열린다. 단계는 OS·전원 장애에 대한 보장만 바꾼다.
+ * - NORMAL(기본): commit마다 fsync(2). 성공한 commit은 OS 종료 뒤에도 남는다. Apple 플랫폼의 fsync(2)는 장치 쓰기 캐시를
+ *   비우지 않으므로 그 플랫폼에서는 전원 차단 뒤 최근 commit이 사라질 수 있다.
+ * - FULL: commit마다 full_sync(Apple은 F_FULLFSYNC). 장치가 요청을 지키면 전원 차단 뒤에도 남는다.
+ * - OFF: commit에서 동기화하지 않는다. 정상 close가 한 번 동기화한다. OS·전원 장애 뒤에는 최근 commit을 잃을 수 있고,
+ *   커널이 쓰기 일부만 남기면 파일이 손상(CORRUPT·LOST_COMMIT 판정)으로 열릴 수도 있다. 동기화하지 않은 세대는 잠금
+ *   파일의 내구 확인 기록을 지운다(page_file_loss_t).
+ * 파일 생성·게시와 디렉터리 동기화는 OFF에서도 동기화한다(FULL이면 full_sync).
+ */
+typedef enum {
+    PAGE_FILE_DURABILITY_NORMAL = 0,
+    PAGE_FILE_DURABILITY_FULL = 1,
+    PAGE_FILE_DURABILITY_OFF = 2
+} page_file_durability_t;
 
 /* 이후 열리는 핸들이 쓰는 I/O 진입점을 바꾼다. NULL이면 libc로 복원한다. 테스트 전용. */
 void page_file_set_default_io(const page_file_io_t *io);
@@ -112,16 +138,35 @@ typedef struct {
     uint64_t catalog_generation;
 } page_file_control_t;
 
+/*
+ * 이전 세대로 물러났을 때 성공을 돌려준 commit을 잃었는지의 판정. 근거는 잠금 파일(<path>-lock)의 내구 확인 기록이다.
+ * commit은 마지막 fsync가 성공한 뒤 그 세대 번호와 DB 파일 inode를 잠금 파일에 적는다(이 기록 자체는 fsync하지 않는다).
+ * - CONFIRMED: 기록이 "지금 연 세대 + 1"의 fsync 성공을 말한다. 그 세대는 성공을 돌려준 commit이고 지금은 읽을 수 없다.
+ * - POSSIBLE: 기록이 없거나 다른 세대를 말한다. fsync 전에 전원이 끊긴 commit(성공을 돌려준 적 없음)과, 기록이 함께
+ *   사라졌거나(전원 차단, 잠금 파일 삭제·교체) 옛 판이 쓴 파일에서 성공한 commit이 손상된 경우를 구분하지 못한다.
+ * 프로세스 종료만으로는 물러나지 않는다. 데이터 쓰기가 제어 쓰기보다 먼저이고 둘 다 커널에 남기 때문이다.
+ */
+typedef enum {
+    PAGE_FILE_LOSS_NONE,       /* 물러나지 않았다 */
+    PAGE_FILE_LOSS_POSSIBLE,   /* 물러났다. 끝나지 않은 commit인지 손상인지 알 수 없다 */
+    PAGE_FILE_LOSS_CONFIRMED   /* 물러났고, 건너뛴 세대는 fsync까지 끝났던 commit이다 */
+} page_file_loss_t;
+
 typedef struct {
     uint32_t damaged_slots;       /* 손상으로 쓰지 못한 제어 슬롯 수. 0이 아니면 fallback이다 */
     uint32_t blank_slots;         /* 한 번도 쓰이지 않은(전부 0) 제어 슬롯 수 */
+    uint32_t rolled_back;         /* 최신 제어 페이지는 온전하지만 그 commit의 페이지·파일 길이가 맞지 않아 이전 세대로 열었으면 1 */
+    page_file_loss_t loss;        /* damaged_slots나 rolled_back이 0이 아닐 때의 판정 */
 } page_file_open_info_t;
 
 /*
- * 새 파일을 만든다. 목적지는 path이고 실제 쓰기는 "path.partial"에 한다. partial은 O_EXCL로 만든
- * 뒤 배타 잠금을 잡고, 제어 페이지 두 장을 0으로 채운다. 첫 commit 전에는 어떤 열기도 성공하지
- * 않는다. 목적지나 partial이 이미 있으면 PAGE_FILE_EXISTS이며 어느 쪽도 바꾸지 않는다.
- * publish 전에 close하면 partial을 지운다.
+ * 새 파일을 만든다. 목적지는 path이고 실제 쓰기는 "path.partial"에 한다. 먼저 writer 잠금(<path>-lock)을 기다리지
+ * 않고 잡은 뒤 partial을 O_EXCL로 만들고 제어 페이지 두 장을 0으로 채운다. 생성하는 핸들은 게시하거나 닫을 때까지
+ * writer 잠금을 쥔다. 첫 commit 전에는 어떤 열기도 성공하지 않는다. 목적지가 이미 있거나 다른 핸들이 만드는 중이면
+ * (writer 잠금을 얻지 못했고 partial이 있음) PAGE_FILE_EXISTS이며 어느 쪽도 바꾸지 않는다. writer 잠금을 얻었는데
+ * partial이 남아 있으면 살아 있는 생성자가 없다는 뜻이므로(생성 중 종료) 그 partial을 지우고 새로 만든다. 다만 남은
+ * partial이 일반 파일이 아니거나 다른 이름과 hard link로 묶여 있으면(게시 뒤 정리가 실패한 흔적) 지우지 않고 EXISTS다.
+ * publish 전에 close하면 partial과, 이 핸들이 만든 잠금 파일을 지운다.
  */
 page_file_status_t page_file_create(const char *path, page_file_t **out);
 
@@ -133,14 +178,28 @@ page_file_status_t page_file_create(const char *path, page_file_t **out);
  * 실패했다는 뜻이며 이름의 내구성을 주장할 수 없다.
  */
 page_file_status_t page_file_publish(page_file_t *file);
+/*
+ * PAGE_FILE_PUBLISHED_DIRTY로 끝난 게시를 거둔다. 이 핸들이 만들어 방금 게시했고 그 뒤 commit하지 않은(세대 1) 파일만
+ * 대상이다(아니면 INVALID). 목적지 이름과 남은 partial이 이 핸들의 파일일 때만 지운다. 둘 다 사라지면 OK이고 핸들은
+ * 게시 전처럼 close만 할 수 있다. 하나라도 남으면 IO이며 목적지는 여전히 게시된 채다. 생성 실패를 돌려주는 호출자가
+ * 같은 경로로 다시 만들 수 있게 하려는 것이다.
+ */
+page_file_status_t page_file_retract(page_file_t *file);
 
 /*
  * 게시된 파일을 연다. 쓰기 전에는 아무것도 쓰지 않으며 version·길이·header가 맞지 않으면
  * 파일을 바꾸지 않고 거절한다. writable이면 writer 잠금(<path>-lock), 아니면 파일 공유 잠금을 잡은 채 돌려준다. 다른
  * 핸들이 그 잠금을 쥐고 있으면 대기 상한(page_file_set_default_lock_timeout)까지 기다리고 넘으면 PAGE_FILE_LOCKED다.
- * 두 제어 페이지 어디에도 파일 magic("TOTEDB")이 없는 파일은 PAGE_FILE_UNSUPPORTED다(다른 형식 파일). 제어 페이지
+ * 두 제어 페이지 어디에도 16바이트 파일 magic("STREAMLITE"와 0 여섯)이 없는 파일은 PAGE_FILE_UNSUPPORTED다(다른 형식
+ * 파일). 체크섬이 맞는데 envelope magic이 "SLPG"가 아닌 제어 슬롯이 하나라도 있어도 UNSUPPORTED다. 제어 페이지
  * 두 장보다 짧은 파일은 앞부분이 0뿐이거나 magic이 있으면 잘린 파일(CORRUPT), 아니면 UNSUPPORTED다. 어떤 경우에도
  * 자동으로 변환하지 않는다.
+ *
+ * 이전 세대로 물러난 열기. 읽기 열기는 물러난 세대로 열고 info로 알린다. 쓰기 열기는 판정이
+ * PAGE_FILE_LOSS_CONFIRMED이면 PAGE_FILE_LOST_COMMIT으로 거절한다(info는 채운다). 이어서 commit하면 손상된 세대의 제어
+ * 슬롯과 페이지를 다시 써서 되살릴 수 없게 되기 때문이다. 손상된 세대를 버리고 이어 쓰려면
+ * page_file_open_with의 accept_lost_commit으로 연다. PAGE_FILE_LOSS_POSSIBLE은 쓰기 열기도 성공한다(전원 차단 뒤의
+ * 끝나지 않은 commit을 스스로 복구하는 경로). 호출자는 info나 page_file_open_info로 그 사실을 확인한다.
  */
 page_file_status_t page_file_open(const char *path, bool writable, page_file_t **out,
                                   page_file_open_info_t *info);
@@ -266,6 +325,20 @@ page_file_status_t page_file_open_admitted(const char *path, bool writable, page
                                            page_file_open_info_t *info, page_file_admit_fn admit,
                                            void *ctx);
 
+typedef struct {
+    bool writable;
+    /* 쓰기 열기에서 PAGE_FILE_LOSS_CONFIRMED를 받아들인다. 다음 commit이 손상된 세대를 덮어쓴다 */
+    bool accept_lost_commit;
+    page_file_admit_fn admit;     /* NULL이면 상한 없이 연다 */
+    void *admit_ctx;
+} page_file_open_options_t;
+
+/* 선택 사항을 주는 열기. options가 NULL이면 읽기 열기다. 나머지는 page_file_open_admitted와 같다 */
+page_file_status_t page_file_open_with(const char *path, const page_file_open_options_t *options,
+                                       page_file_t **out, page_file_open_info_t *info);
+/* 이 핸들을 열 때의 판정(page_file_open이 info에 준 값). 생성한 핸들이거나 file이 NULL이면 모두 0이다 */
+page_file_open_info_t page_file_open_info(const page_file_t *file);
+
 /*
  * 여러 프로세스(#199, #200). 같은 컴퓨터의 여러 핸들이 같은 파일을 열고, 쓰기 거래는 한 번에 하나씩 실행한다.
  * - 잠금은 둘이다. writer 잠금은 DB 파일 옆 잠금 파일(<path>-lock)의 배타 flock이고 쓰기 거래 전체 동안 쥔다.
@@ -278,6 +351,12 @@ page_file_status_t page_file_open_admitted(const char *path, bool writable, page
  *   놓고, 읽기 전에 SHARED, 바꾸기 전에 EXCLUSIVE를 page_file_lock으로 잡는다.
  * - page_file_lock은 잠금을 얻은 뒤 디스크의 게시 상태를 열기와 같은 규칙(끝나지 않은 commit이면 이전 세대)으로 다시
  *   읽는다. 다른 핸들이 그 사이 게시했으면 제어 상태·빈 목록을 다시 읽고 캐시를 비우며 changed를 true로 알린다.
+ *   배타 잠금에서 물러난 판정이 PAGE_FILE_LOSS_CONFIRMED이면 열기와 같은 까닭으로 PAGE_FILE_CORRUPT이고 잠금을 쥐지
+ *   않는다(accept_lost_commit으로 연 핸들은 제외). 공유 잠금은 물러난 세대를 읽는다.
+ * - 게시 대기 표시는 writer 잠금을 쥔 writer만 쓴다. writer 잠금을 얻은 핸들은 남아 있는 표시를 죽은 writer의 것으로 보고
+ *   지우며, 공유 잠금을 잡으려는 핸들은 writer 잠금이 비어 있으면 표시를 무시한다(쓰기 핸들은 지운다). 그래서 죽은
+ *   writer의 표시 때문에 게시 대기 상한만큼 기다리지 않는다.
+ * - close는 쥔 잠금을 명시적으로 푼 뒤 fd를 닫는다. 같은 열린 파일 설명의 fd 사본이 다른 곳에 남아 있어도 잠금이 남지 않는다.
  * - 잠금이 없으면 읽기도 INVALID다. 할당·해제·쓰기·카탈로그 지정·commit은 EXCLUSIVE가 있어야 한다.
  * - 배타 잠금을 놓을 때 commit하지 않은 변경이 남았으면 버린 것으로 보고 다음 page_file_lock이 디스크 상태로 다시 읽는다.
  * - 핸들은 연 프로세스에서만 쓴다. fork한 자식이 물려받은 핸들은 close 말고 모든 연산이 PAGE_FILE_FORKED이며 파일을
@@ -298,6 +377,9 @@ typedef enum {
 void page_file_set_default_lock_timeout(uint32_t timeout_ms);
 /* 이후 열리는 핸들의 게시 대기 상한(밀리초). 기본 PAGE_FILE_PUBLISH_TIMEOUT_MS. 테스트용 */
 void page_file_set_default_publish_timeout(uint32_t timeout_ms);
+/* 이 핸들의 동기화 단계를 바꾼다. 다음 commit부터 적용한다. 알 수 없는 값은 NORMAL이다 */
+void page_file_set_durability(page_file_t *file, page_file_durability_t durability);
+page_file_durability_t page_file_durability(const page_file_t *file);
 /* 이 핸들의 잠금 대기 상한(밀리초) */
 void page_file_set_lock_timeout(page_file_t *file, uint32_t timeout_ms);
 /* 잠금을 잡고 게시 상태를 디스크와 맞춘다. 이미 잠금을 쥐었으면(승격 포함) INVALID, 게시 전 핸들도 INVALID다.

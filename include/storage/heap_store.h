@@ -10,19 +10,19 @@
 #include "storage/value.h"
 
 /*
- * 테이블 하나의 행 저장소. page_file 위에서 행을 record page(LRP2)에 담고, 큰 TEXT·BLOB은
+ * 테이블 하나의 행 저장소. page_file 위에서 행을 record page(SLR2)에 담고, 큰 TEXT·BLOB은
  * overflow 체인에 둔다. 어떤 페이지가 이 heap의 record page인지는 "페이지 디렉터리"가 알려 준다.
  * catalog의 heap_root는 이 디렉터리의 첫 페이지를 가리킨다(0이면 빈 heap).
  *
  * 위치 locator 구별: heap_root가 가리키는 페이지의 종류를 page_file_page_info로 검증한다.
- *   PAGE_KIND_DIRECTORY + table ID 일치 + magic "LHD2"/"LHD3"와 대응 version
+ *   PAGE_KIND_DIRECTORY + table ID 일치 + magic "SLD2"/"SLD3"와 대응 version
  *                                                                    -> 이 모듈의 디렉터리
  *   PAGE_KIND_RECORD를 포함한 그 밖의 종류
  *                                                                    -> HEAP_UNSUPPORTED_LOCATOR
  * 어떤 경우에도 옛 record root를 디렉터리로 재해석하거나 변환하지 않으며, 변환 함수도 없다.
  *
- * 디렉터리 잎 본문(LHD3, little-endian, 8160바이트, 뒤는 0):
- *   0..3   magic "LHD3"
+ * 디렉터리 잎 본문(SLD3, little-endian, 8160바이트, 뒤는 0):
+ *   0..3   magic "SLD3"
  *   4..5   version u16 = 3
  *   6..7   flags u16 = 0
  *   8..11  table ID u32 (envelope의 table ID와 같아야 한다)
@@ -31,12 +31,12 @@
  *   20..   (record page ID u32, 연속 빈 바이트 u16) 쌍
  * 항목의 순서가 heap의 행 순서(scan 순서)이며 같은 page ID가 두 번 나오거나 디렉터리 페이지와
  * 겹치면 CORRUPT다. 빈 바이트는 삽입할 페이지를 고르는 힌트이며 삽입 전 실제 페이지에서 재검증한다.
- *   LHD3 단일 잎  record page가 HEAP_HINT_DIRECTORY_ENTRIES개 이하일 때 루트 자체가 잎이다.
- *   LHD2 트리       그보다 많으면 루트 한 장 아래 LHD3 잎 여러 장. 한 행을 바꾸면 바뀐 record page가
+ *   SLD3 단일 잎  record page가 HEAP_HINT_DIRECTORY_ENTRIES개 이하일 때 루트 자체가 잎이다.
+ *   SLD2 트리       그보다 많으면 루트 한 장 아래 SLD3 잎 여러 장. 한 행을 바꾸면 바뀐 record page가
  *              속한 잎과 루트만 새로 쓰고 나머지 잎은 그대로 가리킨다.
- *     루트 본문: 0..3 magic "LHD2", 4..5 version u16 = 2, 6..7 flags u16 = 0, 8..11 table ID u32,
+ *     루트 본문: 0..3 magic "SLD2", 4..5 version u16 = 2, 6..7 flags u16 = 0, 8..11 table ID u32,
  *                12..15 예약 u32 = 0, 16..19 잎 수 u32(1..HEAP_DIRECTORY_ENTRIES), 20.. 잎 페이지 ID u32 배열, 뒤는 0.
- *     잎 본문: LHD3 본문에서 다음 페이지가 0이다. 마지막 잎을 뺀 모든 잎은 항목이 가득 차 있고
+ *     잎 본문: SLD3 본문에서 다음 페이지가 0이다. 마지막 잎을 뺀 모든 잎은 항목이 가득 차 있고
  *              i번째 잎이 i * HEAP_HINT_DIRECTORY_ENTRIES번째 항목부터 담는다.
  *
  * 행 형식(record 하나, version 1): 필드 1 + 2n개.
@@ -48,12 +48,13 @@
  *     2  OVERFLOW  TEXT·BLOB 컬럼만. payload는 BLOB 8바이트(head u32, size u32 little-endian)
  * 인코딩이 HEAP_INLINE_LIMIT_BYTES를 넘으면 16바이트를 넘는 TEXT·BLOB 중 큰 것부터 overflow로
  * 보낸다. 더 보낼 것이 없어도 HEAP_MAX_ROW_BYTES 이하이면 그대로 저장하고 넘으면 HEAP_LIMIT이다.
- * 컬럼은 HEAP_MAX_COLUMNS개까지.
+ * 컬럼은 HEAP_MAX_COLUMNS개까지(record codec의 필드 한계 1024에서 나온다). catalog가 새로 만드는 테이블의
+ * 컬럼 한도(CATALOG_MAX_CREATE_COLUMNS)는 이 값 이하여야 한다.
  * 알 수 없는 version·kind, 컬럼 타입과 맞지 않는 payload, 길이가 다른 overflow는 CORRUPT다.
  * 컬럼 타입은 catalog의 컬럼 타입이며 NOT NULL·VARCHAR 같은 제약은 이 모듈이 다루지 않는다.
  *
  * COW와 게시: 이미 commit된 상태에서 도달할 수 있는 페이지는 제자리에서 덮어쓰지 않는다.
- * 변경은 heap_batch_t에 모으고 바뀐 record page와 바뀐 디렉터리 페이지(LHD3은 한 장, LHD2는 루트와 바뀐 잎)를
+ * 변경은 heap_batch_t에 모으고 바뀐 record page와 바뀐 디렉터리 페이지(SLD3은 한 장, SLD2는 루트와 바뀐 잎)를
  * 새로 할당한 페이지에 쓴다. 바뀌지 않은 잎은 옛 페이지를 그대로 쓰므로 해제 목록에 넣지 않는다.
  * 호출자(database)의 순서:
  *   1. heap_batch_begin -> insert/update/delete -> heap_batch_finish (new_root와 해제 목록)
@@ -84,11 +85,11 @@
 #define HEAP_MAX_COLUMNS 511u
 #define HEAP_INLINE_LIMIT_BYTES 4000u
 #define HEAP_MAX_ROW_BYTES 8000u
-#define HEAP_TREE_ROOT_MAGIC "LHD2"
+#define HEAP_TREE_ROOT_MAGIC "SLD2"
 #define HEAP_TREE_ROOT_VERSION 2u
 #define HEAP_DIRECTORY_HEADER_BYTES 20u
 #define HEAP_DIRECTORY_ENTRIES ((PAGE_BODY_BYTES - HEAP_DIRECTORY_HEADER_BYTES) / 4u)
-#define HEAP_HINT_DIRECTORY_MAGIC "LHD3"
+#define HEAP_HINT_DIRECTORY_MAGIC "SLD3"
 #define HEAP_HINT_DIRECTORY_VERSION 3u
 #define HEAP_HINT_DIRECTORY_ENTRIES ((PAGE_BODY_BYTES - HEAP_DIRECTORY_HEADER_BYTES) / 6u)
 
@@ -218,9 +219,21 @@ heap_status_t heap_visit_text_key_range(heap_t *heap, text_key_range_t range,
                                         bool (*visit)(void *context, heap_locator_t locator), void *context,
                                         bool *stopped);
 bool heap_secondary_key_fits(const value_view_t *value);
+/*
+ * 보조 색인에서 value와 같은 항목의 locator를 visit에 넘긴다. visit이 false를 돌려주면 거기서 멈추고 HEAP_OK다.
+ * 멈춤은 오류가 아니며 멈춘 까닭은 호출자가 context로 안다. HEAP_NOMEM은 색인 읽기의 메모리 부족일 때만이다.
+ */
 heap_status_t heap_secondary_visit_equal(heap_t *heap, heap_secondary_spec_t spec,
                                          const value_view_t *value,
                                          bool (*visit)(void *context, heap_locator_t locator), void *context);
+/*
+ * 정수 열의 보조 색인에서 값이 low 이상 high 이하인 항목의 locator를 (값, 꼬리) 오름차순으로 visit에 넘긴다. ordered
+ * 색인이면 같은 값 안에서 정수 기본 키 순서다. NULL 값은 색인에 없으므로 방문하지 않는다. visit이 false를 돌려주면
+ * 멈추고 *stopped가 true이며 HEAP_OK다. 열의 형식이 정수가 아니면 호출자가 부르지 않는다(값 인코딩이 정수 순서다).
+ */
+heap_status_t heap_secondary_visit_range(heap_t *heap, heap_secondary_spec_t spec, int64_t low, int64_t high,
+                                         bool (*visit)(void *context, heap_locator_t locator), void *context,
+                                         bool *stopped);
 /* 색인에 있는 가장 큰 키. 비어 있으면 *present가 false다. */
 heap_status_t heap_max_key(heap_t *heap, bool *present, int64_t *key);
 void heap_release_row(const heap_t *heap, value_t *row);

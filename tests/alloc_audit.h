@@ -14,6 +14,8 @@
 extern size_t audit_live;
 extern size_t audit_peak;
 extern size_t audit_calls;
+extern size_t audit_attempts;
+extern size_t audit_fail_at;
 extern size_t audit_max_single;
 /* 할당이 성공으로 반영된 직후(live가 갱신된 뒤) 불린다 */
 extern void (*audit_on_alloc)(void *ctx, size_t request, size_t live);

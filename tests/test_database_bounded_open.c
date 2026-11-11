@@ -26,7 +26,7 @@
  * 이 검사는 치환해 빌드한 모듈이 실행한 경로에 대한 것이며 프로그램 전체의 한도 준수 증명이 아니다.
  */
 
-#define DIR_NAME "build/test_bounded_open_dir"
+#define DIR_NAME STREAMLITE_TEST_BUILD_DIR "/test_bounded_open_dir"
 
 static int g_run, g_fail;
 #define CHECK(cond, ...)                              \
@@ -128,7 +128,7 @@ static void clean_dir(void)
         }
         closedir(dir);
     }
-    mkdir("build", 0755);
+    mkdir(STREAMLITE_TEST_BUILD_DIR, 0755);
     mkdir(DIR_NAME, 0755);
 }
 
@@ -167,7 +167,7 @@ static bool exists(const char *path)
 static void test_success_accounts_resident_and_reserves_before_allocating(void)
 {
     printf("[success]\n");
-    const char *path = DIR_NAME "/a.totedb";
+    const char *path = DIR_NAME "/a.streamlite";
     make_fixture(path, 6);
     tracker_t t;
     tracker_init(&t, SIZE_MAX);
@@ -193,7 +193,7 @@ static void test_success_accounts_resident_and_reserves_before_allocating(void)
 static void test_refusal_is_exact_and_leaves_nothing(void)
 {
     printf("[refusal]\n");
-    const char *path = DIR_NAME "/b.totedb";
+    const char *path = DIR_NAME "/b.streamlite";
     make_fixture(path, 6);
     tracker_t probe;
     tracker_init(&probe, SIZE_MAX);
@@ -250,11 +250,11 @@ static void test_failed_opens_release_everything(void)
     database_t *db = NULL;
 
     watch(&t);
-    database_status_t missing = database_open_bounded(DIR_NAME "/none.totedb", true, &ledger, &db);
+    database_status_t missing = database_open_bounded(DIR_NAME "/none.streamlite", true, &ledger, &db);
     CHECK(missing != DATABASE_OK && db == NULL, "없는 파일");
     CHECK(t.used == 0 && audit_calls == 0, "없는 파일: reserve %zu 할당 %zu번", t.used, audit_calls);
 
-    const char *garbage = DIR_NAME "/garbage.totedb";
+    const char *garbage = DIR_NAME "/garbage.streamlite";
     FILE *file = fopen(garbage, "wb");
     assert(file != NULL);
     for (int i = 0; i < 3 * 8192; i++) fputc(i % 251, file);
@@ -266,7 +266,7 @@ static void test_failed_opens_release_everything(void)
     CHECK(audit_live == 0, "손상 파일 뒤 살아 있는 할당 %zu", audit_live);
 
     /* 다른 핸들이 쓰기 작업(배타 잠금) 중이면 대기 상한 뒤 LOCKED이고 reserve는 돌아온다 */
-    const char *path = DIR_NAME "/lock.totedb";
+    const char *path = DIR_NAME "/lock.streamlite";
     make_fixture(path, 2);
     database_t *first = NULL;
     assert(database_open(path, true, &first) == DATABASE_OK);
@@ -290,7 +290,7 @@ static void test_failed_opens_release_everything(void)
 static void test_huge_catalog_size_is_rejected_before_allocating(void)
 {
     printf("[huge catalog size]\n");
-    const char *path = DIR_NAME "/huge.totedb";
+    const char *path = DIR_NAME "/huge.streamlite";
     make_fixture(path, 2);
     page_file_t *file = NULL;
     assert(page_file_open(path, true, &file, NULL) == PAGE_FILE_OK);
@@ -351,8 +351,8 @@ static void race_hook(void *ctx)
 static void test_replacement_and_growth_after_open_do_not_bypass_admission(void)
 {
     printf("[race]\n");
-    const char *path = DIR_NAME "/race.totedb";
-    const char *big = DIR_NAME "/race_big.totedb";
+    const char *path = DIR_NAME "/race.streamlite";
+    const char *big = DIR_NAME "/race_big.streamlite";
     make_fixture(path, 2);
     make_fixture(big, 60);
 
@@ -395,7 +395,7 @@ static void test_replacement_and_growth_after_open_do_not_bypass_admission(void)
     CHECK(g.used == 0 && audit_live == 0, "성장 뒤 reserve %zu 할당 %zu", g.used, audit_live);
 
     /* 이미 자란 파일(8MiB)은 페이지 수 상한이 커져 작은 파일에 맞춘 예산으로는 거절된다. 크기는 열린 fd의 것이다 */
-    const char *small_path = DIR_NAME "/race_small.totedb";
+    const char *small_path = DIR_NAME "/race_small.streamlite";
     make_fixture(small_path, 2);
     tracker_t small_probe;
     tracker_init(&small_probe, SIZE_MAX);
@@ -426,7 +426,7 @@ static void test_replacement_and_growth_after_open_do_not_bypass_admission(void)
 static void test_create_bounded(void)
 {
     printf("[create]\n");
-    const char *path = DIR_NAME "/created.totedb";
+    const char *path = DIR_NAME "/created.streamlite";
     unlink(path);
     tracker_t probe;
     tracker_init(&probe, SIZE_MAX);
@@ -475,7 +475,7 @@ int main(void)
     clean_dir();
     audit_reset();
     database_t *db = NULL;
-    assert(database_create(DIR_NAME "/probe.totedb", &db) == DATABASE_OK);
+    assert(database_create(DIR_NAME "/probe.streamlite", &db) == DATABASE_OK);
     size_t calls = audit_calls;
     database_close(db);
     if (calls == 0) {

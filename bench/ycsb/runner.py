@@ -139,7 +139,7 @@ def environment() -> dict[str, Any]:
         "ts_utc": timestamp(),
         "versions": json.loads(
             subprocess.check_output(
-                java_command("org.totedb.ycsb.Tool", "version"), cwd=ROOT, text=True
+                java_command("org.streamlite.ycsb.Tool", "version"), cwd=ROOT, text=True
             )
         ),
     }
@@ -198,7 +198,7 @@ def client(
         "site.ycsb.Client",
         "-load" if phase == "load" else "-t",
         "-db",
-        "org.totedb.ycsb.SqlBinding",
+        "org.streamlite.ycsb.SqlBinding",
         "-P",
         str(SOURCE / "workloads" / ("workload" + condition["workload"].lower())),
         "-P",
@@ -229,7 +229,7 @@ def audit(
     audit_dir = directory / ("audit-" + label)
     audit_dir.mkdir()
     result = process(
-        java_command("org.totedb.ycsb.Tool", *arguments), audit_dir, timeout
+        java_command("org.streamlite.ycsb.Tool", *arguments), audit_dir, timeout
     )
     write_json(audit_dir / "process.json", result)
     if result["exit_code"] != 0 or result["timeout"]:
@@ -249,7 +249,7 @@ def create_baseline(
     setup = directory / "setup"
     setup.mkdir()
     setup_result = process(
-        java_command("org.totedb.ycsb.Tool", "setup", engine, str(database)),
+        java_command("org.streamlite.ycsb.Tool", "setup", engine, str(database)),
         setup,
         timeout,
     )
@@ -415,12 +415,12 @@ def collect(
     try:
         baselines = {}
         for records in sizes:
-            for engine in ("totedb", "sqlite"):
+            for engine in ("streamlite", "sqlite"):
                 baselines[(records, engine)] = create_baseline(
                     engine, records, work, raw, timeout
                 )
             if (
-                baselines[(records, "totedb")]["audit"]["sha256"]
+                baselines[(records, "streamlite")]["audit"]["sha256"]
                 != baselines[(records, "sqlite")]["audit"]["sha256"]
             ):
                 raise RuntimeError("baseline canonical digest differs between engines")
@@ -428,9 +428,9 @@ def collect(
             for repetition in range(repetitions + 1):
                 phase = "preflight" if repetition == 0 else "measured"
                 engines = (
-                    ("totedb", "sqlite")
+                    ("streamlite", "sqlite")
                     if repetition == 0 or repetition % 2 == 1
-                    else ("sqlite", "totedb")
+                    else ("sqlite", "streamlite")
                 )
                 for engine in engines:
                     condition = {

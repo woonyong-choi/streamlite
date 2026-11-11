@@ -187,7 +187,7 @@ def summarize(
             engine: _engine_summary(
                 [trial for trial in measured if trial["condition"]["engine"] == engine]
             )
-            for engine in ("totedb", "sqlite")
+            for engine in ("streamlite", "sqlite")
         }
         pairs: dict[int, dict[str, float]] = {}
         for trial in measured:
@@ -197,7 +197,7 @@ def summarize(
                 trial["metrics"]["ycsb"]["OVERALL"]["Throughput(ops/sec)"]
             )
         ratios = [
-            pair["totedb"] / pair["sqlite"]
+            pair["streamlite"] / pair["sqlite"]
             for _, pair in sorted(pairs.items())
             if len(pair) == 2 and pair["sqlite"] > 0
         ]
@@ -337,7 +337,7 @@ def read_records(raw: Path) -> tuple[list[dict[str, Any]], int]:
             manifest["workloads"],
             manifest["threads"],
             range(repetitions + 1),
-            ("totedb", "sqlite"),
+            ("streamlite", "sqlite"),
         )
     }
     records = []

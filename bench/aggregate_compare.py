@@ -1,9 +1,9 @@
 """반복 이벤트 집계를 같은 데이터·같은 SQL로 비교한다(#42). 합성 데이터만 쓴다.
 
-비교 대상: 이 엔진(totedb), SQLite(색인 없음), SQLite + 커버링 색인, DuckDB(설치돼 있을 때).
+비교 대상: 이 엔진(streamlite), SQLite(색인 없음), SQLite + 커버링 색인, DuckDB(설치돼 있을 때).
 모든 엔진의 결과가 같아야 시간을 기록한다. 시간은 Python 호출을 포함한 왕복이며 판정에 쓰지 않는다.
 
-    TOTEDB_LIB=build/lib/libtotedb.so PYTHONPATH=python python3 bench/aggregate_compare.py --rows 100000
+    STREAMLITE_LIB=build/lib/libstreamlite.so PYTHONPATH=python python3 bench/aggregate_compare.py --rows 100000
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from totedb import Database
+from streamlite import Database
 
 KINDS = 16
 USERS = 1000
@@ -108,7 +108,7 @@ def main() -> int:
     rows = make_rows(args.rows)
     with tempfile.TemporaryDirectory(prefix="aggcmp-") as tmp:
         engines = {
-            "lrn": run_ours(Path(tmp) / "ours.totedb", rows, args.repeats),
+            "lrn": run_ours(Path(tmp) / "ours.streamlite", rows, args.repeats),
             "sqlite": run_sqlite(Path(tmp) / "plain.db", rows, args.repeats, covering=False),
             "sqlite_covering": run_sqlite(Path(tmp) / "covering.db", rows, args.repeats, covering=True),
         }

@@ -54,7 +54,7 @@ static ssize_t counting_pwrite(int fd, const void *buf, size_t size, off_t offse
     return pwrite(fd, buf, size, offset);
 }
 
-static const page_file_io_t COUNTING = {counting_pread, counting_pwrite, fsync, link, unlink};
+static const page_file_io_t COUNTING = {counting_pread, counting_pwrite, fsync, link, unlink, NULL};
 static const value_type_t TYPES[2] = {VALUE_INTEGER, VALUE_BLOB};
 
 typedef struct {
@@ -73,7 +73,7 @@ static double now_ms(void)
 
 static void db_create(db_t *db, const char *dir, int tag)
 {
-    snprintf(db->path, sizeof(db->path), "%s/m%d.totedb", dir, tag);
+    snprintf(db->path, sizeof(db->path), "%s/m%d.streamlite", dir, tag);
     unlink(db->path);
     assert(page_file_create(db->path, &db->file) == PAGE_FILE_OK);
     assert(catalog_open_empty(&db->catalog) == CATALOG_OK);

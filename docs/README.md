@@ -1,6 +1,6 @@
 # 문서
 
-StreamLite를 사용하거나 내부 구현을 수정할 때 참고하는 공개 문서다. 현재 배포·API의 ToteDB 명칭은 유지한다. 문서는 한국어로 쓴다. 처음 사용한다면 메인 README에서 설치와 사용 예를 보고, 구현을 바꾸려면 아키텍처에서 전체 구조를 먼저 읽는다.
+StreamLite를 사용하거나 내부 구현을 수정할 때 참고하는 공개 문서다. 배포·설치 이름과 Python import는 `streamlite`, C API는 `streamlite_*`, 공유 라이브러리는 `libstreamlite`다. DB 파일은 `STREAMLITE` 16바이트 magic·형식 4·`SLPG` envelope의 StreamLite 형식만 쓰며 이전 형식 reader·변환기나 이전 이름의 별칭은 제공하지 않는다. 과거 릴리스·측정 기록의 ToteDB 표기는 당시 이름이다. 문서는 한국어로 쓴다. 처음 사용한다면 메인 README에서 설치와 사용 예를 보고, 구현을 바꾸려면 아키텍처에서 전체 구조를 먼저 읽는다.
 
 ## 사용과 API
 

@@ -30,20 +30,20 @@ def test_public_additional_analysis_has_explicit_descriptive_boundaries() -> Non
     database = {
         "groups": [
             {
-                "engine": "tote",
+                "engine": "streamlite",
                 "workload": "atomic-outbox",
                 "payload_bytes": 256,
                 "ops_per_s": {"median": 100},
             },
             {
-                "engine": "tote",
+                "engine": "streamlite",
                 "workload": "atomic-outbox-batch",
                 "payload_bytes": 256,
                 "ops_per_s": {"median": 400},
             },
         ]
     }
-    identity = {"engine": "totedb", "n": 2, "payload_bytes": 256}
+    identity = {"engine": "streamlite", "n": 2, "payload_bytes": 256}
     queues = {
         "groups": [identity],
         "trials": [
@@ -84,7 +84,7 @@ def test_public_export_cannot_write_into_original_artifact(tmp_path: Path) -> No
 def measured_rows() -> list[dict[str, Any]]:
     rows = []
     for repeat in range(1, 6):
-        for engine, elapsed_ns in (("tote", 1_000_000_000), ("lmdb", 2_000_000_000)):
+        for engine, elapsed_ns in (("streamlite", 1_000_000_000), ("lmdb", 2_000_000_000)):
             rows.append(
                 {
                     "engine": engine,
@@ -166,10 +166,10 @@ def test_analyze_hand_calculated_throughput_latency_and_pairing(
         measured_rows,
         [{"engine": engine, "status": "PASS"} for engine in compare.ENGINES],
     )
-    tote = next(
+    streamlite = next(
         group
         for group in result["groups"]
-        if group["engine"] == "tote" and group["pass_count"]
+        if group["engine"] == "streamlite" and group["pass_count"]
     )
     ratio = next(
         row
@@ -177,8 +177,8 @@ def test_analyze_hand_calculated_throughput_latency_and_pairing(
         if row["engine"] == "lmdb" and row["status"] == "PASS"
     )
 
-    assert tote["ops_per_s"] == {"median": 512.0, "min": 512.0, "max": 512.0}
-    assert tote["per_trial"][0]["transaction_latency_ns"] == {
+    assert streamlite["ops_per_s"] == {"median": 512.0, "min": 512.0, "max": 512.0}
+    assert streamlite["per_trial"][0]["transaction_latency_ns"] == {
         "p50": 200,
         "p95": 290,
         "p99": 298,
@@ -312,20 +312,20 @@ def test_actual_small_worker_exact_audit_and_durability(
     )
     library = Path(
         os.environ.get(
-            "TOTEDB_LIB",
+            "STREAMLITE_LIB",
             root
-            / "build/totedb-native-release/lib"
-            / ("libtotedb.dylib" if sys.platform == "darwin" else "libtotedb.so"),
+            / "build/streamlite-native-release/lib"
+            / ("libstreamlite.dylib" if sys.platform == "darwin" else "libstreamlite.so"),
         )
     )
     if engine in {"duckdb", "lmdb", "rocksdb"} and not deps.exists():
         pytest.skip("native dependency smoke requires explicitly installed pinned deps")
-    if engine == "tote" and not library.exists():
+    if engine == "streamlite" and not library.exists():
         pytest.skip("native smoke requires prebuilt release library")
     env = dict(
         os.environ,
         PYTHONPATH=os.pathsep.join((str(root / "python"), str(deps))),
-        TOTEDB_LIB=str(library),
+        STREAMLITE_LIB=str(library),
         PYTHONNOUSERSITE="1",
         LOCAL_DB_DEPS=str(deps),
     )

@@ -28,8 +28,9 @@
  *     평가 순서는 SQL 표준·PostgreSQL도 약속하지 않으므로 오류가 날 수 있는 조건은 CASE로 막아야 한다.
  *   - 집계 COUNT·SUM·AVG·MIN·MAX는 이 모듈이 계산하지 않는다. 실행기가 그룹마다 접어 match로 넘긴다.
  *   - 서브쿼리 결과는 subquery 훅이 준다. 바깥 열을 보는 서브쿼리는 평가할 때마다 refresh로 다시 계산한다.
- *   - 함수: ABS, LENGTH(글자 수, BLOB은 바이트 수), LOWER, UPPER(ASCII), SUBSTR(x, 시작[, 길이])(글자 단위,
- *     시작이 1보다 작으면 그만큼 길이를 줄인다), TRIM·LTRIM·RTRIM(x[, 문자들]), REPLACE, COALESCE, NULLIF.
+ *   - 함수: ABS, LENGTH(글자 수, BLOB은 바이트 수), LOWER, UPPER(ASCII), SUBSTR(x, 시작[, 길이])(글자 단위. SQLite와
+ *     같다: 음수 시작은 끝에서 세고, 시작 0은 첫 글자 앞 자리이며, 음수 길이는 시작 앞의 글자들이다. PostgreSQL은
+ *     음수 시작을 1 앞에서 세고 음수 길이를 거절한다), TRIM·LTRIM·RTRIM(x[, 문자들]), REPLACE, COALESCE, NULLIF.
  */
 
 typedef enum {
@@ -103,6 +104,18 @@ typedef sqleval_status_t (*sqleval_subquery_fn)(void *ctx, const sqlexpr_t *expr
 typedef bool (*sqleval_outer_fn)(void *ctx, const sqlstmt_name_t *qualifier, const sqlstmt_name_t *name,
                                  value_type_t *type, const value_t **cell);
 
+/*
+ * 메모리 회계 훅(선택). 프로그램(노드·인자 자리 배열)과 계산 중에 만드는 TEXT·BLOB 중간값·작업 buffer를 할당하기
+ * 전에 reserve하고 해제한 뒤 release한다. reserve가 false면 SQLEVAL_NOMEM이며 그 할당은 하지 않는다. sqleval_run의
+ * 결과 값(*out)은 계상하지 않은 채 넘기므로 호출자가 자기 몫으로 계상한다. reserve가 NULL이면 계상하지 않는다.
+ * ctx는 프로그램보다 오래 살아야 한다. 요청 바이트 기준이다.
+ */
+typedef struct {
+    bool (*reserve)(void *ctx, size_t bytes);
+    void (*release)(void *ctx, size_t bytes);
+    void *ctx;
+} sqleval_memory_t;
+
 /* 컴파일 환경. resolve·match는 ctx를, subquery·outer는 subquery_ctx를 받는다. 없는 훅은 NULL */
 typedef struct {
     sqleval_resolve_fn resolve;   /* NULL이면 열을 쓸 수 없다(상수식) */
@@ -111,6 +124,7 @@ typedef struct {
     sqleval_subquery_fn subquery; /* NULL이면 서브쿼리를 쓸 수 없다 */
     void *subquery_ctx;
     sqleval_outer_fn outer;       /* NULL이면 바깥 열을 볼 수 없다 */
+    sqleval_memory_t memory;      /* 프로그램이 사본을 쥔다 */
 } sqleval_env_t;
 
 typedef struct sqleval_prog sqleval_prog_t;
@@ -133,7 +147,7 @@ void sqleval_mark_columns(const sqleval_prog_t *prog, bool *needed, size_t colum
 
 /*
  * row[i]가 열 i의 값인 행에 대해 계산한다. 결과는 *out에 담기며 호출자가 value_clear한다(실패하면 *out은 NULL).
- * TEXT·BLOB 결과 크기가 max_bytes를 넘으면 LIMIT이다.
+ * TEXT·BLOB 결과 크기가 VALUE_MAX_BYTES를 넘으면 LIMIT, 메모리 훅이 거절하면 NOMEM이다.
  */
 sqleval_status_t sqleval_run(const sqleval_prog_t *prog, const value_t *row, value_t *out, sqleval_error_t *error);
 /* 조건 판정. 참이면 *truth가 true, 거짓·NULL이면 false */

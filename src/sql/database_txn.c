@@ -14,6 +14,12 @@ typedef struct {
     uint32_t autocommit_timeout_ms;
 } layer_t;
 
+/* 이 열기의 동기화 단계가 달성하는 보증. OFF는 동기화하지 않으므로 VISIBLE이다 */
+static txn_guarantee_t layer_guarantee(const layer_t *l)
+{
+    return database_durability(l->db) == DATABASE_DURABILITY_OFF ? TXN_GUARANTEE_VISIBLE : TXN_GUARANTEE_DURABLE;
+}
+
 struct database_txn {
     layer_t *layer;
     txn_t *txn;
@@ -37,13 +43,50 @@ static database_exec_status_t error_from_txn(database_t *db, const database_exec
     }
 }
 
-/* 트랜잭션 밖에서 들어온 문장. 문장마다 자동 commit이다 */
+/*
+ * 문장이 SELECT로 시작하는지. 앞의 공백과 주석(-- 줄, 블록)은 건너뛴다. 확실하지 않으면(괄호로 시작하는 문장 등) false라
+ * 이전처럼 쓰기 거래로 실행한다. SELECT만 고르므로 잘못 골라도 읽기 실행이 변경 문장을 BUSY로 거절할 뿐 반영하지 않는다.
+ */
+static bool starts_with_select(const uint8_t *sql, size_t size)
+{
+    size_t i = 0;
+    for (;;) {
+        while (i < size && (sql[i] == ' ' || sql[i] == '\t' || sql[i] == '\n' || sql[i] == '\r' || sql[i] == '\f')) i++;
+        if (i + 1 < size && sql[i] == '-' && sql[i + 1] == '-') {
+            while (i < size && sql[i] != '\n') i++;
+            continue;
+        }
+        if (i + 1 < size && sql[i] == '/' && sql[i + 1] == '*') {
+            i += 2;
+            while (i + 1 < size && !(sql[i] == '*' && sql[i + 1] == '/')) i++;
+            if (i + 1 >= size) return false;
+            i += 2;
+            continue;
+        }
+        break;
+    }
+    static const char WORD[] = "select";
+    for (size_t k = 0; k < sizeof(WORD) - 1; k++) {
+        if (i + k >= size || (sql[i + k] | 0x20) != WORD[k]) return false;
+    }
+    size_t end = i + sizeof(WORD) - 1;
+    if (end == size) return true;
+    uint8_t next = sql[end];
+    return !((next >= 'a' && next <= 'z') || (next >= 'A' && next <= 'Z') || (next >= '0' && next <= '9') || next == '_' ||
+             next >= 0x80);
+}
+
+/*
+ * 트랜잭션 밖에서 들어온 문장. 문장마다 자동 commit이다. SELECT는 쓰기 거래와 writer 잠금 없이 게시된 상태를 공유
+ * 잠금으로 읽는다(읽기 스냅샷). 그래서 자동 commit 조회가 다른 핸들·프로세스의 쓰기를 막지 않는다.
+ */
 static database_exec_status_t layer_exec(void *ctx, database_t *db, const database_exec_options_t *opts,
                                          const uint8_t *sql, size_t size, const lexer_binding_t *binding,
                                          result_t **out)
 {
     layer_t *l = ctx;
-    txn_begin_options_t begin = {TXN_ACCESS_READ_WRITE, TXN_ISOLATION_SNAPSHOT, TXN_GUARANTEE_DURABLE,
+    if (sql != NULL && starts_with_select(sql, size)) return database_exec_read_only(db, opts, sql, size, binding, out);
+    txn_begin_options_t begin = {TXN_ACCESS_READ_WRITE, TXN_ISOLATION_SNAPSHOT, layer_guarantee(l),
                                  l->autocommit_timeout_ms, NULL};
     txn_t *txn = NULL;
     txn_status_t st = txn_begin(l->manager, &begin, &txn);
@@ -108,8 +151,9 @@ static txn_status_t be_write_begin(void *ctx, uint64_t base_seq, void **write)
 }
 
 /*
- * 게시는 COW다. 새 페이지와 카탈로그를 쓰고 fsync한 뒤 제어 페이지 한 장으로 세대를 바꾸고 다시 fsync한다.
- * 성공을 돌려준 게시는 프로세스·OS 종료 뒤에도 남으므로 요청한 보증과 무관하게 DURABLE을 달성한다.
+ * 게시는 COW다. 새 페이지와 카탈로그를 쓰고 제어 페이지 한 장으로 세대를 바꾼 뒤 동기화한다. NORMAL·FULL 단계에서 성공을
+ * 돌려준 게시는 프로세스·OS 종료 뒤에도 남으므로 요청한 보증과 무관하게 DURABLE을 달성한다. OFF 단계는 동기화하지 않아
+ * VISIBLE이다(begin이 요청을 그 단계로 낮춘다).
  */
 static txn_publish_result_t be_publish(void *ctx, void *write, uint64_t commit_seq, txn_guarantee_t requested)
 {
@@ -119,7 +163,7 @@ static txn_publish_result_t be_publish(void *ctx, void *write, uint64_t commit_s
     (void)requested;
     if (database_work_failed(l->db)) return (txn_publish_result_t){TXN_OUTCOME_NOT_APPLIED, TXN_GUARANTEE_VISIBLE};
     database_work_result_t r = database_work_commit(l->db);
-    if (r.outcome == DATABASE_WORK_APPLIED) return (txn_publish_result_t){TXN_OUTCOME_APPLIED, TXN_GUARANTEE_DURABLE};
+    if (r.outcome == DATABASE_WORK_APPLIED) return (txn_publish_result_t){TXN_OUTCOME_APPLIED, layer_guarantee(l)};
     txn_outcome_t outcome = r.outcome == DATABASE_WORK_UNKNOWN ? TXN_OUTCOME_UNKNOWN : TXN_OUTCOME_NOT_APPLIED;
     return (txn_publish_result_t){outcome, TXN_GUARANTEE_VISIBLE};
 }
@@ -153,6 +197,8 @@ txn_status_t database_txn_begin(database_t *db, const txn_begin_options_t *optio
     if (l == NULL) return TXN_UNSUPPORTED;
     txn_begin_options_t o = options != NULL ? *options : (txn_begin_options_t){0};
     if (o.access != TXN_ACCESS_READ_WRITE) return TXN_UNSUPPORTED;
+    /* 알 수 없는 값은 낮추지 않고 txn_begin이 거절하게 둔다 */
+    if (o.guarantee <= TXN_GUARANTEE_DURABLE && o.guarantee > layer_guarantee(l)) o.guarantee = layer_guarantee(l);
     database_txn_t *t = calloc(1, sizeof(*t));
     if (t == NULL) return TXN_NOMEM;
     txn_status_t st = txn_begin(l->manager, &o, &t->txn);
@@ -394,9 +440,14 @@ database_status_t database_open_transactional(const char *path, const database_t
     static const database_txn_options_t defaults = {0};
     if (options == NULL) options = &defaults;
 
+    if (options->durability != DATABASE_DURABILITY_NORMAL && options->durability != DATABASE_DURABILITY_FULL &&
+        options->durability != DATABASE_DURABILITY_OFF) {
+        return DATABASE_INVALID;
+    }
     database_t *db = NULL;
     database_status_t st = database_open(path, true, &db);
     if (st != DATABASE_OK) return st;
+    database_set_durability(db, options->durability);
     layer_t *l = calloc(1, sizeof(*l));
     if (l == NULL) {
         database_close(db);

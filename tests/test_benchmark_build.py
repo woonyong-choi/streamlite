@@ -14,7 +14,7 @@ from setuptools.command.build_py import build_py
 from tools.verify_benchmark import verify_library
 
 ROOT = Path(__file__).resolve().parents[1]
-LIBRARY = "libtotedb.dylib" if sys.platform == "darwin" else "libtotedb.so"
+LIBRARY = "libstreamlite.dylib" if sys.platform == "darwin" else "libstreamlite.so"
 
 
 class BenchmarkBuildTest(unittest.TestCase):
@@ -150,25 +150,25 @@ class BenchmarkBuildTest(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
-                for engine in ("tote", "sqlite-each", "sqlite-reuse"):
+                for engine in ("streamlite", "sqlite-each", "sqlite-reuse"):
                     payload = json.loads((output / f"{engine}.json").read_text())
                     self.assertEqual(payload["completed"], 12)
                     self.assertEqual(payload["validated_persisted_counter"], 12)
-                    expected_records = 36 if mode == "1" and engine == "tote" else 0
+                    expected_records = 36 if mode == "1" and engine == "streamlite" else 0
                     self.assertEqual(len(payload["records"]), expected_records)
                     for record in payload["records"]:
                         self.assertEqual(record["incomplete"], 0)
                         self.assertEqual(record["dropped"], 0)
                         self.assertIn(
                             record["operation"],
-                            ("tote_begin", "tote_exec", "tote_commit"),
+                            ("streamlite_begin", "streamlite_exec", "streamlite_commit"),
                         )
             header_change = subprocess.run(
                 [
                     "make",
                     "-n",
                     "-W",
-                    "include/totedb.h",
+                    "include/streamlite.h",
                     f"BUILD_DIR={native}",
                     "BENCHMARK=0",
                     "SANITIZE=",
@@ -187,7 +187,7 @@ class BenchmarkBuildTest(unittest.TestCase):
                     f"BUILD_DIR={native}",
                     "BENCHMARK=0",
                     "SANITIZE=",
-                    "CFLAGS=-Iinclude -DTEST_FLAG_CHANGE=1 -DTOTE_BENCHMARK",
+                    "CFLAGS=-Iinclude -DTEST_FLAG_CHANGE=1 -DSTREAMLITE_BENCHMARK",
                     str(target),
                 ],
                 capture_output=True,
@@ -195,7 +195,7 @@ class BenchmarkBuildTest(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("-UTOTE_BENCHMARK", result.stdout)
+            self.assertIn("-USTREAMLITE_BENCHMARK", result.stdout)
             self.assertGreater(target.stat().st_mtime_ns, previous)
             verify_library(target)
 
@@ -209,7 +209,7 @@ class BenchmarkBuildTest(unittest.TestCase):
             dir=ROOT / "build", prefix="benchmark-package-"
         ) as directory:
             build_lib = Path(directory) / "python"
-            native = Path(directory) / "totedb-native-release" / "lib" / LIBRARY
+            native = Path(directory) / "streamlite-native-release" / "lib" / LIBRARY
             native.parent.mkdir(parents=True)
             fixture = subprocess.run(
                 ["cc", "-shared", "-fPIC", "-x", "c", "-", "-o", str(native)],
@@ -250,7 +250,7 @@ class BenchmarkBuildTest(unittest.TestCase):
                 run.side_effect = skip_make
                 with self.assertRaisesRegex(ValueError, "benchmark symbol mismatch"):
                     command.run()
-            self.assertFalse((build_lib / "totedb" / LIBRARY).exists())
+            self.assertFalse((build_lib / "streamlite" / LIBRARY).exists())
             with (
                 patch.object(build_py, "run"),
                 patch.dict(
@@ -264,4 +264,4 @@ class BenchmarkBuildTest(unittest.TestCase):
                 ),
             ):
                 command.run()
-            verify_library(build_lib / "totedb" / LIBRARY)
+            verify_library(build_lib / "streamlite" / LIBRARY)

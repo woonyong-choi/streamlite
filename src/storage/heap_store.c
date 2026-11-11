@@ -11,6 +11,7 @@
 #include "storage/text_tree.h"
 #include "storage/record.h"
 #include "storage/record_page.h"
+#include "value_internal.h"
 
 _Static_assert(RECORD_PAGE_BYTES == PAGE_BODY_BYTES, "record page body must equal the page_file body");
 
@@ -21,6 +22,7 @@ _Static_assert(RECORD_PAGE_BYTES == PAGE_BODY_BYTES, "record page body must equa
 #define SPILL_MIN_BYTES 16u
 #define ROW_VERSION 1
 #define ROW_FIELDS(columns) (1u + 2u * (columns))
+_Static_assert(ROW_FIELDS(HEAP_MAX_COLUMNS) <= RECORD_MAX_FIELDS, "가장 넓은 행이 record codec의 필드 한계 안이어야 한다");
 
 enum { KIND_NULL = 0, KIND_INLINE = 1, KIND_OVERFLOW = 2 };
 
@@ -52,7 +54,7 @@ struct heap {
     uint32_t *dirs;         /* 디렉터리 페이지 ID: 트리면 루트 다음에 잎 순서 */
     size_t dir_count;
     size_t dir_cap;
-    bool is_tree;           /* true면 dirs[0]은 LHD2 루트이고 dirs[1..]이 잎이다. false면 dirs[0]이 잎 한 장이다 */
+    bool is_tree;           /* true면 dirs[0]은 SLD2 루트이고 dirs[1..]이 잎이다. false면 dirs[0]이 잎 한 장이다 */
     page_file_status_t last_status;
     bool indexed;           /* 키 색인을 쓴다(heap_index_spec_t) */
     size_t key_column;
@@ -290,6 +292,15 @@ static overflow_ref_t ref_from(const record_value_t *payload)
     return ref;
 }
 
+/*
+ * 참조의 크기를 계상·할당에 쓰기 전에 파일 크기와 대조한다. 체인은 페이지마다 page_bytes보다 적게 담으므로
+ * size / page_bytes장보다 길고, 그만큼의 페이지가 파일에 없으면 손상된 참조다.
+ */
+static bool overflow_ref_fits(const heap_t *heap, size_t page_bytes, overflow_ref_t ref)
+{
+    return ref.size_bytes / page_bytes < page_file_allocated_pages(heap->file);
+}
+
 static heap_status_t set_bytes_value(value_type_t type, const uint8_t *bytes, size_t size,
                                      value_t *out)
 {
@@ -354,6 +365,10 @@ static heap_status_t decode_row(heap_t *heap, const record_value_t *f, const boo
         if (kind->integer == KIND_NULL) continue;
         if (kind->integer == KIND_OVERFLOW) {
             overflow_ref_t ref = ref_from(payload);
+            if (!overflow_ref_fits(heap, io.page_bytes, ref)) {
+                result = HEAP_CORRUPT;
+                break;
+            }
             size_t transient = overflow_read_bound(io.page_bytes, ref.size_bytes);
             if (!acct_reserve(ledger, transient)) {
                 result = HEAP_NOMEM;
@@ -458,7 +473,7 @@ static heap_status_t check_directory_count(const uint8_t *body, bool leaf, uint3
     return memcmp(body + used, zero, PAGE_BODY_BYTES - used) == 0 ? HEAP_OK : HEAP_CORRUPT;
 }
 
-/* LHD3 잎 본문 하나를 entries·free_bytes 뒤에 붙인다. 마지막이 아닌 잎은 가득 차 있어야 한다. */
+/* SLD3 잎 본문 하나를 entries·free_bytes 뒤에 붙인다. 마지막이 아닌 잎은 가득 차 있어야 한다. */
 static heap_status_t parse_leaf(heap_t *heap, const uint8_t *body, bool is_last, bool allow_empty,
                                 u32_list_t *entries, u16_list_t *free_bytes)
 {
@@ -482,7 +497,7 @@ static heap_status_t parse_leaf(heap_t *heap, const uint8_t *body, bool is_last,
     return HEAP_OK;
 }
 
-/* LHD2 루트 본문(body)을 해석해 잎을 모두 읽는다. 루트 머리글의 어긋남은 첫 페이지 규칙대로 UNSUPPORTED다. */
+/* SLD2 루트 본문(body)을 해석해 잎을 모두 읽는다. 루트 머리글의 어긋남은 첫 페이지 규칙대로 UNSUPPORTED다. */
 static heap_status_t read_tree(heap_t *heap, uint32_t root, const uint8_t *body, u32_list_t *entries,
                                u16_list_t *free_bytes, u32_list_t *dirs)
 {
@@ -507,7 +522,7 @@ static heap_status_t read_tree(heap_t *heap, uint32_t root, const uint8_t *body,
 }
 
 /*
- * 디렉터리를 읽는다. 루트는 LHD3 잎 한 장이거나 LHD2 루트 아래 LHD3 잎들이다. 그 밖의 첫 페이지는
+ * 디렉터리를 읽는다. 루트는 SLD3 잎 한 장이거나 SLD2 루트 아래 SLD3 잎들이다. 그 밖의 첫 페이지는
  * UNSUPPORTED_LOCATOR다(이 모듈의 디렉터리가 아니다).
  */
 static heap_status_t read_directory(heap_t *heap)
@@ -1172,11 +1187,19 @@ heap_status_t heap_collect_pages_with_indexes(heap_t *heap, const uint32_t *root
                                                      collect_index_page, &index_collect);
         result = heap_from_pk(heap, visited);
     }
-    /* 색인 페이지를 넣은 뒤에 디렉터리·행 페이지 자리를 잡는다. 아래 두 반복은 자리를 다시 확인하지 않는다 */
+    /*
+     * 색인 페이지를 넣은 뒤에 디렉터리·행 페이지 자리를 한 번에 잡는다. 행의 overflow 체인이 같은 목록에 들어가
+     * 그 자리를 쓰므로 미리 잡은 자리에 기대지 않고 추가할 때마다 용량을 확인한다.
+     */
     if (result == HEAP_OK && !list_reserve(&list, heap->dir_count + heap->entry_count, ledger)) result = HEAP_NOMEM;
-    for (size_t i = 0; result == HEAP_OK && i < heap->dir_count; i++) list.items[list.len++] = heap->dirs[i];
+    for (size_t i = 0; result == HEAP_OK && i < heap->dir_count; i++) {
+        if (!list_push(&list, heap->dirs[i], ledger)) result = HEAP_NOMEM;
+    }
     for (size_t i = 0; result == HEAP_OK && i < heap->entry_count; i++) {
-        list.items[list.len++] = heap->entries[i];
+        if (!list_push(&list, heap->entries[i], ledger)) {
+            result = HEAP_NOMEM;
+            break;
+        }
         result = read_record_page(heap, heap->entries[i], page);
         if (result != HEAP_OK) break;
         uint16_t slots = le_get_u16(page + RECORD_PAGE_SLOT_COUNT_OFFSET);
@@ -1195,6 +1218,10 @@ heap_status_t heap_collect_pages_with_indexes(heap_t *heap, const uint32_t *root
                 overflow_io_t io = {&ctx, ctx.inner_io.page_bytes, collect_allocate, collect_release,
                                     collect_read, collect_write};
                 overflow_ref_t ref = ref_from(&fields[2 + 2 * c]);
+                if (!overflow_ref_fits(heap, io.page_bytes, ref)) {
+                    result = HEAP_CORRUPT;
+                    break;
+                }
                 size_t transient = overflow_free_bound(io.page_bytes, ref.size_bytes);
                 if (!acct_reserve(ledger, transient)) {
                     result = HEAP_NOMEM;
@@ -1496,6 +1523,21 @@ bool heap_secondary_key_fits(const value_view_t *value)
     return encode_secondary_key(value, (secondary_tail_t){false, &widest, {0, 0}}, key, &key_bytes) == HEAP_OK;
 }
 
+typedef struct {
+    bool (*visit)(void *context, heap_locator_t locator);
+    void *context;
+    bool halted;
+} equal_visit_t;
+
+/* callback이 멈춘 것을 적어 둔다. text_tree는 멈춤과 메모리 부족을 같은 PK_NOMEM으로 돌려주기 때문이다. */
+static bool visit_equal_entry(void *context, heap_locator_t locator)
+{
+    equal_visit_t *scan = context;
+    if (scan->visit(scan->context, locator)) return true;
+    scan->halted = true;
+    return false;
+}
+
 // cost: time O(d·log c + m), heap O(1), stack O(d), io O(d + m/c)
 // vars: d = 색인 깊이, c = 노드당 항목 수, m = 일치하는 locator 수
 // basis: estimate
@@ -1522,10 +1564,53 @@ heap_status_t heap_secondary_visit_equal(heap_t *heap, heap_secondary_spec_t spe
         checked = text_tree_find(&io, heap->table_id, spec.root, key, key_bytes, &locator);
         if (checked == PK_NOT_FOUND) return HEAP_OK;
         if (checked != PK_OK) return heap_from_pk(heap, checked);
-        return visit(context, locator) ? HEAP_OK : HEAP_NOMEM;
+        visit(context, locator);
+        return HEAP_OK;
     }
-    checked = text_tree_visit_prefix(&io, heap->table_id, spec.root, key, key_bytes, visit, context);
-    return heap_from_pk(heap, checked);
+    equal_visit_t scan = {visit, context, false};
+    checked = text_tree_visit_prefix(&io, heap->table_id, spec.root, key, key_bytes, visit_equal_entry, &scan);
+    return scan.halted ? HEAP_OK : heap_from_pk(heap, checked);
+}
+
+static bool visit_range_entry(void *context, const uint8_t *key, size_t key_bytes, heap_locator_t locator)
+{
+    (void)key;
+    (void)key_bytes;
+    return visit_equal_entry(context, locator);
+}
+
+// cost: time O(d·log c + m), heap O(1), stack O(d), io O(d + m/c)
+// vars: d = 색인 깊이, c = 노드당 항목 수, m = 방문한 항목 수
+// basis: estimate
+heap_status_t heap_secondary_visit_range(heap_t *heap, heap_secondary_spec_t spec, int64_t low, int64_t high,
+                                         bool (*visit)(void *context, heap_locator_t locator), void *context,
+                                         bool *stopped)
+{
+    if (heap == NULL || visit == NULL || stopped == NULL || spec.column >= heap->column_count) return HEAP_INVALID;
+    *stopped = false;
+    if (low > high) return HEAP_OK;
+    if (spec.root == PAGE_FILE_NO_PAGE) return heap->root == PAGE_FILE_NO_PAGE ? HEAP_OK : HEAP_CORRUPT;
+    pk_tree_io_t io = index_read_io(heap);
+    uint32_t stamp;
+    heap_status_t status = heap_from_pk(heap, text_tree_stamp(&io, heap->table_id, spec.root, &stamp));
+    if (status != HEAP_OK) return status;
+    if (stamp != heap->root) return HEAP_CORRUPT;
+    if (heap->stats != NULL) heap->stats->index_lookups++;
+    /* 값은 순서 보존 8바이트로 키 앞에 놓인다. [low, high+1) 구간의 키가 low 이상 high 이하인 값이다 */
+    uint8_t lower_key[8], upper_key[8];
+    put_ordered_integer(lower_key, low);
+    text_key_bound_t lower = {lower_key, sizeof(lower_key), true};
+    text_key_bound_t upper = {upper_key, sizeof(upper_key), false};
+    if (high != INT64_MAX) put_ordered_integer(upper_key, high + 1);
+    text_key_range_t bounds = {&lower, high != INT64_MAX ? &upper : NULL};
+    equal_visit_t scan = {visit, context, false};
+    bool halted = false;
+    pk_status_t visited = text_tree_visit_range(&io, heap->table_id, spec.root, bounds, visit_range_entry, &scan, &halted);
+    if (scan.halted) {
+        *stopped = true;
+        return HEAP_OK;
+    }
+    return heap_from_pk(heap, visited);
 }
 
 // cost: time O(d·log c), heap O(1), io O(d)
@@ -1943,16 +2028,10 @@ static heap_status_t check_values(const heap_t *heap, const value_view_t *values
             case VALUE_REAL:
                 if (!isfinite(v->real)) return HEAP_INVALID;
                 break;
-            case VALUE_TEXT: {
-                value_t probe = {{VALUE_NULL, 0, 0, NULL, 0}, false};
-                if (!acct_reserve(&heap->ledger, v->size_bytes)) return HEAP_NOMEM;
-                value_status_t status = value_clone(v, &probe);
-                value_clear(&probe);
-                acct_release(&heap->ledger, v->size_bytes);
-                if (status == VALUE_NOMEM) return HEAP_NOMEM;
-                if (status != VALUE_OK) return HEAP_INVALID;
+            case VALUE_TEXT:
+                /* 길이·포인터·UTF-8만 본다. 값을 복사하지 않는다 */
+                if (value_validate(v) != VALUE_OK) return HEAP_INVALID;
                 break;
-            }
             case VALUE_BLOB:
                 if (v->size_bytes > 0 && v->bytes == NULL) return HEAP_INVALID;
                 break;
@@ -2121,6 +2200,10 @@ static heap_status_t release_row_chains(heap_batch_t *batch, record_slice_t slic
     for (size_t i = 0; status == HEAP_OK && i < heap->column_count; i++) {
         if (fields[1 + 2 * i].integer != KIND_OVERFLOW) continue;
         overflow_ref_t ref = ref_from(&fields[2 + 2 * i]);
+        if (!overflow_ref_fits(heap, io.page_bytes, ref)) {
+            status = HEAP_CORRUPT;
+            break;
+        }
         size_t transient = overflow_free_bound(io.page_bytes, ref.size_bytes);
         if (!acct_reserve(&batch->ledger, transient)) {
             status = HEAP_NOMEM;
@@ -2402,8 +2485,8 @@ static void retire_old_directories(heap_batch_t *batch, size_t pages, const uint
 }
 
 /*
- * 바뀐 record page를 가리키는 새 디렉터리를 쓴다. 새 잎은 모두 LHD3이며 한 장의 한도를 넘으면
- * LHD2 루트 아래에 둔다. 트리 heap은 바뀐 잎과 루트만 새로 쓴다.
+ * 바뀐 record page를 가리키는 새 디렉터리를 쓴다. 새 잎은 모두 SLD3이며 한 장의 한도를 넘으면
+ * SLD2 루트 아래에 둔다. 트리 heap은 바뀐 잎과 루트만 새로 쓴다.
  */
 static heap_status_t publish_directories(heap_batch_t *batch, uint32_t *new_root)
 {

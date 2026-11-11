@@ -9,6 +9,8 @@
 size_t audit_live;
 size_t audit_peak;
 size_t audit_calls;
+size_t audit_attempts;
+size_t audit_fail_at;
 size_t audit_max_single;
 void (*audit_on_alloc)(void *ctx, size_t request, size_t live);
 void *audit_ctx;
@@ -46,6 +48,7 @@ void audit_reset(void)
 {
     pthread_mutex_lock(&audit_lock);
     audit_live = audit_peak = audit_calls = audit_max_single = 0;
+    audit_attempts = audit_fail_at = 0;
     audit_on_alloc = NULL;
     audit_ctx = NULL;
     audit_on_free = NULL;
@@ -69,6 +72,10 @@ static void note(size_t request)
 
 void *audit_malloc(size_t size)
 {
+    pthread_mutex_lock(&audit_lock);
+    bool should_fail = ++audit_attempts == audit_fail_at;
+    pthread_mutex_unlock(&audit_lock);
+    if (should_fail) return NULL;
     if (size > SIZE_MAX - sizeof(header_t)) return NULL;
     header_t *header = malloc(sizeof(header_t) + size);
     if (header == NULL) return NULL;

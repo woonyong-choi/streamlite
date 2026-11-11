@@ -15,6 +15,9 @@
 #include <string.h>
 #include "sql/database.h"
 #include "database_internal.h"
+#include "database_cache.h"
+#include "database_workspace.h"
+#include "../storage/page_workspace.h"
 #include "sql/sql_eval.h"
 #include "sql/sql_statement.h"
 #include "storage/catalog.h"
@@ -36,6 +39,19 @@ typedef struct {
     size_t cap;
 } page_list_t;
 
+typedef struct {
+    lexed_t *lexed;
+    sqlstmt_t *statement;
+    size_t lex_peak;
+    size_t parse_peak;
+} prepared_statement_t;
+
+database_exec_status_t database_prepare(database_t *db, const database_exec_options_t *options,
+                                        const uint8_t *sql, size_t size, const lexer_binding_t *binding,
+                                        prepared_statement_t *prepared);
+void database_prepared_clear(database_t *db, prepared_statement_t *prepared);
+void database_prepared_cache(database_t *db, const uint8_t *sql, size_t size, const prepared_statement_t *prepared);
+
 /* 쓰기 작업의 상태. database_internal.h의 설명을 따른다 */
 typedef struct {
     bool active;
@@ -45,6 +61,7 @@ typedef struct {
     page_list_t old_committed;   /* 게시된 상태가 가리키고 작업이 대체한 페이지. 게시 성공 뒤에만 놓는다 */
     size_t res_cat;              /* resident로 계상한 작업 카탈로그 몫 */
     size_t res_lists;            /* resident로 계상한 위 목록들의 상한 */
+    page_workspace_t pages;
 } work_state_t;
 
 struct database {
@@ -52,6 +69,10 @@ struct database {
     catalog_t *catalog;   /* 게시된 카탈로그. 문장이 성공했을 때만 교체한다 */
     bool writable;
     bool poisoned;
+    int cache_mode;
+    database_cache_t *cache;
+    int workspace_mode;
+    database_workspace_stats_t workspace_stats;
     /* 상주 메모리 회계(attach된 경우) */
     mem_ledger_t resident;
     size_t res_fixed;
@@ -373,6 +394,7 @@ database_exec_status_t fail_result(database_t *db, result_error_class_t error_cl
                                           const char *format, ...);
 int name_len(size_t size);
 database_exec_status_t heap_failure(database_t *db, heap_status_t status, const char *where);
+database_exec_status_t index_failure(database_t *db, heap_status_t status, const char *where);
 database_exec_status_t cancelled_result(database_t *db);
 void clear_cells(value_t *cells, size_t count);
 bool lookup_table(database_t *db, const sqlstmt_name_t *name, catalog_table_id_t *id,
@@ -385,6 +407,7 @@ heap_status_t configure_secondary(heap_batch_t *batch, const catalog_t *catalog,
                                          catalog_table_id_t table_id);
 void work_close(database_t *db, work_t *work);
 bool work_clone(database_t *db, work_t *work);
+bool work_reserve_catalog(database_t *db, const work_t *work, size_t peak);
 void work_settle(database_t *db, work_t *work, size_t peak);
 database_exec_status_t publish(database_t *db, work_t *work, catalog_table_id_t id,
                                       heap_batch_t *batch,
@@ -398,6 +421,7 @@ size_t resolve_column(void *ctx, const sqlstmt_name_t *qualifier, const sqlstmt_
                              value_type_t *type);
 size_t source_of(const resolver_t *r, size_t column);
 database_exec_status_t eval_failure(database_t *db, const sqleval_error_t *error);
+sqleval_memory_t eval_memory(database_t *db);
 bool compile_expr(database_t *db, const sqlexpr_t *expr, const resolver_t *resolver, sqleval_prog_t **prog,
                          database_exec_status_t *status);
 void where_clear(database_t *db, where_t *where);
@@ -453,6 +477,8 @@ bool constant_count(database_t *db, const sqlexpr_t *expr, bool *present, uint64
                            database_exec_status_t *status);
 size_t key_probe(const catalog_table_view_t *view, const heap_t *heap, const where_t *where);
 size_t key_range(const catalog_table_view_t *view, const heap_t *heap, const where_t *where);
+size_t secondary_range(database_t *db, const catalog_table_view_t *view, catalog_table_id_t table_id,
+                       const where_t *where, heap_secondary_spec_t *spec);
 size_t text_key_range(const catalog_table_view_t *view, const heap_t *heap, const where_t *where);
 heap_status_t visit_text_range(heap_t *heap, const text_range_t *range,
                                bool (*visit)(void *, heap_locator_t), void *context, bool *stopped);

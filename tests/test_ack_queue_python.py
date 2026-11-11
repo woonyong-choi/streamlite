@@ -1,6 +1,6 @@
 """Python 어댑터 시험(#140 완료 조건 1과 2의 Python 쪽). 합성 데이터만 쓴다.
 
-공유 라이브러리가 필요하다: `make test-ack-queue-python`이 빌드하고 TOTEDB_LIB로 알려 준다.
+공유 라이브러리가 필요하다: `make test-ack-queue-python`이 빌드하고 STREAMLITE_LIB로 알려 준다.
 """
 
 from __future__ import annotations
@@ -10,7 +10,8 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
-from totedb import (
+from streamlite import (
+    DEFAULT_IDEM_RETENTION_MS,
     DEFAULT_MAX_PAYLOAD_BYTES,
     BusyError,
     ClaimToken,
@@ -26,7 +27,7 @@ from totedb import (
     StaleError,
     UncertainError,
 )
-from totedb.errors import raise_for_status
+from streamlite.errors import raise_for_status
 
 
 class FakeClock:
@@ -46,7 +47,7 @@ def clock() -> FakeClock:
 
 @pytest.fixture
 def db(tmp_path: Path) -> Iterator[Database]:
-    database = Database(tmp_path / "db.totedb", busy_timeout_s=0.05)
+    database = Database(tmp_path / "db.streamlite", busy_timeout_s=0.05)
     yield database
     database.close()
 
@@ -58,7 +59,7 @@ def test_database_without_queue_supports_crud_and_creates_no_queue_table(db: Dat
 
     assert db.execute("SELECT id, body FROM notes").rows == ((1, "다라"),)
     with pytest.raises(SqlError):
-        db.execute("SELECT id FROM tote_queue_jobs")
+        db.execute("SELECT id FROM streamlite_queue_jobs")
     with pytest.raises(NotInstalledError):
         Queue(db, "jobs", install=False)
     db.execute("DELETE FROM notes WHERE id = 1")
@@ -68,7 +69,7 @@ def test_database_without_queue_supports_crud_and_creates_no_queue_table(db: Dat
 def test_queue_install_creates_table_only_when_requested(db: Database) -> None:
     queue = Queue(db, "jobs")
 
-    assert db.execute("SELECT id FROM tote_queue_jobs").rows == ()
+    assert db.execute("SELECT id FROM streamlite_queue_jobs").rows == ()
     queue.close()
     Queue(db, "jobs", install=False).close()
 
@@ -122,13 +123,59 @@ def test_queue_retains_idempotency_key_after_purge(db: Database, clock: FakeCloc
     renewed = queue.put(b"mail", "order-1")
     assert not renewed.duplicate and renewed.id != first.id
 
-    plain = Queue(db, "plain", idem_retention_ms=0, clock=clock)
+    plain = Queue(db, "plain", idem_retention_ms=None, clock=clock)
     kept = plain.put(b"x", "k")
     claim = plain.get(100)
     assert claim is not None
     plain.ack(claim)
     assert plain.purge() == 1
     assert plain.put(b"x", "k").id != kept.id
+
+
+def test_queue_idem_retention_zero_means_default_as_in_c(db: Database, clock: FakeClock) -> None:
+    """#273: idem_retention_ms=0은 C 옵션과 같이 기본 7일이다. 남기지 않으려면 None을 준다."""
+    queue = Queue(db, "jobs", idem_retention_ms=0, clock=clock)
+    first = queue.put(b"mail", "order-1")
+    claim = queue.get(100)
+    assert claim is not None
+    queue.ack(claim)
+    assert queue.purge() == 1
+
+    assert queue.put(b"mail", "order-1") == PutResult(first.id, True)
+    clock.now_ms += DEFAULT_IDEM_RETENTION_MS
+    assert queue.put(b"mail", "order-1").duplicate is False
+    with pytest.raises(InvalidArgumentError):
+        Queue(db, "negative", idem_retention_ms=-1)
+
+
+def test_queue_payload_accepts_bytes_like_and_rejects_str(db: Database, clock: FakeClock) -> None:
+    """#273: bytearray·memoryview는 bytes로 바꿔 받고 str은 TypeError로 거절한다."""
+    queue = Queue(db, "jobs", clock=clock)
+    queue.put(bytearray(b"array"))
+    queue.put(memoryview(b"__view__")[2:6])
+    with pytest.raises(TypeError, match="bytes"):
+        queue.put("text")  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="bytes"):
+        queue.put(5)  # type: ignore[arg-type]
+
+    first, second = queue.get(100), queue.get(100)
+    assert first is not None and second is not None
+    assert (first.payload, second.payload) == (b"array", b"view")
+    queue.update(first.id, bytearray(b"changed"), fence=first.fence)
+    with pytest.raises(TypeError, match="bytes"):
+        queue.update(first.id, "text", fence=first.fence)  # type: ignore[arg-type]
+    assert queue.list_items(0, 1, with_payload=True)[0].payload == b"changed"
+    assert queue.stats().leased == 2
+
+
+def test_queue_name_colliding_with_internal_names_is_rejected_with_reason(db: Database) -> None:
+    """#273: 다른 큐의 내부 테이블·색인 이름과 겹치는 새 큐 이름은 설명과 함께 거절한다."""
+    queue = Queue(db, "a")
+    for name in ("a_keys", "a_state", "b_idem"):
+        with pytest.raises(InvalidArgumentError, match="_keys"):
+            Queue(db, name)
+    assert queue.put(b"x").id == 1
+    assert Queue(db, "b").put(b"y").id == 1
 
 
 def test_queue_payload_limit_option(db: Database, clock: FakeClock) -> None:
@@ -210,6 +257,26 @@ def test_queue_put_idempotency_key_same_payload_dedupes_and_different_conflicts(
     assert queue.stats().ready == 1
 
 
+def test_queue_max_length_names_sharing_prefix_stay_isolated(db: Database, clock: FakeClock) -> None:
+    first = Queue(db, "a" * 34 + "xxxxxx", clock=clock)
+    second = Queue(db, "a" * 34 + "yyyyyy", clock=clock)
+
+    put_a = first.put(b"payload-a", "shared-key")
+    assert second.get(1000) is None
+    assert second.stats().ready == 0
+    put_b = second.put(b"payload-b", "shared-key")
+    assert put_b.duplicate is False
+
+    claim_a = first.get(1000)
+    claim_b = second.get(1000)
+    assert claim_a is not None and (claim_a.id, claim_a.payload) == (put_a.id, b"payload-a")
+    assert claim_b is not None and (claim_b.id, claim_b.payload) == (put_b.id, b"payload-b")
+    assert first.get(1000) is None and second.get(1000) is None
+    first.ack(claim_a)
+    second.ack(claim_b)
+    assert (first.stats().acked, second.stats().acked) == (1, 1)
+
+
 def test_queue_list_items_pages_without_payload_copy(db: Database) -> None:
     queue = Queue(db, "jobs")
     for index in range(7):
@@ -224,7 +291,7 @@ def test_queue_list_items_pages_without_payload_copy(db: Database) -> None:
 
 
 def test_queue_restart_preserves_state_and_fence_continues(tmp_path: Path, clock: FakeClock) -> None:
-    path = tmp_path / "db.totedb"
+    path = tmp_path / "db.streamlite"
     with Database(path) as db:
         queue = Queue(db, "jobs", clock=clock)
         queue.put(b"a", "key-a")
@@ -277,7 +344,7 @@ def test_queue_transaction_from_other_database_is_rejected(db: Database, tmp_pat
     queue.put(b"x")
     claim = queue.get(1000)
     assert claim is not None
-    with Database(tmp_path / "other.totedb") as other, other.begin() as foreign:
+    with Database(tmp_path / "other.streamlite") as other, other.begin() as foreign:
         with pytest.raises(InvalidArgumentError):
             queue.ack(claim, txn=foreign)
         with pytest.raises(InvalidArgumentError):
@@ -292,13 +359,13 @@ def test_transaction_begin_while_writer_open_raises_busy_after_timeout(db: Datab
 
 
 def test_database_close_closes_its_queues_and_busy_transaction_keeps_it_open(tmp_path: Path) -> None:
-    db = Database(tmp_path / "db.totedb", busy_timeout_s=0.05)
+    db = Database(tmp_path / "db.streamlite", busy_timeout_s=0.05)
     queue = Queue(db, "jobs")
     txn = db.begin()
 
     with pytest.raises(BusyError):
         db.close()
-    assert db.execute("SELECT id FROM tote_queue_jobs").rows == ()
+    assert db.execute("SELECT id FROM streamlite_queue_jobs").rows == ()
     txn.rollback()
     db.close()
 

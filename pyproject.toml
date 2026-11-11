@@ -3,9 +3,9 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "totedb"
+name = "streamlite"
 dynamic = ["version"]
-description = "Embedded SQL database with a job queue that commits in the same transaction (Transactional Outbox Table Engine)"
+description = "Embedded SQL database with an optional queue that commits in the same transaction"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -23,16 +23,16 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/woonyong-choi/totedb"
-Changelog = "https://github.com/woonyong-choi/totedb/blob/main/CHANGELOG.md"
-Issues = "https://github.com/woonyong-choi/totedb/issues"
+Homepage = "https://github.com/woonyong-choi/streamlite"
+Changelog = "https://github.com/woonyong-choi/streamlite/blob/main/CHANGELOG.md"
+Issues = "https://github.com/woonyong-choi/streamlite/issues"
 
 [tool.setuptools]
 package-dir = { "" = "python" }
-packages = ["totedb"]
+packages = ["streamlite"]
 
 [tool.setuptools.dynamic]
-version = { attr = "totedb.__version__" }
+version = { attr = "streamlite.__version__" }
 
 [tool.cibuildwheel]
 # ctypes로 여는 일반 공유 라이브러리라 Python 버전과 무관한 py3-none wheel 하나만 만든다

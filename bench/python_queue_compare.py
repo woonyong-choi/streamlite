@@ -29,7 +29,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEPS = ROOT / ".local/runs/local-db-comparison/deps-queue"
-ENGINES = ("totedb", "persist-queue", "litequeue", "diskcache", "huey")
+ENGINES = ("streamlite", "persist-queue", "litequeue", "diskcache", "huey")
 PINS = {
     "persist-queue": "1.1.0",
     "litequeue": "0.14",
@@ -54,7 +54,7 @@ PROTOCOL = {
     "processes_per_trial": 1,
     "timeout_s": 180,
     "label": LABEL,
-    "serialization": "canonical JSON; dumps in put, loads in read; UTF-8 bytes for Tote/Huey, text for litequeue/diskcache/persist; generation excluded",
+    "serialization": "canonical JSON; dumps in put, loads in read; UTF-8 bytes for StreamLite/Huey, text for litequeue/diskcache/persist; generation excluded",
     "retention": "ACK rows retained through reopen audit, then public purge outside timing; FIFO removes on read",
     "throughput": "n / (put loop wall time + consume/ACK loop wall time); includes per-call timing overhead, excludes setup/probes/audit/purge",
 }
@@ -82,10 +82,10 @@ class QueueAdapter:
         self.pragmas: dict[str, Any] = {}
         self.tier = "ACK" if engine in ENGINES[:3] else "FIFO"
         directory.mkdir(parents=True, exist_ok=True)
-        if engine == "totedb":
-            from totedb import Database, Queue
+        if engine == "streamlite":
+            from streamlite import Database, Queue
 
-            self.db = Database(directory / "queue.totedb", busy_timeout_s=120)
+            self.db = Database(directory / "queue.streamlite", busy_timeout_s=120)
             self.queue = Queue(self.db, "jobs", idem_retention_ms=0)
             self.pragmas = {"durability": "native COW fsync; not SQLite WAL/FULL"}
         elif engine == "persist-queue":
@@ -127,7 +127,7 @@ class QueueAdapter:
             self._read_pragmas()
         else:
             raise ValueError(f"unknown engine: {engine}")
-        if engine != "totedb" and (
+        if engine != "streamlite" and (
             self.pragmas["synchronous"] != 2 or self.pragmas["journal_mode"] != "wal"
         ):
             raise ValueError(f"cannot establish actual WAL/FULL: {self.pragmas}")
@@ -154,7 +154,7 @@ class QueueAdapter:
         if self.engine == "persist-queue":
             return self.queue.put(item)
         encoded = JSONSerializer.dumps(item)
-        if self.engine == "totedb":
+        if self.engine == "streamlite":
             return self.queue.put(encoded.encode()).id
         if self.engine == "litequeue":
             return self.queue.put(encoded).message_id
@@ -163,7 +163,7 @@ class QueueAdapter:
         return self.queue.enqueue(encoded.encode())
 
     def read(self) -> tuple[Any, dict[str, Any]] | None:
-        if self.engine == "totedb":
+        if self.engine == "streamlite":
             claim = self.queue.get(600_000)
             return (
                 None if claim is None else (claim, JSONSerializer.loads(claim.payload))
@@ -191,7 +191,7 @@ class QueueAdapter:
         return None, JSONSerializer.loads(value)
 
     def ack(self, claim: Any) -> None:
-        if self.engine == "totedb":
+        if self.engine == "streamlite":
             self.queue.ack(claim)
         elif self.engine == "persist-queue":
             if self.queue.ack(id=claim["pqid"]) is None:
@@ -203,7 +203,7 @@ class QueueAdapter:
             raise ValueError("FIFO has no ACK API")
 
     def retry(self, claim: Any) -> None:
-        if self.engine == "totedb":
+        if self.engine == "streamlite":
             self.queue.nack(claim)
         elif self.engine == "persist-queue":
             if self.queue.nack(id=claim["pqid"]) is None:
@@ -215,7 +215,7 @@ class QueueAdapter:
             raise ValueError("FIFO retry unsupported")
 
     def fail(self, claim: Any) -> None:
-        if self.engine == "totedb":
+        if self.engine == "streamlite":
             self.queue.fail(claim, "probe")
         elif self.engine == "persist-queue":
             if self.queue.ack_failed(id=claim["pqid"]) is None:
@@ -227,7 +227,7 @@ class QueueAdapter:
             raise ValueError("FIFO failure unsupported")
 
     def counts(self) -> dict[str, int]:
-        if self.engine == "totedb":
+        if self.engine == "streamlite":
             stats = self.queue.stats()
             return {
                 "pending": stats.ready + stats.leased,
@@ -261,7 +261,7 @@ class QueueAdapter:
         return {"pending": pending, "completed": 0, "failed": 0}
 
     def purge(self, n: int) -> None:
-        if self.engine == "totedb":
+        if self.engine == "streamlite":
             while self.queue.purge(1024, include_failed=True):
                 continue
         elif self.engine == "persist-queue":
@@ -270,7 +270,7 @@ class QueueAdapter:
             self.queue.prune()
 
     def close(self) -> None:
-        if self.engine == "totedb":
+        if self.engine == "streamlite":
             self.db.close()
         elif self.engine == "diskcache":
             self.queue.cache.close()
@@ -307,14 +307,14 @@ def capabilities(engine: str) -> dict[str, Any]:
     return {
         "tier": "ACK" if engine in ENGINES[:3] else "FIFO",
         "lease_fence": {
-            "totedb": "600000 ms lease and fence; release_leases probe is explicit operator recovery",
+            "streamlite": "600000 ms lease and fence; release_leases probe is explicit operator recovery",
             "persist-queue": "id-only ACK; no lease/fence; auto_resume requeues unack on reopen",
             "litequeue": "integer claim_id fence; retry_expired age threshold, no automatic lease expiry on pop",
             "diskcache": "none; popleft removes before application completion",
             "huey": "none at storage layer; dequeue deletes before task execution",
         }[engine],
         "caller_owned_business_transaction": {
-            "totedb": "supported: native Queue txn=Database.transaction; not measured here",
+            "streamlite": "supported: native Queue txn=Database.transaction; not measured here",
             "persist-queue": "unsupported by public queue API: internal auto-commit connections",
             "litequeue": "unsupported unrelated application tables since 0.10; queue.transaction exists",
             "diskcache": "unverified SQL business transaction; Deque.transact supports grouped cache operations",
@@ -322,7 +322,7 @@ def capabilities(engine: str) -> dict[str, Any]:
         }[engine],
         "claim_reopen_recovery_supported": engine in ENGINES[:3],
         "configuration": {
-            "totedb": "native Database+Queue; lease_ms=600000; idem_retention_ms=0; no idem key; max_attempts=0",
+            "streamlite": "native Database+Queue; lease_ms=600000; idem_retention_ms=0; no idem key; max_attempts=0",
             "persist-queue": "SQLiteAckQueue; multithreading=False; auto_resume=True; default auto_commit=True; canonical JSON serializer; shared getter/putter connection PRAGMA-configured outside timing",
             "litequeue": "LiteQueue; maxsize=None; writer conn WAL/FULL configured outside timing; query-only reader pool unchanged; no idem key",
             "diskcache": "Deque maxlen=None; Cache(sqlite_synchronous=2, sqlite_journal_mode=wal); text stored without pickle; no eviction/expiry",
@@ -333,7 +333,7 @@ def capabilities(engine: str) -> dict[str, Any]:
         "sqlite_statement_cache": "0 (library-managed)"
         if engine == "litequeue"
         else "CPython default (not overridden by adapter)"
-        if engine != "totedb"
+        if engine != "streamlite"
         else "native; Python sqlite cache N/A",
     }
 
@@ -363,7 +363,7 @@ def probe(engine: str, directory: Path) -> dict[str, Any]:
             result["requeue"] = True
             adapter.close()
             adapter = QueueAdapter(engine, directory)
-            if engine == "totedb":
+            if engine == "streamlite":
                 adapter.queue.release_leases()
             elif engine == "litequeue":
                 adapter.queue.retry_expired(threshold_seconds=0)
@@ -389,18 +389,18 @@ def file_hash(path: Path) -> str:
 
 
 def package_metadata(engine: str) -> dict[str, Any]:
-    if engine == "totedb":
-        from totedb._native import load_library
+    if engine == "streamlite":
+        from streamlite._native import load_library
 
         library = Path(load_library()._name).resolve()
         return {
             "native_library": str(library),
-            "native_version": load_library().tote_version().decode(),
+            "native_version": load_library().streamlite_version().decode(),
             "native_sha256": file_hash(library),
             "native_benchmark": _native_identity(library),
             "python_sources_sha256": {
                 str(p.relative_to(ROOT)): file_hash(p)
-                for p in sorted((ROOT / "python/totedb").glob("*.py"))
+                for p in sorted((ROOT / "python/streamlite").glob("*.py"))
             },
         }
     distribution = importlib.metadata.distribution(engine)
@@ -464,7 +464,7 @@ def _native_identity(library: Path) -> dict[str, Any]:
         raise ValueError("product source differs from a86cf241")
     sources = [
         path
-        for folder in ("src", "include", "python/totedb")
+        for folder in ("src", "include", "python/streamlite")
         for path in (ROOT / folder).rglob("*")
         if path.is_file() and path.suffix in (".c", ".h", ".py")
     ]
@@ -792,7 +792,7 @@ def validate_result(result: dict[str, Any], config: dict[str, Any]) -> None:
         raise ValueError("contract metadata mismatch")
     if result["pragmas_after_reopen"] != result["pragmas"]:
         raise ValueError("reopened pragma metadata mismatch")
-    if config["engine"] != "totedb":
+    if config["engine"] != "streamlite":
         if (
             result["package"]["version"] != PINS[config["engine"]]
             or result["pragmas"]["synchronous"] != 2
@@ -812,13 +812,13 @@ def summarize_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 for row in rows
                 if row["n"] == n
                 and row["payload_bytes"] == body_bytes
-                and row["engine"] == "totedb"
+                and row["engine"] == "streamlite"
                 and not row["warmup"]
             }
             baseline_warmup_ok = any(
                 row["n"] == n
                 and row["payload_bytes"] == body_bytes
-                and row["engine"] == "totedb"
+                and row["engine"] == "streamlite"
                 and row["warmup"]
                 and row["status"] == "ok"
                 for row in rows
@@ -891,7 +891,7 @@ def summarize_groups(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         }
                         if complete
                         else None,
-                        "paired_totedb_over_baseline": {
+                        "paired_streamlite_over_baseline": {
                             "median": statistics.median(ratios),
                             "min": min(ratios),
                             "max": max(ratios),
@@ -948,24 +948,24 @@ def analyze(output: Path) -> dict[str, Any]:
         "groups": groups,
         "publication_comparisons": [
             {
-                "target": "totedb",
+                "target": "streamlite",
                 "baseline": group["engine"],
                 "tier": "ACK",
                 "n": group["n"],
                 "payload_bytes": group["payload_bytes"],
-                "ratio": group["paired_totedb_over_baseline"],
+                "ratio": group["paired_streamlite_over_baseline"],
                 "label": LABEL,
                 "reliability_equivalent": False,
             }
             for group in groups
-            if group["paired_totedb_over_baseline"] is not None
+            if group["paired_streamlite_over_baseline"] is not None
         ],
         "raw_trials": rows,
         "overall_ranking": None,
         "limitations": [
             "single client/process; no concurrency or fault-model equivalence",
             "FIFO dequeue is not ACK completion",
-            "Tote COW fsync and SQLite WAL/FULL are distinct implementations",
+            "StreamLite COW fsync and SQLite WAL/FULL are distinct implementations",
             "no external exactly-once claim",
             "Huey storage only; no task worker costs",
             "observed successful path is not proof against power failure",

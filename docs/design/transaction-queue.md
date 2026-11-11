@@ -3,7 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | 상태 | 구현 |
-| 관련 결정 | [DB·선택형 ACK 큐 범위 결정 #139](https://github.com/woonyong-choi/totedb/issues/139#issuecomment-6172915462) |
+| 관련 결정 | [DB·선택형 ACK 큐 범위 결정 #139](https://github.com/woonyong-choi/streamlite/issues/139#issuecomment-6172915462) |
 
 ## 요약
 
@@ -74,7 +74,7 @@ if claim is not None:
 
 ### 같은 DB 트랜잭션의 경계
 
-`Queue(db, name)`은 같은 DB 안에 큐 테이블 `tote_queue_<name>`, 멱등성 키 보존 테이블 `tote_queue_<name>_keys`와 색인을 설치하거나 연다. 별도 저장 엔진이 아니며 DB 코어는 큐를 참조하지 않는다. 업무 테이블 `orders`는 앱이 정하는 예제이지 제품 고정 스키마가 아니다.
+`Queue(db, name)`은 같은 DB 안에 큐 테이블 `streamlite_queue_<name>`, 멱등성 키 보존 테이블 `streamlite_queue_<name>_keys`와 색인을 설치하거나 연다. 색인 이름도 큐 테이블 이름에 접미어를 붙여 만들므로, `_keys`·`_state`·`_idem`·`_due`·`_lease`로 끝나는 이름이나 이미 있는 큐의 내부 이름과 겹치는 이름은 새로 설치하지 않고 거절한다. 이미 있는 큐는 이름과 무관하게 열린다. 별도 저장 엔진이 아니며 DB 코어는 큐를 참조하지 않는다. 업무 테이블 `orders`는 앱이 정하는 예제이지 제품 고정 스키마가 아니다.
 
 `ackq_scope_open`은 호출자 세션에 트랜잭션이 있으면 그 트랜잭션을 사용한다. 트랜잭션 없이 변경 연산을 호출하면 자체 DURABLE 트랜잭션을 열고 끝에서 commit한다. 따라서 `txn=txn`으로 실행한 큐 호출의 성공은 아직 영속 성공이 아니며 최종 트랜잭션 commit이 필요하다. 다른 DB의 트랜잭션은 실행 전에 거절한다. 저장·게시와 잠금은 [아키텍처](../architecture.md#최종-게시와-결과-전달), 실제 분기는 [ack_queue_sql.c](../../src/queue/ack_queue_sql.c)에 있다.
 
@@ -91,24 +91,38 @@ if claim is not None:
 |---|---|---|
 | `READY` | 실행 시각을 기다리는 작업 | 시각이 됐을 때 `get`으로 `LEASED` |
 | `LEASED` | fence와 lease를 가진 작업, 만료만으로 상태 변경 없음 | 현재 fence의 `ack`으로 `ACKED`, `fail`로 `FAILED`, `nack`으로 `READY` 또는 시도 한도 도달 시 `FAILED` |
-| `ACKED` | 완료를 기록한 작업 | `purge`로 물리 삭제, 같은 fence의 중복 ACK는 성공 |
+| `ACKED` | 완료를 기록한 작업 | `purge`로 물리 삭제, 같은 fence의 중복 ACK는 purge 전까지 성공하고 purge 뒤에는 NOT_FOUND |
 | `FAILED` | 명시적 실패 또는 시도 한도에 도달한 작업 | `include_failed`를 사용한 `purge`로 물리 삭제 |
 
-`get`은 실행 시각이 된 READY 또는 시도가 남은 만료 LEASED 중 작은 id를 고르고 fence와 attempts를 증가시킨다. 만료 자체는 fence를 무효화하지 않으므로 아직 재획득되지 않았다면 현재 fence로 ACK나 기한 변경을 할 수 있다. 다른 워커가 재획득한 뒤에야 옛 fence를 거절한다. `recover`는 만료 LEASED를 READY 또는 시도가 끝난 FAILED로 바꾸는 별도 연산이며 자동 백그라운드 작업이 아니다.
+`get`은 실행 시각이 된 READY 또는 시도가 남은 만료 LEASED를 고르고 fence와 attempts를 증가시킨다. 이 판이 설치한 큐는 claim 가능해진 시각(READY는 `ready_at`, 만료 LEASED는 `lease_until`)이 이른 것부터, 같으면 작은 id부터 고른다. 그래서 nack한 작업은 그 시각 전에 실행 시각이 된 작업 뒤로 가고 같은 작업이 머리를 막지 않는다. 이전 판이 설치한 큐는 READY를 작은 id부터 고른다([저장과 조회 비용](#저장과-조회-비용)). 만료 자체는 fence를 무효화하지 않으므로 아직 재획득되지 않았다면 현재 fence로 ACK나 기한 변경을 할 수 있다. 다른 워커가 재획득한 뒤에야 옛 fence를 거절한다. `recover`는 만료 LEASED를 READY 또는 시도가 끝난 FAILED로 바꾸는 별도 연산이며 자동 백그라운드 작업이 아니다. `recover`와 `release_leases`는 처리 권한을 끝내는 연산이라 작업을 돌려놓으면서 fence를 1 올린다. 그래서 아직 재획득되지 않았어도 옛 fence의 ack·nack·fail·extend·update를 모두 거절하고, 다음 `get`은 다시 1 오른 fence를 받는다.
 
-`extend`는 fence를 유지하고 만료 시각을 현재 시각에 새 lease를 더한 값으로 바꾼다. 기존 만료보다 항상 늦어진다고 보장하지 않는다. 큐 핸들의 close는 lease 반납이 아니다. `release_leases`는 살아 있는 워커가 없다는 판단을 호출자가 한 경우에만 사용한다.
+`extend`는 fence를 유지하고 만료 시각을 현재 시각에 새 lease를 더한 값으로 바꾼다. 기존 만료보다 항상 늦어진다고 보장하지 않는다. 큐 핸들의 close는 lease 반납이 아니다. `release_leases`는 살아 있는 워커가 없다는 판단을 호출자가 한 경우에만 사용한다. 살아 있는 워커가 있으면 그 claim이 끝나 ACK가 거절되고 작업이 중복 전달된다. 해제는 작업의 실패가 아니므로 시도 한도에 닿은 작업도 FAILED가 아닌 READY로 돌리며, 그 작업은 한 번 더 전달된 뒤의 nack·만료·해제에서 FAILED가 된다. 그래서 재시작마다 해제해도 한 작업은 시도 한도보다 한 번 더 전달된 뒤 끝난다.
+
+lease 판정은 벽시계를 쓴다. 핸들은 자기가 돌려준 시각의 하한보다 과거인 시계 값을 그 하한으로 읽으므로 뒤로 간 시계로 lease를 만료시키거나 줄이지 않는다. 앞으로 뛴 시계는 실제 경과와 구분하지 않고 받아들이지만, 단조 시계로 잰 경과와 함께 기록해 뛴 시계가 돌아오면 하한을 뛰기 직전 시각과 그 뒤 경과의 합까지 낮춘다. 이 값은 핸들의 메모리에만 있어 다른 프로세스와 재시작 뒤에는 적용되지 않는다. 유효한 시계 값을 한 번도 읽지 못한 핸들의 시각을 쓰는 연산은 LIMIT으로 거절한다. 범위와 한계는 [ack_queue.h](../../include/queue/ack_queue.h)에 있다.
+
+### 저장과 조회 비용
+
+이 판이 설치한 큐는 정수 `due` 열과 그 색인, `lease_until` 색인을 둔다. 상태마다 겹치지 않는 구간에 값을 두므로(READY·시도가 남은 LEASED는 claim 가능 시각, 마지막 시도의 LEASED·ACKED·FAILED는 음수 구간에 id) claim은 `due` 색인의 `[0, 지금]` 구간을 앞에서부터 읽고 필요한 수에서 멈춘다. 만료 전 LEASED, 지연 READY, ACKED·FAILED는 그 구간 밖이라 claim 비용이 이들의 수와 무관하다. purge는 ACKED·FAILED 구간을 id 순서로 읽는다. recover·release는 `lease_until` 색인의 `[1, 기준 시각]` 구간을 만료 순서로 읽고 필요한 수에서 멈춘다. LEASED만 `lease_until`이 0보다 크므로 READY와 끝난 작업의 수와 무관하다(READY 4만 건에서 호출당 약 0.1~1ms, 이 색인 전에는 약 110ms). 키 없는 작업의 `idem`은 NULL이라 `idem` 색인에 들어가지 않는다. 빈 결과 다음의 `get`은 쓰기 트랜잭션 전에 writer 없이 후보가 있는지 읽어 보고, 없으면 writer 잠금을 잡지 않고 빈 결과를 돌려준다. `stats`는 여전히 테이블 전체를 읽는다.
+
+이전 판이 설치한 큐는 파일을 그대로 읽는다. 이 큐와 `lease_until` 색인을 두기 전에 만든 `due` 형식 큐는 열 때 그 색인을 하나 만들어 만료 lease를 그 색인 구간으로 찾는다. 열기는 먼저 쓰기 거래 없이 읽어 색인이 있는지 보고, 있으면 writer를 기다리지 않는다. 없을 때만 자기 트랜잭션으로 만들며 실패하면(BUSY, 호출자 트랜잭션 안) 이전 경로로 찾는다. READY는 이전처럼 `state` 색인을 id 순서로 읽으므로 지연 READY가 많으면 그만큼 방문한다.
+
+이 판이 설치한 큐를 이전 판 라이브러리와 함께 쓰지 않는다. 이전 판 라이브러리의 `put`은 `due` 열이 필수라 INSERT가 실패한다. `get`·`ack`·`nack`·`fail`·`recover`·`release_leases`·`purge`는 성공하지만 `due`를 고치지 않아 그 행의 `due`가 상태와 어긋난다. 이 판의 `get`은 후보를 고를 때와 갱신할 때 상태(실행 시각이 된 READY, 만료된 LEASED)를 함께 확인하므로, 어긋난 `due` 때문에 살아 있는 lease를 다시 주거나 ACKED·FAILED 작업을 LEASED로 되살리거나 지연 READY를 일찍 주지 않는다. 이 방어로도 남는 결과는 세 가지다. 어긋난 행이 claim 구간에 남아 `get`이 매번 방문하고, 이전 판이 끝낸 ACKED·FAILED는 `purge`가 찾지 못해 남으며, 이전 판이 반납한 작업은 `due`가 늦으면 그만큼 늦게 다시 전달된다. `purge`가 상태로도 찾게 하면 `due` 형식에는 `state` 색인이 없어 매번 테이블 전체를 읽으므로 그렇게 하지 않았다. 혼용했다면 모든 프로세스를 이 판으로 바꾼 뒤 이 판으로 아래 문장을 한 번 실행해 `due`를 상태에 맞게 다시 쓴다. `jobs`는 큐 이름이고 음수는 [ack_queue_internal.h](../../src/queue/ack_queue_internal.h)의 ACKED·FAILED 구간 시작값이다.
+
+```sql
+UPDATE streamlite_queue_jobs SET due = CASE WHEN state = 0 THEN ready_at WHEN state = 1 THEN lease_until WHEN state = 2 THEN -4611686018427387904 + id ELSE -3458764513820540928 + id END
+```
 
 ### 중복 등록과 정리
 
 같은 멱등성 키와 같은 payload의 `put`은 기존 작업 id를 반환하고, payload가 다르면 충돌로 거절한다. ACK는 물리 삭제가 아니며 `purge`가 끝난 행을 지운다. 키를 보존하는 설정이면 purge 뒤에도 정해진 기간 동안 키와 payload 요약을 남긴다. 보존 기간 뒤 재등록은 새 작업이고, 요약 비교를 무기한·무충돌 중복 제거라고 부르지 않는다.
 
-큐 옵션은 이름에 저장하는 전역 정책이 아니라 열린 핸들의 값이다. 여러 워커와 재개방 코드가 같은 시도·payload·보존·시계 정책을 전달할 책임이 있다. 정확한 매개변수와 C·Python의 0 변환 차이는 [totedb.h](../../include/totedb.h)와 [queue.py](../../python/totedb/queue.py), 상태 변경 규칙은 [ack_queue.h](../../include/queue/ack_queue.h)에 있다.
+큐 옵션은 이름에 저장하는 전역 정책이 아니라 열린 핸들의 값이다. 여러 워커와 재개방 코드가 같은 시도·payload·보존·시계 정책을 전달할 책임이 있다. 보존 기간 `idem_retention_ms`의 0은 C와 Python 모두 기본값 7일이고, 키를 남기지 않으려면 C는 `UINT64_MAX`, Python은 `None`을 준다. 정확한 매개변수는 [streamlite.h](../../include/streamlite.h)와 [queue.py](../../python/streamlite/queue.py), 상태 변경 규칙은 [ack_queue.h](../../include/queue/ack_queue.h)에 있다.
 
 ### 실패 뒤 트랜잭션과 자원
 
 STALE·NOT_FOUND·CONFLICT는 변경 없는 거절이므로 호출자 트랜잭션을 실패시키지 않는다. 그 밖의 큐 오류에서는 일부 SQL이 이미 실행됐을 수 있어 호출자 트랜잭션 전체를 rollback한다. 불확정 commit은 성공으로 취급하지 않고 DB를 닫아 재개방한 뒤 업무 상태를 확인한다. 같은 DB의 업무 갱신과 ACK를 묶어도 외부 부작용까지 rollback하지는 않는다.
 
-C `get`의 payload는 `tote_queue_item_free`, 목록 payload는 `tote_queue_list_free`로 해제하고 목록 배열 자체는 호출자가 소유한다. Python은 payload를 bytes로 복사하고 native 자원을 해제한다. 트랜잭션을 먼저 끝내고 큐·DB를 닫는다. C의 열린 트랜잭션이나 큐는 DB close를 BUSY로 만들 수 있으며, Python DB close는 등록 큐부터 닫는다. 종료와 오류 규칙은 [totedb.h](../../include/totedb.h), [database.py](../../python/totedb/database.py)에 있다.
+C `get`의 payload는 `streamlite_queue_item_free`, 목록 payload는 `streamlite_queue_list_free`로 해제하고 목록 배열 자체는 호출자가 소유한다. Python은 payload를 bytes로 복사하고 native 자원을 해제한다. 트랜잭션을 먼저 끝내고 큐·DB를 닫는다. Python에서 commit·rollback 없이 참조를 잃은 트랜잭션은 수거될 때 rollback되고, close하지 않은 큐·DB도 수거나 인터프리터 종료 때 닫힌다. 수거 시점은 정해져 있지 않으므로 writer를 제때 놓으려면 `with` 블록이나 명시적 호출을 쓴다. 같은 스레드가 트랜잭션을 연 채 `txn=` 없이 큐를 호출하면 그 트랜잭션이 writer를 쥐고 있어 기다려도 풀리지 않으므로 `busy_timeout_s`를 기다리지 않고 바로 `BusyError`다. C의 열린 트랜잭션이나 큐는 DB close를 BUSY로 만들 수 있으며, Python DB close는 등록 큐부터 닫는다. 종료와 오류 규칙은 [streamlite.h](../../include/streamlite.h), [database.py](../../python/streamlite/database.py)에 있다.
 
 ### 요구사항
 

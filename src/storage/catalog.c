@@ -3,6 +3,7 @@
 
 #include "storage/catalog.h"
 #include "storage/le.h"
+#include "storage/record.h"
 
 /* 형식은 하나다: 머리, 테이블들(컬럼 기본값 포함), 색인 수 u32와 색인들, 체크섬 */
 #define FORMAT_VERSION 1u
@@ -19,6 +20,10 @@
 #define FLAG_DEFAULT 2u
 #define INDEX_UNIQUE 1u
 #define INDEX_ORDERED 2u
+
+/* heap의 행은 version 필드 하나와 컬럼마다 필드 둘을 쓴다. 새 테이블은 그 행이 record codec에 담겨야 한다. */
+_Static_assert(1u + 2u * CATALOG_MAX_CREATE_COLUMNS <= RECORD_MAX_FIELDS, "새 테이블의 행이 record codec의 필드 한계 안이어야 한다");
+_Static_assert(CATALOG_MAX_CREATE_COLUMNS <= CATALOG_MAX_COLUMNS, "만들 수 있는 테이블은 저장 형식에 담겨야 한다");
 
 typedef struct {
     catalog_table_id_t id;
@@ -120,11 +125,14 @@ static size_t table_encoded_bytes(size_t name_bytes, const catalog_column_t *col
     return total;
 }
 
-/* spec 모양과 identity 규칙을 검사한다. 이름 중복 검사는 할당이 필요해 따로 한다. */
-static catalog_status_t check_spec(const catalog_table_spec_t *spec)
+/*
+ * spec 모양과 identity 규칙을 검사한다. 이름 중복 검사는 할당이 필요해 따로 한다. max_columns는 새로 만들 때
+ * CATALOG_MAX_CREATE_COLUMNS, 저장된 것을 읽을 때 CATALOG_MAX_COLUMNS다.
+ */
+static catalog_status_t check_spec(const catalog_table_spec_t *spec, size_t max_columns)
 {
     if (spec == NULL || !name_valid(spec->name, spec->name_bytes)) return CATALOG_INVALID;
-    if (spec->column_count < 1 || spec->column_count > CATALOG_MAX_COLUMNS) return CATALOG_INVALID;
+    if (spec->column_count < 1 || spec->column_count > max_columns) return CATALOG_INVALID;
     if (spec->columns == NULL) return CATALOG_INVALID;
     for (size_t i = 0; i < spec->column_count; i++) {
         const catalog_column_spec_t *column = &spec->columns[i];
@@ -304,7 +312,7 @@ static catalog_status_t check_can_mutate(const catalog_t *catalog)
 static catalog_status_t add_table(catalog_t *catalog, const catalog_table_spec_t *spec, catalog_table_id_t *id)
 {
     if (id == NULL) return CATALOG_INVALID;
-    catalog_status_t status = check_spec(spec);
+    catalog_status_t status = check_spec(spec, CATALOG_MAX_CREATE_COLUMNS);
     if (status != CATALOG_OK) return status;
     status = check_spec_names(spec);
     if (status != CATALOG_OK) return status;
@@ -602,7 +610,7 @@ catalog_status_t catalog_encode(const catalog_t *catalog, uint8_t **bytes, size_
     size_t total = catalog->encoded_bytes;
     uint8_t *buffer = malloc(total);
     if (buffer == NULL) return CATALOG_NOMEM;
-    memcpy(buffer, "LRCT", 4);
+    memcpy(buffer, "SLCT", 4);
     put_u16(buffer + 4, FORMAT_VERSION);
     put_u16(buffer + 6, 0);
     le_put_u32(buffer + 8, (uint32_t)total);
@@ -718,7 +726,7 @@ static catalog_status_t read_table(reader_t *reader, catalog_t *catalog)
     }
     catalog_table_spec_t spec = {(const char *)name, name_bytes, columns, column_count,
                                  (uint16_t)get_le(fixed + 6, 2), has_identity};
-    if (status == CATALOG_OK) status = check_spec(&spec) == CATALOG_OK ? CATALOG_OK : CATALOG_CORRUPT;
+    if (status == CATALOG_OK) status = check_spec(&spec, CATALOG_MAX_COLUMNS) == CATALOG_OK ? CATALOG_OK : CATALOG_CORRUPT;
     if (status == CATALOG_OK) {
         bool identity_ok = has_identity ? next_identity >= 1 && next_identity <= IDENTITY_END
                                         : next_identity == 0;
@@ -760,7 +768,7 @@ static catalog_status_t check_envelope(const uint8_t *bytes, size_t size)
 {
     if (size < HEADER_BYTES + CHECKSUM_BYTES) return CATALOG_CORRUPT;
     if (size > CATALOG_MAX_ENCODED_BYTES) return CATALOG_LIMIT;
-    if (memcmp(bytes, "LRCT", 4) != 0) return CATALOG_CORRUPT;
+    if (memcmp(bytes, "SLCT", 4) != 0) return CATALOG_CORRUPT;
     uint64_t version = get_le(bytes + 4, 2);
     if (version != FORMAT_VERSION) return CATALOG_UNSUPPORTED;
     if (get_le(bytes + 6, 2) != 0) return CATALOG_CORRUPT;

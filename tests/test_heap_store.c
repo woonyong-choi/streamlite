@@ -21,7 +21,7 @@
  */
 
 #define DIR_NAME "build/test_heap_store_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 #define COLUMNS 5
 #define ZERO_ROW {{{VALUE_NULL, 0, 0, NULL, 0}, false}}
 
@@ -50,9 +50,63 @@ static int alloc_fails(void)
     return g_alloc_fail_at != 0 && ++g_alloc_calls == g_alloc_fail_at;
 }
 
-void *hs_test_malloc(size_t n) { return alloc_fails() ? NULL : malloc(n); }
+/*
+ * realloc 꼬리 가드. 켜 두면 realloc이 요청보다 GUARD_BYTES 더 잡아 꼬리를 무늬로 채우고, 그 뒤의 malloc이
+ * 가장 최근 블록의 꼬리를 검사한다. 용량을 넘는 쓰기가 가드 안에 떨어지므로 sanitizer 없는 빌드에서도 잡힌다.
+ * 검사 시점에 그 블록이 살아 있는 구간(heap_collect_pages 한 번)에서만 켠다.
+ */
+#define GUARD_BYTES 64u
+#define GUARD_FILL 0xA5u
+static bool g_guard_on;
+static uint8_t *g_guard_block;
+static size_t g_guard_size;
+static int g_guard_broken;
+
+static void guard_check(void)
+{
+    if (!g_guard_on || g_guard_block == NULL) return;
+    for (size_t i = 0; i < GUARD_BYTES; i++) {
+        if (g_guard_block[g_guard_size + i] != GUARD_FILL) {
+            g_guard_broken++;
+            return;
+        }
+    }
+}
+
+static void guard_begin(void)
+{
+    g_guard_on = true;
+    g_guard_block = NULL;
+    g_guard_size = 0;
+    g_guard_broken = 0;
+}
+
+static void guard_end(void)
+{
+    g_guard_on = false;
+    g_guard_block = NULL;
+}
+
+void *hs_test_malloc(size_t n)
+{
+    guard_check();
+    return alloc_fails() ? NULL : malloc(n);
+}
+
 void *hs_test_calloc(size_t a, size_t b) { return alloc_fails() ? NULL : calloc(a, b); }
-void *hs_test_realloc(void *p, size_t n) { return alloc_fails() ? NULL : realloc(p, n); }
+
+void *hs_test_realloc(void *p, size_t n)
+{
+    if (alloc_fails()) return NULL;
+    if (!g_guard_on) return realloc(p, n);
+    uint8_t *grown = realloc(p, n + GUARD_BYTES);
+    if (grown != NULL) {
+        memset(grown + n, GUARD_FILL, GUARD_BYTES);
+        g_guard_block = grown;
+        g_guard_size = n;
+    }
+    return grown;
+}
 
 /* ── I/O 실패 주입 ── */
 typedef struct {
@@ -90,7 +144,7 @@ static int hook_fsync(int fd)
     return fsync(fd);
 }
 
-static const page_file_io_t HOOKED = {hook_pread, hook_pwrite, hook_fsync, link, unlink};
+static const page_file_io_t HOOKED = {hook_pread, hook_pwrite, hook_fsync, link, unlink, NULL};
 
 /* ── 파일·데이터 보조 ── */
 static void clean_dir(void)
@@ -1340,7 +1394,7 @@ static void test_one_row_change_rewrites_only_its_leaf(void)
     clean_dir();
 }
 
-/* #198: 지금 형식(LHD3 잎, LHD2 루트)이 아닌 디렉터리 루트는 해석하지 않고 거절한다. 옛 형식을 옮기는 코드는 없다. */
+/* #198: 지금 형식(SLD3 잎, SLD2 루트)이 아닌 디렉터리 루트는 해석하지 않고 거절한다. */
 static void test_unknown_directory_root_is_rejected(void)
 {
     printf("\n[test_unknown_directory_root_is_rejected]\n");
@@ -1349,7 +1403,7 @@ static void test_unknown_directory_root_is_rejected(void)
     model_reset();
     load_many_pages(&fx, 10);
     uint8_t body[PAGE_BODY_BYTES] = {0};
-    memcpy(body, "LHD1", 4);
+    memcpy(body, "QQD0", 4);
     body[4] = 1;
     directory_put_u32(body + 8, fx.tid);
     uint32_t page;
@@ -1358,14 +1412,14 @@ static void test_unknown_directory_root_is_rejected(void)
     heap_schema_t schema = {TYPES, COLUMNS};
     heap_t *heap = NULL;
     heap_status_t opened = heap_open(fx.file, fx.tid, page, &schema, &heap);
-    CHECK(opened == HEAP_UNSUPPORTED_LOCATOR && heap == NULL, "옛 LHD1 루트는 UNSUPPORTED_LOCATOR (%d)", (int)opened);
+    CHECK(opened == HEAP_UNSUPPORTED_LOCATOR && heap == NULL, "알 수 없는 QQD0 루트는 UNSUPPORTED_LOCATOR (%d)", (int)opened);
     fx_close(&fx);
     model_reset();
     clean_dir();
 }
 
 
-/* 잎이 한 장이면 여유 바이트가 저장된 LHD3 페이지 한 장만 쓴다. */
+/* 잎이 한 장이면 여유 바이트가 저장된 SLD3 페이지 한 장만 쓴다. */
 static void test_single_leaf_heap_keeps_hint_format(void)
 {
     printf("\n[test_single_leaf_heap_keeps_hint_format]\n");
@@ -1375,7 +1429,7 @@ static void test_single_leaf_heap_keeps_hint_format(void)
     load_many_pages(&fx, 400);
     uint32_t dirs[MAX_DIRS];
     CHECK(directory_pages(fx.heap, dirs, fx.file) == 1 && root_has_magic(&fx, HEAP_HINT_DIRECTORY_MAGIC),
-          "항목이 한 장 안이면 LHD3 한 장");
+          "항목이 한 장 안이면 SLD3 한 장");
     fx_close(&fx);
     model_reset();
     clean_dir();
@@ -1408,7 +1462,7 @@ static void test_deleted_space_reused_after_reopen(void)
     assert(fx_commit(&fx, batch) == CATALOG_STORE_OK);
     heap_batch_free(batch);
     fx_reopen(&fx);
-    CHECK(root_has_magic(&fx, HEAP_HINT_DIRECTORY_MAGIC), "재시작 뒤에도 LHD3 공간 힌트가 남음");
+    CHECK(root_has_magic(&fx, HEAP_HINT_DIRECTORY_MAGIC), "재시작 뒤에도 SLD3 공간 힌트가 남음");
     assert(heap_batch_begin(fx.heap, &batch) == HEAP_OK);
     model_put(6, 4);
     value_view_t views[COLUMNS];
@@ -1574,6 +1628,312 @@ static void test_tree_failures_keep_every_leaf_reachable(void)
     clean_dir();
 }
 
+/* ── #270 ── */
+
+/* id와 BLOB 하나만 채운 행을 넣는다. 나머지 컬럼은 NULL이다. */
+static heap_locator_t insert_blob_row(heap_batch_t *batch, int64_t id, const uint8_t *blob, size_t size)
+{
+    value_view_t views[COLUMNS] = {
+        {VALUE_INTEGER, id, 0, NULL, 0}, {VALUE_NULL, 0, 0, NULL, 0}, {VALUE_NULL, 0, 0, NULL, 0},
+        {VALUE_BLOB, 0, 0, blob, size},  {VALUE_NULL, 0, 0, NULL, 0},
+    };
+    heap_locator_t at;
+    assert(heap_batch_insert(batch, views, COLUMNS, &at) == HEAP_OK);
+    return at;
+}
+
+/* 요청을 지켜보는 ledger. refuse_bytes와 같은 크기의 reserve만 거절하고 가장 큰 요청을 적는다. */
+typedef struct {
+    size_t refuse_bytes;
+    size_t max_request;
+    int refused;
+} probe_ledger_t;
+
+static bool probe_reserve(void *ctx, mem_scope_t scope, size_t bytes)
+{
+    (void)scope;
+    probe_ledger_t *probe = ctx;
+    if (bytes > probe->max_request) probe->max_request = bytes;
+    if (probe->refuse_bytes != 0 && bytes == probe->refuse_bytes) {
+        probe->refused++;
+        return false;
+    }
+    return true;
+}
+
+static void probe_release(void *ctx, mem_scope_t scope, size_t bytes)
+{
+    (void)ctx;
+    (void)scope;
+    (void)bytes;
+}
+
+static const mem_ledger_ops_t PROBE_OPS = {probe_reserve, probe_release, NULL, NULL};
+
+/* overflow 체인이 처음 잡은 자리를 다 써도 페이지 수집은 목록의 용량 안에서만 쓴다 */
+static void test_collect_pages_stays_inside_list_capacity(void)
+{
+    printf("\n[test_collect_pages_stays_inside_list_capacity]\n");
+    fx_t fx;
+    fx_create(&fx);
+    /*
+     * 디렉터리 1장 + record page 3장으로 4칸을 잡으면 목록 용량은 16이다. 첫 record page의 14장짜리 체인이
+     * 16칸을 정확히 채운 뒤 나머지 record page 두 장이 들어간다.
+     */
+    enum { CHAIN_PAGES = 14, RECORD_PAGES = 3 };
+    size_t big = CHAIN_PAGES * (size_t)(PAGE_BODY_BYTES - 28u);  /* overflow 페이지 머리글 28바이트 */
+    uint8_t *blob = malloc(big);
+    assert(blob != NULL);
+    memset(blob, 7, big);
+    heap_batch_t *batch;
+    assert(heap_batch_begin(fx.heap, &batch) == HEAP_OK);
+    insert_blob_row(batch, 1, blob, big);
+    for (int i = 0; i < 5; i++) insert_blob_row(batch, 2 + i, blob, 3900);
+    assert(fx_commit(&fx, batch) == CATALOG_STORE_OK);
+    heap_batch_free(batch);
+    free(blob);
+    CHECK(heap_record_page_count(fx.heap) == RECORD_PAGES, "record page %d장 (%zu)", RECORD_PAGES,
+          heap_record_page_count(fx.heap));
+
+    uint32_t *pages = NULL;
+    size_t count = 0;
+    guard_begin();
+    heap_status_t status = heap_collect_pages(fx.heap, &pages, &count);
+    int broken = g_guard_broken;
+    guard_end();
+    CHECK(status == HEAP_OK && count == 1 + RECORD_PAGES + CHAIN_PAGES, "모은 페이지 수 (%d, %zu)", status, count);
+    CHECK(broken == 0, "목록 용량 밖에 쓰지 않음");
+    size_t kinds[3] = {0, 0, 0};
+    bool distinct = true;
+    for (size_t i = 0; status == HEAP_OK && i < count; i++) {
+        page_file_page_info_t info;
+        assert(page_file_page_info(fx.file, pages[i], &info) == PAGE_FILE_OK);
+        if (info.kind == PAGE_KIND_DIRECTORY) kinds[0]++;
+        if (info.kind == PAGE_KIND_RECORD) kinds[1]++;
+        if (info.kind == PAGE_KIND_OVERFLOW) kinds[2]++;
+        for (size_t k = 0; k < i; k++) distinct = distinct && pages[k] != pages[i];
+    }
+    CHECK(kinds[0] == 1 && kinds[1] == RECORD_PAGES && kinds[2] == CHAIN_PAGES && distinct,
+          "디렉터리 %zu, record %zu, overflow %zu, 중복 %s", kinds[0], kinds[1], kinds[2], distinct ? "없음" : "있음");
+    if (status == HEAP_OK) heap_free_pages(fx.heap, pages, count);
+    fx_close(&fx);
+    clean_dir();
+}
+
+/* catalog가 만들 수 있는 가장 넓은 테이블을 heap이 열고 쓴다 */
+static void test_widest_catalog_table_opens(void)
+{
+    printf("\n[test_widest_catalog_table_opens]\n");
+    _Static_assert(CATALOG_MAX_CREATE_COLUMNS <= HEAP_MAX_COLUMNS, "catalog가 만드는 테이블은 heap이 열 수 있어야 한다");
+    static value_type_t types[HEAP_MAX_COLUMNS + 1];
+    static value_view_t views[CATALOG_MAX_CREATE_COLUMNS];
+    for (size_t i = 0; i <= HEAP_MAX_COLUMNS; i++) types[i] = VALUE_INTEGER;
+    for (size_t i = 0; i < CATALOG_MAX_CREATE_COLUMNS; i++) views[i] = (value_view_t){VALUE_INTEGER, (int64_t)i, 0, NULL, 0};
+    fx_t fx;
+    fx_create(&fx);
+    heap_schema_t schema = {types, CATALOG_MAX_CREATE_COLUMNS};
+    heap_t *wide = NULL;
+    heap_status_t opened = heap_open(fx.file, fx.tid, 0, &schema, &wide);
+    CHECK(opened == HEAP_OK, "컬럼 %u개 테이블 열기 (%d)", CATALOG_MAX_CREATE_COLUMNS, opened);
+    if (opened == HEAP_OK) {
+        heap_batch_t *batch;
+        assert(heap_batch_begin(wide, &batch) == HEAP_OK);
+        heap_locator_t at;
+        heap_status_t inserted = heap_batch_insert(batch, views, CATALOG_MAX_CREATE_COLUMNS, &at);
+        CHECK(inserted == HEAP_OK, "가장 넓은 행 삽입 (%d)", inserted);
+        assert(heap_batch_abort(batch) == HEAP_OK);
+        heap_batch_free(batch);
+        heap_close(wide);
+    }
+    schema.column_count = HEAP_MAX_COLUMNS + 1;
+    wide = NULL;
+    CHECK(heap_open(fx.file, fx.tid, 0, &schema, &wide) == HEAP_INVALID && wide == NULL, "한도를 넘는 컬럼 수는 INVALID");
+    fx_close(&fx);
+    clean_dir();
+}
+
+/* 손상된 overflow 참조의 크기는 파일 크기와 대조하기 전에는 계상·할당에 쓰지 않는다 */
+static void test_corrupt_overflow_size_is_bounded_by_file(void)
+{
+    printf("\n[test_corrupt_overflow_size_is_bounded_by_file]\n");
+    enum { BLOB_BYTES = 20000 };
+    fx_t fx;
+    fx_create(&fx);
+    uint8_t *blob = malloc(BLOB_BYTES);
+    assert(blob != NULL);
+    for (size_t i = 0; i < BLOB_BYTES; i++) blob[i] = (uint8_t)(i * 31 + 1);
+    heap_batch_t *batch;
+    assert(heap_batch_begin(fx.heap, &batch) == HEAP_OK);
+    insert_blob_row(batch, 1, blob, BLOB_BYTES);
+    assert(fx_commit(&fx, batch) == CATALOG_STORE_OK);
+    heap_batch_free(batch);
+    free(blob);
+    uint32_t good_root = heap_root(fx.heap);
+    uint32_t *pages;
+    size_t count;
+    assert(heap_collect_pages(fx.heap, &pages, &count) == HEAP_OK);
+    uint32_t record_page = 0;
+    for (size_t i = 0; i < count; i++) {
+        page_file_page_info_t info;
+        assert(page_file_page_info(fx.file, pages[i], &info) == PAGE_FILE_OK);
+        if (info.kind == PAGE_KIND_RECORD) record_page = pages[i];
+    }
+    heap_free_pages(fx.heap, pages, count);
+    assert(record_page != 0);
+    heap_close(fx.heap);
+    fx.heap = NULL;
+    page_file_close(fx.file);
+    /* 최신 세대의 manifest가 아래에서 바꿀 페이지를 대조하지 않게 빈 commit을 한다 */
+    assert(page_file_open(DB_PATH, true, &fx.file, NULL) == PAGE_FILE_OK && page_file_commit(fx.file) == PAGE_FILE_OK);
+    page_file_close(fx.file);
+
+    /* record page 안의 참조(head u32, size u32)에서 size만 4GiB 가까이로 바꾸고 체크섬을 다시 계산한다 */
+    size_t size;
+    uint8_t *bytes = slurp(DB_PATH, &size);
+    uint8_t *page = bytes + (size_t)record_page * PAGE_FILE_PAGE_BYTES;
+    static const uint8_t stored[4] = {BLOB_BYTES & 0xFF, (BLOB_BYTES >> 8) & 0xFF, 0, 0};
+    size_t hits = 0, at = 0;
+    for (size_t i = PAGE_ENVELOPE_BYTES; i + 4 <= PAGE_FILE_PAGE_BYTES; i++) {
+        if (memcmp(page + i, stored, 4) != 0) continue;
+        hits++;
+        at = i;
+    }
+    assert(hits == 1);
+    page[at] = 0x00;
+    page[at + 1] = 0xFF;
+    page[at + 2] = 0xFF;
+    page[at + 3] = 0xFF;
+    reseal(page);
+    spit(DB_PATH, bytes, size);
+    free(bytes);
+
+    assert(page_file_open(DB_PATH, false, &fx.file, NULL) == PAGE_FILE_OK);
+    probe_ledger_t watch = {0, 0, 0};
+    mem_ledger_t ledger = {&PROBE_OPS, &watch};
+    heap_schema_t schema = {TYPES, COLUMNS};
+    heap_t *probe = NULL;
+    assert(heap_open_ex(fx.file, fx.tid, good_root, &schema, &ledger, &probe) == HEAP_OK);
+    heap_cursor_t *cursor;
+    assert(heap_cursor_open(probe, &cursor) == HEAP_OK);
+    value_t row[COLUMNS] = ZERO_ROW;
+    heap_locator_t locator;
+    heap_status_t status = heap_cursor_next(cursor, row, &locator);
+    CHECK(status == HEAP_CORRUPT, "파일보다 큰 overflow 크기는 CORRUPT (%d)", status);
+    clear_row(row);
+    heap_cursor_close(cursor);
+    status = heap_collect_pages(probe, &pages, &count);
+    CHECK(status == HEAP_CORRUPT, "페이지 수집도 CORRUPT (%d)", status);
+    if (status == HEAP_OK) heap_free_pages(probe, pages, count);
+    CHECK(watch.max_request <= size, "가장 큰 reserve 요청 %zu바이트가 파일 크기 %zu바이트 이하", watch.max_request, size);
+    heap_close(probe);
+    page_file_close(fx.file);
+    fx.file = NULL;
+    catalog_close(fx.catalog);
+    clean_dir();
+}
+
+static bool visit_stop(void *context, heap_locator_t locator)
+{
+    (void)locator;
+    ++*(int *)context;
+    return false;
+}
+
+static bool visit_count(void *context, heap_locator_t locator)
+{
+    (void)locator;
+    ++*(int *)context;
+    return true;
+}
+
+/* 보조 색인 방문에서 callback의 false는 메모리 부족이 아니라 중단이다 */
+static void test_secondary_visit_stop_is_not_an_error(void)
+{
+    printf("\n[test_secondary_visit_stop_is_not_an_error]\n");
+    fx_t fx;
+    fx_create(&fx);
+    heap_close(fx.heap);
+    heap_schema_t schema = {TYPES, COLUMNS};
+    heap_index_spec_t key = {0, PAGE_FILE_NO_PAGE, NULL};
+    assert(heap_open_indexed(fx.file, fx.tid, 0, &schema, &key, NULL, &fx.heap) == HEAP_OK);
+    heap_batch_t *batch;
+    assert(heap_batch_begin(fx.heap, &batch) == HEAP_OK);
+    /* 같은 컬럼에 유일 색인과 비고유 색인을 하나씩 둔다 */
+    heap_secondary_spec_t specs[2] = {{0, true, false, PAGE_FILE_NO_PAGE}, {0, false, false, PAGE_FILE_NO_PAGE}};
+    assert(heap_batch_configure_secondary(batch, specs, 2) == HEAP_OK);
+    for (int id = 1; id <= 3; id++) {
+        value_view_t views[COLUMNS] = {
+            {VALUE_INTEGER, id, 0, NULL, 0}, {VALUE_NULL, 0, 0, NULL, 0}, {VALUE_NULL, 0, 0, NULL, 0},
+            {VALUE_NULL, 0, 0, NULL, 0},     {VALUE_NULL, 0, 0, NULL, 0},
+        };
+        heap_locator_t at;
+        assert(heap_batch_insert(batch, views, COLUMNS, &at) == HEAP_OK);
+        assert(heap_batch_secondary_insert(batch, views, COLUMNS, at) == HEAP_OK);
+    }
+    heap_batch_result_t result;
+    assert(heap_batch_finish(batch, &result) == HEAP_OK && result.secondary_count == 2);
+    specs[0].root = result.new_secondary_roots[0];
+    specs[1].root = result.new_secondary_roots[1];
+    key.index_root = result.new_primary_root;
+    uint32_t root = result.new_root;
+    assert(fx_save_finished(&fx, batch, &result) == CATALOG_STORE_OK);
+    heap_batch_free(batch);
+    heap_close(fx.heap);
+    assert(heap_open_indexed(fx.file, fx.tid, root, &schema, &key, NULL, &fx.heap) == HEAP_OK);
+
+    value_view_t two = {VALUE_INTEGER, 2, 0, NULL, 0};
+    value_view_t absent = {VALUE_INTEGER, 9, 0, NULL, 0};
+    for (int i = 0; i < 2; i++) {
+        const char *name = specs[i].unique ? "유일" : "비고유";
+        int calls = 0;
+        heap_status_t status = heap_secondary_visit_equal(fx.heap, specs[i], &two, visit_stop, &calls);
+        CHECK(status == HEAP_OK && calls == 1, "%s 색인: callback이 멈추면 HEAP_OK (%d, 방문 %d)", name, status, calls);
+        calls = 0;
+        status = heap_secondary_visit_equal(fx.heap, specs[i], &two, visit_count, &calls);
+        CHECK(status == HEAP_OK && calls == 1, "%s 색인: 끝까지 방문 (%d, 방문 %d)", name, status, calls);
+        calls = 0;
+        status = heap_secondary_visit_equal(fx.heap, specs[i], &absent, visit_stop, &calls);
+        CHECK(status == HEAP_OK && calls == 0, "%s 색인: 없는 값 (%d, 방문 %d)", name, status, calls);
+    }
+    fx_close(&fx);
+    clean_dir();
+}
+
+/* TEXT의 UTF-8 검증은 값을 복사하지 않으므로 값 크기만큼의 reserve를 따로 하지 않는다 */
+static void test_text_check_does_not_copy_value(void)
+{
+    printf("\n[test_text_check_does_not_copy_value]\n");
+    enum { TEXT_BYTES = 3001 };
+    fx_t fx;
+    fx_create(&fx);
+    heap_close(fx.heap);
+    probe_ledger_t watch = {TEXT_BYTES, 0, 0};
+    mem_ledger_t ledger = {&PROBE_OPS, &watch};
+    heap_schema_t schema = {TYPES, COLUMNS};
+    assert(heap_open_ex(fx.file, fx.tid, 0, &schema, &ledger, &fx.heap) == HEAP_OK);
+    uint8_t *text = malloc(TEXT_BYTES);
+    assert(text != NULL);
+    memset(text, 'a', TEXT_BYTES);
+    value_view_t views[COLUMNS] = {
+        {VALUE_INTEGER, 1, 0, NULL, 0}, {VALUE_NULL, 0, 0, NULL, 0}, {VALUE_TEXT, 0, 0, text, TEXT_BYTES},
+        {VALUE_NULL, 0, 0, NULL, 0},    {VALUE_NULL, 0, 0, NULL, 0},
+    };
+    heap_batch_t *batch;
+    assert(heap_batch_begin(fx.heap, &batch) == HEAP_OK);
+    heap_locator_t at;
+    text[TEXT_BYTES - 1] = 0xFF;
+    CHECK(heap_batch_insert(batch, views, COLUMNS, &at) == HEAP_INVALID, "잘못된 UTF-8은 INVALID");
+    text[TEXT_BYTES - 1] = 'a';
+    heap_status_t inserted = heap_batch_insert(batch, views, COLUMNS, &at);
+    CHECK(inserted == HEAP_OK && watch.refused == 0, "값 크기만큼의 reserve 없이 삽입 (%d, 거절 %d회)", inserted,
+          watch.refused);
+    heap_batch_abort(batch);
+    heap_batch_free(batch);
+    free(text);
+    fx_close(&fx);
+    clean_dir();
+}
+
 int main(void)
 {
     /* 할당 치환이 적용된 빌드인지 확인한다. */
@@ -1604,6 +1964,11 @@ int main(void)
     test_deleted_space_reused_after_reopen();
     test_stale_space_hint_is_rechecked();
     test_tree_failures_keep_every_leaf_reachable();
+    test_collect_pages_stays_inside_list_capacity();
+    test_widest_catalog_table_opens();
+    test_corrupt_overflow_size_is_bounded_by_file();
+    test_secondary_visit_stop_is_not_an_error();
+    test_text_check_does_not_copy_value();
     clean_dir();
     printf("\n%s: %d/%d\n", g_fail == 0 ? "ALL PASSED" : "FAILED", g_run - g_fail, g_run);
     return g_fail == 0 ? 0 : 1;

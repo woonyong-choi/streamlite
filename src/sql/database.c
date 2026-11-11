@@ -24,7 +24,7 @@ typedef struct {
 } resident_plan_t;
 
 /*
- * 쓰기 작업 안의 문장을 게시하지 않고 작업 카탈로그에 쌓는다. 데이터 페이지는 이미 새 자리에 쓰였다. 문장이 대체한
+ * 쓰기 작업 안의 문장을 게시하지 않고 작업 카탈로그에 쌓는다. 내부 workspace는 데이터 쓰기도 미룬다. 문장이 대체한
  * 페이지는 놓지 않고 목록에 보관한다(작업이 게시된 뒤에만 놓는다). 실패하면 이 문장의 새 페이지만 돌려주고 작업
  * 카탈로그와 목록은 그대로다. 호출자가 batch를 free한다.
  */
@@ -37,14 +37,12 @@ typedef struct {
 
 static size_t overflow_write_bound(size_t size_bytes);
 
-static const lexer_limits_t LEXER_LIMITS = {
-    (size_t)16 << 20, (size_t)16 << 20, (size_t)1 << 20, LEXER_PARAMETER_CEILING
-};
-
 /* ── 계상 보조 ── */
 
 bool q_reserve(database_t *db, size_t bytes)
 {
+    if (mem_reserve(&db->ledger, MEM_SCOPE_QUERY, bytes)) return true;
+    if (!database_cache_trim(db)) return false;
     return mem_reserve(&db->ledger, MEM_SCOPE_QUERY, bytes);
 }
 
@@ -201,7 +199,16 @@ static void release_open_lock(page_file_t *file)
 
 database_status_t database_create(const char *path, database_t **out)
 {
+    return database_create_ex(path, DATABASE_DURABILITY_NORMAL, out);
+}
+
+database_status_t database_create_ex(const char *path, database_durability_t durability, database_t **out)
+{
     if (path == NULL || out == NULL) return DATABASE_INVALID;
+    if (durability != DATABASE_DURABILITY_NORMAL && durability != DATABASE_DURABILITY_FULL &&
+        durability != DATABASE_DURABILITY_OFF) {
+        return DATABASE_INVALID;
+    }
     database_t *db = calloc(1, sizeof(*db));
     if (db == NULL) return DATABASE_NOMEM;
     db->writable = true;
@@ -212,6 +219,9 @@ database_status_t database_create(const char *path, database_t **out)
         errno = saved;
         return from_page_file(created);
     }
+    /* 생성 commit·게시·디렉터리 동기화는 OFF에서도 동기화한다. FULL이면 full_sync다 */
+    page_file_set_durability(db->file, durability == DATABASE_DURABILITY_FULL ? PAGE_FILE_DURABILITY_FULL
+                                                                              : PAGE_FILE_DURABILITY_NORMAL);
     database_status_t status = DATABASE_OK;
     catalog_status_t opened = catalog_open_empty(&db->catalog);
     if (opened != CATALOG_OK) {
@@ -221,11 +231,22 @@ database_status_t database_create(const char *path, database_t **out)
         status = from_store(saved);
         if (status == DATABASE_OK) {
             page_file_status_t published = page_file_publish(db->file);
-            /* PUBLISHED_DIRTY는 파일이 열리지만 이름의 내구성을 주장할 수 없다 */
+            /*
+             * PUBLISHED_DIRTY는 파일이 열리지만 이름의 내구성을 주장할 수 없어 실패로 돌려준다. 실패한 생성이 게시된
+             * 파일을 남기면 다시 만들 때 EXISTS가 되므로 이름을 거둔다. 거두지 못하면 게시된 빈 DB가 남는다.
+             */
+            if (published == PAGE_FILE_PUBLISHED_DIRTY) {
+                int dirty = errno;
+                page_file_retract(db->file);
+                errno = dirty;
+            }
             status = published == PAGE_FILE_OK ? DATABASE_OK : from_page_file(published);
         }
     }
-    if (status == DATABASE_OK) release_open_lock(db->file);
+    if (status == DATABASE_OK) {
+        database_set_durability(db, durability);
+        release_open_lock(db->file);
+    }
     if (status != DATABASE_OK) {
         int saved = errno;
         catalog_close(db->catalog);
@@ -261,12 +282,20 @@ static bool admit_catalog(void *ctx, size_t catalog_bytes)
     return true;
 }
 
-static database_status_t open_database(const char *path, bool writable, admission_t *admission,
-                                       database_t **out)
+/*
+ * accept_loss는 쓰기 열기에서 성공한 최신 commit의 손상을 받아들이고 이전 세대에서 이어 쓴다는 뜻이다. 열 때의 판정은
+ * page_file 핸들이 보관하며 database_open_report로 읽는다.
+ */
+static database_status_t open_database_with(const char *path, bool writable, bool accept_loss, admission_t *admission,
+                                            database_t **out)
 {
     page_file_t *file = NULL;
-    page_file_status_t opened = page_file_open_admitted(path, writable, &file, NULL,
-                                                        admission != NULL ? admit_file : NULL, admission);
+    page_file_open_options_t options = {.writable = writable,
+                                        .accept_lost_commit = accept_loss,
+                                        .admit = admission != NULL ? admit_file : NULL,
+                                        .admit_ctx = admission};
+    page_file_status_t opened = page_file_open_with(path, &options, &file, NULL);
+    if (opened == PAGE_FILE_LOST_COMMIT) return DATABASE_LOST_COMMIT;
     if (opened != PAGE_FILE_OK) return from_page_file(opened);
     database_t *db = calloc(1, sizeof(*db));
     if (db == NULL) {
@@ -289,10 +318,36 @@ static database_status_t open_database(const char *path, bool writable, admissio
     return DATABASE_OK;
 }
 
+static database_status_t open_database(const char *path, bool writable, admission_t *admission,
+                                       database_t **out)
+{
+    return open_database_with(path, writable, false, admission, out);
+}
+
 database_status_t database_open(const char *path, bool writable, database_t **out)
 {
     if (path == NULL || out == NULL) return DATABASE_INVALID;
     return open_database(path, writable, NULL, out);
+}
+
+database_status_t database_open_accepting_loss(const char *path, database_t **out)
+{
+    if (path == NULL || out == NULL) return DATABASE_INVALID;
+    return open_database_with(path, true, true, NULL, out);
+}
+
+void database_open_report(const database_t *db, database_open_report_t *out)
+{
+    if (out == NULL) return;
+    *out = (database_open_report_t){0};
+    if (db == NULL) return;
+    page_file_open_info_t info = page_file_open_info(db->file);
+    out->damaged_slots = info.damaged_slots;
+    out->rolled_back = info.rolled_back != 0;
+    out->fell_back = info.loss != PAGE_FILE_LOSS_NONE;
+    out->loss = info.loss == PAGE_FILE_LOSS_CONFIRMED  ? DATABASE_LOSS_CONFIRMED
+                : info.loss == PAGE_FILE_LOSS_POSSIBLE ? DATABASE_LOSS_POSSIBLE
+                                                       : DATABASE_LOSS_NONE;
 }
 
 database_status_t database_close(database_t *db)
@@ -305,6 +360,7 @@ database_status_t database_close(database_t *db)
         db->layer = NULL;
     }
     if (db->work.active) database_work_end(db, DATABASE_WORK_NOT_APPLIED);
+    database_cache_close(db);
     mem_ledger_t resident = db->resident;
     size_t resident_bytes = db->res_fixed + db->res_catalog + db->res_lists;
     catalog_close(db->catalog);
@@ -316,6 +372,26 @@ database_status_t database_close(database_t *db)
 }
 
 bool database_is_poisoned(const database_t *db) { return db != NULL && db->poisoned; }
+
+database_status_t database_set_durability(database_t *db, database_durability_t durability)
+{
+    if (db == NULL) return DATABASE_INVALID;
+    switch (durability) {
+        case DATABASE_DURABILITY_NORMAL: page_file_set_durability(db->file, PAGE_FILE_DURABILITY_NORMAL); break;
+        case DATABASE_DURABILITY_FULL: page_file_set_durability(db->file, PAGE_FILE_DURABILITY_FULL); break;
+        case DATABASE_DURABILITY_OFF: page_file_set_durability(db->file, PAGE_FILE_DURABILITY_OFF); break;
+        default: return DATABASE_INVALID;
+    }
+    return DATABASE_OK;
+}
+
+database_durability_t database_durability(const database_t *db)
+{
+    page_file_durability_t level = db != NULL ? page_file_durability(db->file) : PAGE_FILE_DURABILITY_NORMAL;
+    return level == PAGE_FILE_DURABILITY_FULL ? DATABASE_DURABILITY_FULL
+           : level == PAGE_FILE_DURABILITY_OFF ? DATABASE_DURABILITY_OFF
+                                               : DATABASE_DURABILITY_NORMAL;
+}
 
 void database_scan_stats(const database_t *db, database_scan_stats_t *out)
 {
@@ -335,9 +411,12 @@ database_status_t database_attach_ledger(database_t *db, const mem_ledger_t *res
     if (db == NULL) return DATABASE_INVALID;
     if (!mem_ledger_enabled(resident)) return DATABASE_OK;
     if (mem_ledger_enabled(&db->resident)) return DATABASE_INVALID;
+    if (db->work.active && database_workspace_enabled(db)) return DATABASE_INVALID;
+    database_cache_close(db);
     size_t fixed = sizeof(*db) + page_file_handle_bytes(db->file);
     size_t catalog = catalog_memory_bytes(db->catalog);
-    size_t lists = page_file_list_peak_bytes(page_file_control(db->file)->page_count);
+    size_t lists = page_file_list_peak_bytes(page_file_allocated_pages(db->file));
+    if (db->res_lists > lists) lists = db->res_lists;
     if (!mem_reserve(resident, MEM_SCOPE_RESIDENT, fixed + catalog + lists)) return DATABASE_NOMEM;
     mem_ledger_retain(resident);
     db->resident = *resident;
@@ -349,7 +428,11 @@ database_status_t database_attach_ledger(database_t *db, const mem_ledger_t *res
 
 size_t database_resident_bytes(const database_t *db)
 {
-    return db == NULL ? 0 : db->res_fixed + db->res_catalog + db->res_lists;
+    if (db == NULL) return 0;
+    database_cache_stats_t cache;
+    database_cache_stats(db, &cache);
+    return db->res_fixed + db->res_catalog + db->res_lists + cache.bytes +
+           db->work.res_cat + db->work.res_lists + db->work.pages.bytes;
 }
 
 /*
@@ -505,6 +588,13 @@ database_exec_status_t heap_failure(database_t *db, heap_status_t status, const 
     }
 }
 
+/* 보조 색인 변경의 실패. 같은 값이 이미 있으면 유일 색인 위반이며 기본 키 중복과 코드는 같고 문구가 다르다 */
+database_exec_status_t index_failure(database_t *db, heap_status_t status, const char *where)
+{
+    if (status != HEAP_KEY_EXISTS) return heap_failure(db, status, where);
+    return fail_result(db, RESULT_E_CONSTRAINT, 11, "유일 색인의 값이 중복됩니다 (%s)", where);
+}
+
 database_exec_status_t cancelled_result(database_t *db)
 {
     return fail_result(db, RESULT_E_CANCELLED, DATABASE_CODE_CANCELLED, "문장이 취소되어 아무것도 반영하지 않았습니다");
@@ -575,17 +665,27 @@ heap_status_t configure_secondary(heap_batch_t *batch, const catalog_t *catalog,
 void work_close(database_t *db, work_t *work)
 {
     if (work->cat == NULL) return;
+    if (work->cat == db->work.cat) {
+        db->work.cat = NULL;
+        mem_release(&db->resident, MEM_SCOPE_RESIDENT, db->work.res_cat);
+        db->work.res_cat = 0;
+    }
     catalog_close(work->cat);
     q_release(db, work->charged);
     *work = (work_t){NULL, 0};
 }
 
-/* 게시된 카탈로그를 복제한다. 복제 동안의 순간 최대치를 먼저 reserve하고 끝나면 복제본 몫만 남긴다. */
+/* workspace는 앞선 private catalog를 재사용하고, 나머지는 복제 순간의 최고치를 먼저 reserve한다. */
 bool work_clone(database_t *db, work_t *work)
 {
     TB_SCOPE(bench_metadata, TB_METADATA);
+    if (db->work.inside && database_workspace_enabled(db) && db->work.cat != NULL) {
+        *work = (work_t){db->work.cat, 0};
+        return true;
+    }
     const catalog_t *base = base_catalog(db);
     size_t peak = catalog_clone_peak_bytes(base);
+    if (db->work.inside && !database_workspace_allows(db, db->work.res_cat, db->work.res_lists, peak)) return false;
     if (!q_reserve(db, peak)) return false;
     catalog_t *clone = NULL;
     if (catalog_clone(base, &clone) != CATALOG_OK) {
@@ -596,13 +696,28 @@ bool work_clone(database_t *db, work_t *work)
     assert(kept <= peak);
     q_release(db, peak - kept);
     *work = (work_t){clone, kept};
+    if (db->work.inside) db->workspace_stats.catalog_clones++;
     return true;
+}
+
+bool work_reserve_catalog(database_t *db, const work_t *work, size_t peak)
+{
+    size_t kept = work->cat == db->work.cat ? db->work.res_cat : work->charged;
+    if (db->work.inside && !database_workspace_allows(db, kept, db->work.res_lists, peak)) return false;
+    return q_reserve(db, peak);
 }
 
 /* 호출 뒤 카탈로그 크기에 맞춰 reserve를 정리한다. peak는 호출 전에 reserve한 순간 최대치다. */
 void work_settle(database_t *db, work_t *work, size_t peak)
 {
     size_t now = catalog_memory_bytes(work->cat);
+    if (work->cat == db->work.cat) {
+        size_t growth = now > db->work.res_cat ? now - db->work.res_cat : 0;
+        assert(growth >= work->charged && growth - work->charged <= peak);
+        q_release(db, peak - (growth - work->charged));
+        work->charged = growth;
+        return;
+    }
     if (now >= work->charged) {
         size_t growth = now - work->charged;
         assert(growth <= peak);
@@ -644,7 +759,7 @@ static void publish_discard(database_t *db, work_t *work, heap_batch_t *batch, r
 static bool stage_prepare(database_t *db, const catalog_t *cat, size_t new_pages, stage_plan_t *plan)
 {
     *plan = (stage_plan_t){db->work.res_cat, db->res_lists, db->work.res_lists, 0};
-    if (!mem_ledger_enabled(&db->resident)) return true;
+    if (!mem_ledger_enabled(&db->resident) && !database_workspace_enabled(db)) return true;
     size_t chain = catalog_encoded_bytes(cat) / (PAGE_BODY_BYTES - OVERFLOW_MIN_PAGE_BYTES) + 1;
     uint64_t pages = (uint64_t)page_file_allocated_pages(db->file) + new_pages + chain;
     if (pages > UINT32_MAX) pages = UINT32_MAX;
@@ -652,6 +767,7 @@ static bool stage_prepare(database_t *db, const catalog_t *cat, size_t new_pages
     size_t lists = page_file_list_peak_bytes((uint32_t)pages);
     plan->lists_bytes = lists > db->res_lists ? lists : db->res_lists;
     plan->work_lists_bytes = lists > db->work.res_lists ? lists : db->work.res_lists;
+    if (!database_workspace_allows(db, plan->cat_bytes, plan->work_lists_bytes, 0)) return false;
     size_t extra = plan->lists_bytes - db->res_lists + plan->work_lists_bytes - db->work.res_lists;
     if (plan->cat_bytes > db->work.res_cat) extra += plan->cat_bytes - db->work.res_cat;
     if (!mem_reserve(&db->resident, MEM_SCOPE_RESIDENT, extra)) return false;
@@ -661,7 +777,7 @@ static bool stage_prepare(database_t *db, const catalog_t *cat, size_t new_pages
 
 static void stage_finish(database_t *db, const stage_plan_t *plan, bool adopted)
 {
-    if (!mem_ledger_enabled(&db->resident)) return;
+    if (!mem_ledger_enabled(&db->resident) && !database_workspace_enabled(db)) return;
     if (adopted) {
         if (plan->cat_bytes < db->work.res_cat) {
             mem_release(&db->resident, MEM_SCOPE_RESIDENT, db->work.res_cat - plan->cat_bytes);
@@ -680,12 +796,13 @@ static database_exec_status_t stage_adopt(database_t *db, work_t *work, heap_bat
                                           size_t drop_count, result_t *success, result_t **out)
 {
     size_t old_total = finished->old_count + drop_count;
-    if (!list_reserve(&db->work.old_committed, old_total)) {
+    stage_plan_t plan;
+    if (!stage_prepare(db, work->cat, finished->new_count, &plan)) {
         publish_discard(db, work, batch, &success);
         return DATABASE_EXEC_NOMEM;
     }
-    stage_plan_t plan;
-    if (!stage_prepare(db, work->cat, finished->new_count, &plan)) {
+    if (!list_reserve(&db->work.old_committed, old_total)) {
+        stage_finish(db, &plan, false);
         publish_discard(db, work, batch, &success);
         return DATABASE_EXEC_NOMEM;
     }
@@ -698,7 +815,7 @@ static database_exec_status_t stage_adopt(database_t *db, work_t *work, heap_bat
         if (page_file_is_fresh(db->file, page)) page_file_release(db->file, page);
         else list_push(&db->work.old_committed, page);
     }
-    catalog_close(db->work.cat);
+    if (db->work.cat != work->cat) catalog_close(db->work.cat);
     db->work.cat = work->cat;
     q_release(db, work->charged);  /* 이 카탈로그는 이제 문장 몫이 아니라 상주 몫이다 */
     *work = (work_t){NULL, 0};
@@ -876,6 +993,7 @@ static database_status_t reload_catalog(database_t *db)
     size_t exact = bounded ? catalog_memory_bytes(fresh) : 0;
     assert(exact <= admission.admitted);
     mem_release(&db->resident, MEM_SCOPE_RESIDENT, admission.admitted - exact + db->res_catalog);
+    database_cache_clear(db);
     catalog_close(db->catalog);
     db->catalog = fresh;
     db->res_catalog = exact;
@@ -919,84 +1037,10 @@ static database_exec_status_t exec_statement(database_t *db, const database_exec
     }
     if (cancel_requested(db)) return cancelled_result(db);
 
-    bool bounded = mem_ledger_enabled(&db->ledger);
-    lexer_limits_t limits = LEXER_LIMITS;
-    if (bounded) {
-        size_t max_sql = opts != NULL && opts->max_sql_bytes > 0 ? opts->max_sql_bytes : DATABASE_BOUNDED_SQL_BYTES;
-        if (max_sql < limits.max_input_bytes) limits.max_input_bytes = max_sql;
-    }
-    if (size > limits.max_input_bytes) return fail_result(db, RESULT_E_LIMIT, 25, "입력이 한도를 넘습니다");
-
-    const uint8_t *text = sql != NULL ? sql : (const uint8_t *)"";
-    size_t lex_peak = lexer_scan_peak_bytes(size, &limits);
-    if (!q_reserve(db, lex_peak)) return DATABASE_EXEC_NOMEM;
-    lexed_t *lexed = NULL;
-    lexer_error_t lex_error;
-    TB_BEGIN(bench_lexer, TB_PARSE);
-    lexer_status_t scanned = lexer_scan(text, size, &limits, &lexed, &lex_error);
-    TB_END(bench_lexer);
-    if (scanned == LEXER_NOMEM) {
-        q_release(db, lex_peak);
-        return DATABASE_EXEC_NOMEM;
-    }
-    if (scanned == LEXER_LIMIT) {
-        q_release(db, lex_peak);
-        return fail_result(db, RESULT_E_LIMIT, (int)lex_error.reason, "입력이 한도를 넘습니다");
-    }
-    if (scanned != LEXER_OK) {
-        q_release(db, lex_peak);
-        return fail_result(db, RESULT_E_SYNTAX, (int)lex_error.reason, "어휘 오류 (바이트 %zu)", lex_error.offset);
-    }
-
-    database_exec_status_t status = DATABASE_EXEC_OK;
-    sqlstmt_t *statement = NULL;
-    size_t parse_peak = 0;
-    if (lexed_statement_count(lexed) != 1) {
-        status = fail_result(db, RESULT_E_SYNTAX, 20, "한 번에 문장 하나만 실행할 수 있습니다");
-        goto done;
-    }
-    lexer_binding_t empty = {NULL, 0};
-    const lexer_binding_t *bound = binding != NULL ? binding : &empty;
-    lexer_status_t checked = lexer_check_binding(lexed, bound);
-    if (checked != LEXER_OK) {
-        status = fail_result(db, RESULT_E_SYNTAX, (int)checked, "매개변수 개수가 맞지 않습니다 (SQL %u개)",
-                             (unsigned)lexed_parameter_count(lexed));
-        goto done;
-    }
-    lexer_statement_t tokens;
-    if (lexed_statement_at(lexed, 0, &tokens) != LEXER_OK) {
-        status = fail_result(db, RESULT_E_INTERNAL, 21, "문장을 읽지 못했습니다");
-        goto done;
-    }
-    parse_peak = sqlstmt_parse_peak_bytes(&tokens, bound);
-    if (!q_reserve(db, parse_peak)) {
-        parse_peak = 0;
-        status = DATABASE_EXEC_NOMEM;
-        goto done;
-    }
-    sqlstmt_error_t parse_error;
-    TB_BEGIN(bench_parser, TB_PARSE);
-    sqlstmt_status_t parsed = sqlstmt_parse(&tokens, bound, &statement, &parse_error);
-    TB_END(bench_parser);
-    if (parsed == SQLSTMT_NOMEM) {
-        status = DATABASE_EXEC_NOMEM;
-        goto done;
-    }
-    if (parsed != SQLSTMT_OK) {
-        switch (parsed) {
-            case SQLSTMT_SYNTAX:
-                status = fail_result(db, RESULT_E_SYNTAX, (int)parse_error.reason, "문법 오류 (바이트 %zu)", parse_error.offset);
-                break;
-            case SQLSTMT_LIMIT:
-                status = fail_result(db, RESULT_E_LIMIT, (int)parse_error.reason, "한도를 넘습니다 (바이트 %zu)", parse_error.offset);
-                break;
-            default:
-                status = fail_result(db, RESULT_E_SEMANTIC, (int)parse_error.reason,
-                                     "지원하지 않거나 올바르지 않은 문장입니다 (바이트 %zu)", parse_error.offset);
-                break;
-        }
-        goto done;
-    }
+    prepared_statement_t prepared = {0};
+    database_exec_status_t status = database_prepare(db, opts, sql, size, binding, &prepared);
+    sqlstmt_t *statement = prepared.statement;
+    if (status != DATABASE_EXEC_OK) goto done;
     if (statement->kind == SQLSTMT_BEGIN || statement->kind == SQLSTMT_COMMIT || statement->kind == SQLSTMT_ROLLBACK) {
         if (db->control_sink == NULL) {
             status = fail_result(db, RESULT_E_SEMANTIC, 34, "트랜잭션 제어문은 연결(session)에서만 실행할 수 있습니다");
@@ -1032,6 +1076,8 @@ static database_exec_status_t exec_statement(database_t *db, const database_exec
             goto done;
         }
     }
+    if (statement->kind == SQLSTMT_CREATE_TABLE || statement->kind == SQLSTMT_CREATE_INDEX ||
+        statement->kind == SQLSTMT_DROP_TABLE) database_cache_clear(db);
     switch (statement->kind) {
         case SQLSTMT_CREATE_TABLE: status = exec_create(db, &statement->create, out); break;
         case SQLSTMT_CREATE_INDEX: status = exec_create_index(db, &statement->index, out); break;
@@ -1045,10 +1091,8 @@ static database_exec_status_t exec_statement(database_t *db, const database_exec
     if (locked_here) page_file_unlock(db->file);
 done:
     relations_free(db);
-    sqlstmt_free(statement);
-    q_release(db, parse_peak);
-    lexer_free(lexed);
-    q_release(db, lex_peak);
+    if (status == DATABASE_EXEC_OK) database_prepared_cache(db, sql, size, &prepared);
+    database_prepared_clear(db, &prepared);
     return status;
 }
 
@@ -1169,6 +1213,7 @@ database_status_t database_work_begin(database_t *db)
     if (locked != DATABASE_OK) return locked;
     db->work = (work_state_t){0};
     db->work.active = true;
+    database_workspace_begin(db);
     return DATABASE_OK;
 }
 
@@ -1221,6 +1266,7 @@ database_work_result_t database_work_commit(database_t *db)
 
 static void work_reset(database_t *db)
 {
+    database_workspace_end(db);
     mem_release(&db->resident, MEM_SCOPE_RESIDENT, db->work.res_cat + db->work.res_lists);
     list_free(&db->work.old_committed);
     db->work = (work_state_t){0};

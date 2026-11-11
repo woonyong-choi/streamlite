@@ -72,7 +72,7 @@ database_exec_status_t exec_create(database_t *db, const sqlstmt_create_t *creat
     }
     catalog_table_id_t id;
     size_t create_peak = catalog_create_peak_bytes(work.cat, create->column_count, names_bytes);
-    if (!q_reserve(db, create_peak)) {
+    if (!work_reserve_catalog(db, &work, create_peak)) {
         status = DATABASE_EXEC_NOMEM;
         goto done;
     }
@@ -124,7 +124,7 @@ database_exec_status_t exec_create_index(database_t *db, const sqlstmt_index_t *
     result_t *success = NULL;
     if (!work_clone(db, &work)) return DATABASE_EXEC_NOMEM;
     size_t peak = catalog_add_index_peak_bytes(work.cat, index->name.size);
-    if (!q_reserve(db, peak)) {
+    if (!work_reserve_catalog(db, &work, peak)) {
         status = DATABASE_EXEC_NOMEM;
         goto done;
     }

@@ -12,10 +12,14 @@ static bool same_name(const sqlstmt_name_t *a, const sqlstmt_name_t *b)
     return a->size == b->size && (a->size == 0 || memcmp(a->bytes, b->bytes, a->size) == 0);
 }
 
-/* 두 식이 같은 모양인지(GROUP BY 식과 출력 식의 대응). 한쪽에만 테이블 이름이 붙은 열도 같다고 본다 */
+/*
+ * 두 식이 같은 모양인지(GROUP BY 식과 출력 식의 대응). 한쪽에만 테이블 이름이 붙은 열도 같다고 본다. 서브쿼리가 든
+ * 식은 질의 내용을 견주지 않으므로 같은 노드가 아니면 다르다고 본다(같다고 보면 다른 질의의 값을 읽는다. #272).
+ */
 static bool same_expr(const sqlexpr_t *a, const sqlexpr_t *b)
 {
     if (a->kind != b->kind || a->arg_count != b->arg_count) return false;
+    if (a->subquery != NULL || b->subquery != NULL) return a == b;
     switch (a->kind) {
         case SQLEXPR_LITERAL: return values_equal(&a->value.view, &b->value.view) || (a->value.view.type == VALUE_NULL && b->value.view.type == VALUE_NULL);
         case SQLEXPR_COLUMN:

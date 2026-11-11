@@ -95,7 +95,9 @@ static database_exec_status_t add_result_row(database_t *db, result_builder_t *b
 {
     result_status_t added = result_builder_add_row(builder, views, count);
     if (added == RESULT_NOMEM) return DATABASE_EXEC_NOMEM;
-    if (added != RESULT_OK) return fail_result(db, RESULT_E_LIMIT, 16, "결과가 한도를 넘습니다");
+    if (added == RESULT_LIMIT) return fail_result(db, RESULT_E_LIMIT, 16, "결과가 한도를 넘습니다");
+    /* 행이 결과 열 정의와 맞지 않는다(NULL일 수 없다고 한 열의 NULL 등). 한도가 아니라 실행기나 저장된 행의 문제다 */
+    if (added != RESULT_OK) return fail_result(db, RESULT_E_INTERNAL, 16, "결과 행이 결과 열 정의와 맞지 않습니다");
     return DATABASE_EXEC_OK;
 }
 
@@ -336,6 +338,33 @@ size_t secondary_probe(database_t *db, catalog_table_id_t table_id, const where_
     return SIZE_MAX;
 }
 
+/*
+ * 보조 색인으로 읽을 정수 구간 번호. 기본 키가 아닌 정수 열의 닫힌 구간(한쪽이라도 닫힘)이고 그 열에 보조 색인이 있으면
+ * 그 구간이다. 유일 색인과 ordered 색인만 쓴다(행 위치 꼬리는 같은 값 안의 순서가 정해져 있지 않다). 없으면 SIZE_MAX
+ */
+size_t secondary_range(database_t *db, const catalog_table_view_t *view, catalog_table_id_t table_id,
+                       const where_t *where, heap_secondary_spec_t *spec)
+{
+    if (where->never) return SIZE_MAX;
+    const catalog_t *catalog = base_catalog(db);
+    size_t count = catalog_index_count(catalog, table_id);
+    for (size_t r = 0; r < where->range_count; r++) {
+        const range_t *range = &where->ranges[r];
+        if (range->column == view->primary_key_column || view->columns[range->column].type != VALUE_INTEGER ||
+            (range->low == INT64_MIN && range->high == INT64_MAX)) {
+            continue;
+        }
+        for (size_t i = 0; i < count; i++) {
+            catalog_index_view_t index;
+            if (catalog_index_at(catalog, table_id, i, &index) != CATALOG_OK) continue;
+            if (index.column != range->column || (!index.unique && !index.ordered)) continue;
+            *spec = (heap_secondary_spec_t){index.column, index.unique, index.ordered, index.root};
+            return r;
+        }
+    }
+    return SIZE_MAX;
+}
+
 database_exec_status_t locate_key(database_t *db, heap_t *heap, const value_view_t *key, bool *is_hit,
                                          heap_locator_t *at)
 {
@@ -439,6 +468,17 @@ database_exec_status_t scan_rows(database_t *db, const catalog_table_view_t *tab
         if (scan.status != DATABASE_EXEC_OK) return scan.status;
         return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");
     }
+    heap_secondary_spec_t ranged;
+    size_t by_index_range = secondary_range(db, table, id, where, &ranged);
+    if (by_index_range != SIZE_MAX) {
+        range_scan_t scan = {db, heap, where, row, needed, sink, DATABASE_EXEC_OK};
+        bool stopped = false;
+        heap_status_t visited = heap_secondary_visit_range(heap, ranged, where->ranges[by_index_range].low,
+                                                           where->ranges[by_index_range].high, scan_range_row, &scan,
+                                                           &stopped);
+        if (scan.status != DATABASE_EXEC_OK) return scan.status;
+        return visited == HEAP_OK ? DATABASE_EXEC_OK : heap_failure(db, visited, "index range");
+    }
     heap_cursor_t *cursor = NULL;
     heap_status_t made = heap_cursor_open(heap, &cursor);
     if (made != HEAP_OK) return heap_failure(db, made, "cursor");
@@ -509,7 +549,9 @@ static database_exec_status_t combine_rows(select_ctx_t *acc, select_ctx_t *othe
     if (op == SQLSTMT_SET_UNION || op == SQLSTMT_SET_UNION_ALL) {
         status = select_rows_reserve(acc, acc->row_count + other->row_count);
         if (status != DATABASE_EXEC_OK) return status;
-        memcpy(acc->rows + acc->row_count, other->rows, other->row_count * sizeof(value_t *));
+        if (other->row_count > 0) {
+            memcpy(acc->rows + acc->row_count, other->rows, other->row_count * sizeof(value_t *));
+        }
         acc->row_count += other->row_count;
         other->row_count = 0;
         return op == SQLSTMT_SET_UNION ? select_dedupe(acc) : DATABASE_EXEC_OK;

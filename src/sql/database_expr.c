@@ -85,11 +85,21 @@ database_exec_status_t eval_failure(database_t *db, const sqleval_error_t *error
     }
 }
 
+static bool eval_reserve(void *ctx, size_t bytes) { return q_reserve(ctx, bytes); }
+static void eval_release(void *ctx, size_t bytes) { q_release(ctx, bytes); }
+
+/* 식 평가기의 프로그램·중간값을 이 문장의 예산(MEM_SCOPE_QUERY)에 계상하는 훅 */
+sqleval_memory_t eval_memory(database_t *db)
+{
+    return (sqleval_memory_t){eval_reserve, eval_release, db};
+}
+
 bool compile_expr(database_t *db, const sqlexpr_t *expr, const resolver_t *resolver, sqleval_prog_t **prog,
                          database_exec_status_t *status)
 {
     sqleval_error_t error = {SQLEVAL_OK, 0, NULL};
-    sqleval_env_t env = {resolver != NULL ? resolve_column : NULL, NULL, (void *)resolver, subquery_hook, db, outer_hook};
+    sqleval_env_t env = {resolver != NULL ? resolve_column : NULL, NULL, (void *)resolver, subquery_hook, db, outer_hook,
+                         eval_memory(db)};
     const resolver_t *saved = db->compile_resolver;
     db->compile_resolver = resolver;
     sqleval_status_t compiled = sqleval_compile(expr, &env, prog, &error);
@@ -244,6 +254,20 @@ database_exec_status_t narrow_text_range(database_t *db, where_t *where, size_t 
     return DATABASE_EXEC_OK;
 }
 
+static const value_view_t *probe_constant(const database_t *db, const sqlexpr_t *expr, value_type_t type)
+{
+    if (expr->kind == SQLEXPR_LITERAL) return &expr->value.view;
+    if (expr->kind != SQLEXPR_SUBQUERY) return NULL;
+    for (const relation_t *rel = db->relations; rel != NULL; rel = rel->next) {
+        if (rel->key != expr) continue;
+        if (rel->column_count != 1 || rel->row_count != 1) return NULL;
+        const value_view_t *value = &rel->cells[0].view;
+        if (value->type == VALUE_NULL) return NULL;
+        return value->type == type ? value : NULL;
+    }
+    return NULL;
+}
+
 static bool collect_probes(database_t *db, const sqlexpr_t *expr, const resolver_t *resolver, where_t *where,
                            database_exec_status_t *status)
 {
@@ -261,17 +285,19 @@ static bool collect_probes(database_t *db, const sqlexpr_t *expr, const resolver
         column = expr->args[1];
         constant = expr->args[0];
     }
-    if (column->kind != SQLEXPR_COLUMN || constant->kind != SQLEXPR_LITERAL) return true;
+    if (column->kind != SQLEXPR_COLUMN) return true;
     value_type_t type;
     size_t index = resolve_column((void *)resolver, &column->qualifier, &column->name, &type);
     if (index == SQLEVAL_NO_COLUMN || index == SQLEVAL_AMBIGUOUS) return true;
-    if (constant->value.view.type == VALUE_NULL) {
+    const value_view_t *value = probe_constant(db, constant, type);
+    if (value == NULL) return true;
+    if (value->type == VALUE_NULL) {
         where->never = true;
         return true;
     }
     if (where->probe_count == WHERE_MAX_PROBES) return true;
     probe_t *probe = &where->probes[where->probe_count];
-    value_status_t cast = q_cast(db, &constant->value.view, type, &probe->literal);
+    value_status_t cast = q_cast(db, value, type, &probe->literal);
     if (cast == VALUE_NOMEM) {
         *status = DATABASE_EXEC_NOMEM;
         return false;
@@ -323,7 +349,7 @@ bool compile_in(database_t *db, const sqlexpr_t *expr, const compile_ctx_t *cc, 
                        database_exec_status_t *status)
 {
     sqleval_error_t error = {SQLEVAL_OK, 0, NULL};
-    sqleval_env_t env = {cc->resolve, cc->match, cc->ctx, subquery_hook, db, outer_hook};
+    sqleval_env_t env = {cc->resolve, cc->match, cc->ctx, subquery_hook, db, outer_hook, eval_memory(db)};
     /* 그룹 질의의 식은 그룹 행 위에서 계산하므로 안쪽 서브쿼리가 바깥 열을 볼 수 없다 */
     const resolver_t *saved = db->compile_resolver;
     db->compile_resolver = cc->match == NULL ? cc->table : NULL;

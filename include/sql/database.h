@@ -12,7 +12,7 @@
 /*
  * 새 저장 형식(page_file) 위에서 CREATE·INSERT·SELECT·UPDATE·DELETE·DROP을 실행하는 데이터베이스.
  * 파일 하나에 테이블 여러 개가 있고 카탈로그(catalog_store)와 테이블별 heap(heap_store)을 연결한다.
- * ToteDB 파일이 아닌 파일(두 제어 페이지에 파일 magic이 없음)과 다른 형식 판은 열지 않으며 자동으로 옮기지도 않는다.
+ * StreamLite 파일이 아닌 파일(두 제어 페이지에 파일 magic이 없음)과 다른 형식 판은 열지 않으며 자동으로 옮기지도 않는다.
  *
  * 실행 단위: database_exec 한 번은 SQL 문장 하나이며 문장마다 자동 commit이다. 문장이 둘 이상이면
  * 실행하지 않고 SYNTAX 오류 결과를 돌려준다. 매개변수는 binding으로 받고 SQL 문자열에 이어 붙이지 않는다.
@@ -41,13 +41,19 @@
  *
  * 여러 프로세스(#199, #200): 같은 파일을 여러 핸들(다른 프로세스 포함)이 함께 연다. SELECT는 문장 동안 읽기 잠금을,
  * 변경 문장과 쓰기 작업은 그동안 writer 잠금을 쥔다(page_file.h). 잠금을 얻을 때 다른 핸들이 게시했으면 카탈로그를 다시 읽는다.
- * SELECT는 다른 핸들의 쓰기 거래를 기다리지 않고 마지막 게시 상태를 읽으며, 게시하는 순간(제어 쓰기와 fsync)만 기다린다.
+ * SELECT는 다른 핸들의 쓰기 거래를 기다리지 않고 마지막 게시 상태를 읽으며, 게시하는 순간(제어 쓰기와 동기화)만 기다린다.
+ * 트랜잭션 계층(database_txn.h)을 붙인 핸들의 자동 commit SELECT도 writer 잠금을 잡지 않는다.
  * writer 잠금은 기다리지 않는다. 다른 핸들이 쓰는 중이면 변경 문장은 RESULT_E_BUSY(DATABASE_CODE_FILE_LOCKED) 오류 결과, 작업
  * 시작은 DATABASE_LOCKED이며 아무것도 반영하지 않았다. 열기는 page_file 잠금 대기 상한까지 기다린다. fork한 자식이 부모의 핸들을 쓰면 문장은
  * DATABASE_CODE_FORKED 오류 결과, 그 밖은 DATABASE_FORKED이며 파일을 바꾸지 않는다. 자식은 파일을 새로 연다.
  *
+ * 보조 색인 구간(#260): 기본 키가 아닌 정수 열의 비교(<, <=, >, >=, BETWEEN)에 그 열의 보조 색인이 있고 기본 키 등가·
+ * 보조 색인 등가·기본 키 구간이 없으면 색인 구간을 (값, 기본 키) 순서로 읽는다. ORDER BY가 그 열 하나(오름차순)면 정렬하지
+ * 않고 그 순서로 내보내며 LIMIT에서 멈춘다. NULL은 색인에 없고 비교에도 맞지 않는다. 남은 조건은 행마다 평가한다.
+ *
  * 보장하지 않는 것: 여러 문장 거래(database_txn.h가 붙인다), 전원 손실 복구, lost write 탐지, 한 핸들의 동시 사용(단일
- * 스레드), 여러 writer의 동시 commit(쓰기는 파일 전체 배타 잠금으로 직렬), 큰 테이블의 성능(기본 키 등가 밖의 조회는 전체 스캔이고 문장마다 카탈로그를 다시 쓴다), SQLite와 같은
+ * 스레드), 여러 writer의 동시 commit(쓰기는 파일 전체 배타 잠금으로 직렬), 큰 테이블의 성능(기본 키·보조 색인 등가, 기본 키 구간, 보조 색인이 있는 정수 열 구간 밖의 조회는 전체 스캔이고 문장마다
+ * 카탈로그를 다시 쓴다), SQLite와 같은
  * 타입 친화성(여기서는 정확히 변환되는 값만 받고 아니면 오류).
  */
 
@@ -57,12 +63,13 @@ typedef enum {
     DATABASE_INVALID,
     DATABASE_IO,           /* errno를 남긴다 */
     DATABASE_CORRUPT,
-    DATABASE_UNSUPPORTED,  /* ToteDB 파일이 아님, 알 수 없는 형식 판 */
+    DATABASE_UNSUPPORTED,  /* StreamLite 파일이 아님, 알 수 없는 형식 판 */
     DATABASE_NOMEM,
     DATABASE_EXISTS,       /* create: 파일이 이미 있음 */
     DATABASE_LOCKED,       /* 다른 핸들이 파일 잠금을 쥐고 있음 */
     DATABASE_BUSY,         /* close: 해제하지 않은 트랜잭션이 남아 있다. 핸들은 그대로다 */
-    DATABASE_FORKED        /* 핸들을 연 프로세스가 아님(fork한 자식). 파일을 바꾸지 않았다 */
+    DATABASE_FORKED,       /* 핸들을 연 프로세스가 아님(fork한 자식). 파일을 바꾸지 않았다 */
+    DATABASE_LOST_COMMIT   /* 쓰기 열기: 성공을 돌려준 최신 commit이 손상돼 이전 세대로만 열 수 있다. 파일을 바꾸지 않았다 */
 } database_status_t;
 
 typedef enum {
@@ -73,15 +80,71 @@ typedef enum {
 
 typedef struct database database_t;
 
-/* 새 파일을 만들어 빈 카탈로그를 commit하고 게시한다. 목적지가 있으면 DATABASE_EXISTS다. */
+/*
+ * 새 파일을 만들어 빈 카탈로그를 commit하고 게시한다. 목적지가 있으면 DATABASE_EXISTS, 다른 핸들이 같은 경로를 만드는
+ * 중이면 DATABASE_EXISTS나 DATABASE_LOCKED다. 생성 도중 죽은 프로세스가 남긴 "<path>.partial"은 정리하고 만든다.
+ * 게시 뒤 정리나 디렉터리 fsync가 실패하면 DATABASE_IO이며 게시한 이름을 거둔다(다시 만들 수 있다). 거두지도 못하면
+ * 게시된 빈 DB가 남아 다음 생성은 DATABASE_EXISTS다.
+ */
 database_status_t database_create(const char *path, database_t **out);
-/* 게시된 파일을 연다. writable이 아니면 SELECT만 실행된다. 열기는 파일을 바꾸지 않는다. */
+/*
+ * 게시된 파일을 연다. writable이 아니면 SELECT만 실행된다. 열기는 파일을 바꾸지 않는다.
+ *
+ * 최신 세대를 읽을 수 없어(제어 페이지 손상, 그 commit이 쓴 페이지·파일 길이 불일치) 이전 세대로 물러난 열기는
+ * database_open_report로 확인한다. 물러난 까닭이 "fsync 전에 전원이 끊긴 commit"인지 "성공을 돌려준 commit의 손상"인지는
+ * 잠금 파일의 내구 확인 기록이 남아 있을 때만 확정된다(page_file.h의 page_file_loss_t).
+ *   - 확정(DATABASE_LOSS_CONFIRMED): 읽기 열기는 이전 세대로 열린다. 쓰기 열기는 DATABASE_LOST_COMMIT으로 거절한다.
+ *     이어 쓰면 손상된 세대를 덮어써 되살릴 수 없기 때문이다. 복구(백업 복원 등)를 포기하고 이전 세대에서 이어
+ *     쓰려면 database_open_accepting_loss로 연다.
+ *   - 미확정(DATABASE_LOSS_POSSIBLE): 쓰기 열기도 성공하고 다음 commit이 끝나지 않은 세대를 덮어쓴다. 전원 차단 뒤의
+ *     정상 복구 경로와 구분할 수 없기 때문이다. 호출자는 열린 뒤 보고를 읽어 알 수 있다.
+ * 이미 열린 쓰기 핸들이 확정된 손실을 만나면 변경 문장과 작업 시작이 손상 오류로 거절된다.
+ */
 database_status_t database_open(const char *path, bool writable, database_t **out);
+/* 쓰기 열기. 확정된 손실(DATABASE_LOST_COMMIT)을 받아들이고 이전 세대에서 이어 쓴다. 그 밖에는 database_open과 같다 */
+database_status_t database_open_accepting_loss(const char *path, database_t **out);
+
+typedef enum {
+    DATABASE_LOSS_NONE,       /* 최신 세대로 열었다 */
+    DATABASE_LOSS_POSSIBLE,   /* 이전 세대로 열었다. 끝나지 않은 commit인지 손상인지 알 수 없다 */
+    DATABASE_LOSS_CONFIRMED   /* 이전 세대로 열었고, 건너뛴 세대는 성공을 돌려준 commit이다 */
+} database_loss_t;
+
+typedef struct {
+    bool fell_back;           /* 이전 세대로 물러났거나 물러났을 수 있다(loss가 NONE이 아니다) */
+    database_loss_t loss;
+    bool rolled_back;         /* 최신 제어 페이지는 온전했지만 그 commit의 페이지나 파일 길이가 맞지 않았다 */
+    uint32_t damaged_slots;   /* 손상으로 쓰지 못한 제어 슬롯 수 */
+} database_open_report_t;
+
+/* 이 핸들을 열 때의 판정. 열린 뒤의 commit으로 바뀌지 않는다. db가 NULL이면 모두 0이다 */
+void database_open_report(const database_t *db, database_open_report_t *out);
 /* 핸들을 닫는다. poison된 핸들도 닫을 수 있다. close(2) 실패는 DATABASE_IO다. */
 database_status_t database_close(database_t *db);
 
 /* 불확정 commit 결과나 fsync 실패로 더는 쓸 수 없는 핸들인지. */
 bool database_is_poisoned(const database_t *db);
+
+/*
+ * commit의 동기화 단계(page_file.h의 page_file_durability_t와 같은 번호·뜻). 어느 단계든 COW 게시 순서(데이터 → 제어
+ * 페이지)는 같아 프로세스 종료 뒤에는 이전 또는 새 상태다. NORMAL(기본)은 commit마다 fsync(2), FULL은 Apple 플랫폼에서
+ * F_FULLFSYNC(그 밖은 fsync), OFF는 commit에서 동기화하지 않고 정상 close에서 한 번 동기화한다. OFF는 OS·전원 장애 뒤
+ * 최근 commit을 잃거나 파일이 손상으로 열릴 수 있다.
+ */
+typedef enum {
+    DATABASE_DURABILITY_NORMAL = 0,
+    DATABASE_DURABILITY_FULL = 1,
+    DATABASE_DURABILITY_OFF = 2
+} database_durability_t;
+
+/*
+ * database_create와 같고 만든 핸들의 동기화 단계를 durability로 둔다. 생성 commit·게시·디렉터리 동기화는 OFF에서도
+ * 동기화하며(NORMAL과 같이 fsync) FULL이면 full_sync다(page_file.h). 알 수 없는 값은 DATABASE_INVALID이고 만들지 않는다.
+ */
+database_status_t database_create_ex(const char *path, database_durability_t durability, database_t **out);
+/* 이 핸들의 다음 commit부터 적용한다. 알 수 없는 값은 DATABASE_INVALID이고 바꾸지 않는다 */
+database_status_t database_set_durability(database_t *db, database_durability_t durability);
+database_durability_t database_durability(const database_t *db);
 size_t database_table_count(const database_t *db);
 
 /* 이 핸들이 연 뒤 문장들이 누적한 읽기 비용. 전체 스캔이 얼마나 일어났는지 대조하는 데 쓴다. */

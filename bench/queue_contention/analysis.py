@@ -80,7 +80,7 @@ def summarize(
                     "baseline": baseline,
                     "status": "comparable" if valid else "incomparable",
                     "pairs": len(ratios),
-                    "metric": "totedb / sqlite throughput",
+                    "metric": "streamlite / sqlite throughput",
                     "median_ratio": statistics.median(ratios) if ratios else None,
                     "bootstrap_95_ci": _bootstrap(ratios) if ratios else None,
                 }
@@ -92,7 +92,7 @@ def summarize(
         "runs": runs,
         "aggregates": aggregates,
         "comparisons": comparisons,
-        "totedb_mixed_worker_scaling": _worker_scaling(records, repetitions),
+        "streamlite_mixed_worker_scaling": _worker_scaling(records, repetitions),
     }
     return json_bytes(summary), _csv(runs)
 
@@ -263,7 +263,7 @@ def _paired_ratios(trials: list[dict[str, object]], baseline: str) -> list[float
     by_key = {(r["engine"], r["repetition"]): r["throughput_jobs_s"] for r in trials}
     repeats = sorted({r["repetition"] for r in trials})
     return [
-        by_key[("totedb", repeat)] / by_key[(baseline, repeat)] for repeat in repeats
+        by_key[("streamlite", repeat)] / by_key[(baseline, repeat)] for repeat in repeats
     ]
 
 
@@ -273,7 +273,7 @@ def _worker_scaling(
     rows = [
         r
         for r in records
-        if r["engine"] == "totedb" and r["condition"]["workload"] == "mixed"
+        if r["engine"] == "streamlite" and r["condition"]["workload"] == "mixed"
     ]
     inputs = sorted(
         {(r["condition"]["payload_bytes"], r["condition"]["jobs"]) for r in rows}
@@ -314,7 +314,7 @@ def _worker_scaling(
             {
                 "payload_bytes": size,
                 "jobs": jobs,
-                "metric": "totedb mixed workers 8 / 1 throughput",
+                "metric": "streamlite mixed workers 8 / 1 throughput",
                 "status": "comparable" if valid else "incomparable",
                 "pairs": len(ratios),
                 "median_ratio": statistics.median(ratios) if ratios else None,

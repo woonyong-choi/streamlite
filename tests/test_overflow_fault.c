@@ -10,9 +10,11 @@
 
 static int malloc_calls;
 static int fail_at;
+static size_t largest_request;
 
 void *overflow_test_malloc(size_t size)
 {
+    if (size > largest_request) largest_request = size;
     return ++malloc_calls == fail_at ? NULL : malloc(size);
 }
 
@@ -85,11 +87,22 @@ int main(void)
         assert(overflow_free(&io, ref) == OVERFLOW_NOMEM && store.live_count == pages);
     }
     fail_at = 0;
+
+    /* #270: 크기가 체인 머리글과 어긋나는 참조는 그 크기로 할당하기 전에 거절한다. */
+    overflow_ref_t huge = {ref.head, 0xFFFFFF00u};
+    uint8_t untouched, *kept = &untouched;
+    largest_request = 0;
+    assert(overflow_read(&io, huge, &kept) == OVERFLOW_CORRUPT && kept == &untouched);
+    assert(largest_request <= PAGE_BYTES);
+    largest_request = 0;
+    assert(overflow_free(&io, huge) == OVERFLOW_CORRUPT && store.live_count == pages);
+    assert(largest_request <= PAGE_BYTES);
+
     uint8_t *out = NULL;
     assert(overflow_read(&io, ref, &out) == OVERFLOW_OK);
     assert(memcmp(out, bytes, sizeof(bytes)) == 0);
     free(out);
     assert(overflow_free(&io, ref) == OVERFLOW_OK && store.live_count == 0);
-    puts("overflow: allocation failures keep outputs and pages; next operation succeeds");
+    puts("overflow: allocation failures keep outputs and pages; mismatched sizes are not allocated; next operation succeeds");
     return 0;
 }

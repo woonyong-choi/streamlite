@@ -4,7 +4,7 @@
 
 ## 현재 엔진의 구현 범위
 
-SQL 해석·실행과 행·색인·페이지 저장 구현은 [src/sql/](../src/sql/)과 [src/storage/](../src/storage/)에 있다. 기본 공유 라이브러리는 이 C 소스들을 빌드한다. C API는 [src/capi/](../src/capi/), Python 바인딩은 [python/totedb/](../python/totedb/)에 있다. 선택형 큐는 [src/queue/](../src/queue/)에서 일반 SQL과 트랜잭션 API를 사용한다.
+SQL 해석·실행과 행·색인·페이지 저장 구현은 [src/sql/](../src/sql/)과 [src/storage/](../src/storage/)에 있다. 기본 공유 라이브러리는 이 C 소스들을 빌드한다. C API는 [src/capi/](../src/capi/), Python 바인딩은 [python/streamlite/](../python/streamlite/)에 있다. 선택형 큐는 [src/queue/](../src/queue/)에서 일반 SQL과 트랜잭션 API를 사용한다.
 
 계층별 책임은 [아키텍처](architecture.md), 기본 빌드 구성은 [Makefile](../Makefile)과 [queue.mk](../src/queue/queue.mk)에 있다.
 
@@ -38,7 +38,7 @@ COW·B+Tree·인코딩 개발의 참고 자료와 코드 차용 이력은 미확
 
 ## 개인 확장 (팀 과제 종료 후)
 
-커밋 범위: [`f70b243`](https://github.com/woonyong-choi/totedb/commit/f70b243) (2026-08-01) ~ `e5bfabf` (2026-09-23), 23개 커밋.
+커밋 범위: [`f70b243`](https://github.com/woonyong-choi/streamlite/commit/f70b243) (2026-08-01) ~ `e5bfabf` (2026-09-23), 23개 커밋.
 `git log f70b243^..e5bfabf --reverse --format='%h %ad %s' --date=short` 기준이다.
 
 | 무엇이 달라졌나 | 커밋 | 파일 |

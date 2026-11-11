@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Official YCSB 0.17.0 ToteDB/SQLite shared JNI comparison"
+        description="Official YCSB 0.17.0 StreamLite/SQLite shared JNI comparison"
     )
     parser.add_argument(
         "command", choices=["build", "test", "collect", "analyze", "verify", "profile"]

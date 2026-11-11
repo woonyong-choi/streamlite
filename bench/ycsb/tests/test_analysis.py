@@ -32,7 +32,7 @@ class AnalysisTests(unittest.TestCase):
                 "operations": 20,
                 "threads": 1,
                 "workload": "C",
-                "engine": "totedb",
+                "engine": "streamlite",
             },
             "metrics": {
                 "non_ok": 0,
@@ -201,12 +201,12 @@ class AnalysisTests(unittest.TestCase):
     def test_failure_makes_condition_incomparable(self) -> None:
         trials = []
         for phase in ("preflight", "measured"):
-            for engine in ("totedb", "sqlite"):
+            for engine in ("streamlite", "sqlite"):
                 record = copy.deepcopy(self.record)
                 record["phase"] = phase
                 record["condition"]["engine"] = engine
                 record["problems"] = (
-                    ["timeout"] if engine == "totedb" and phase == "measured" else []
+                    ["timeout"] if engine == "streamlite" and phase == "measured" else []
                 )
                 trials.append(record)
         summary = summarize(trials, 1)

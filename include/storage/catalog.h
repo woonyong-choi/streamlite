@@ -23,8 +23,17 @@ typedef uint32_t catalog_table_id_t;
 #define CATALOG_NO_PAGE 0u
 #define CATALOG_NO_COLUMN UINT16_MAX
 #define CATALOG_NAME_MAX_BYTES 255u
-/* record codec의 필드 수 한계와 같은 값이다. */
+/*
+ * 저장 형식이 담는 컬럼 수의 한계다(record codec의 필드 수 한계와 같은 값). decode는 여기까지 읽는다.
+ * 예전에는 이 수까지 테이블을 만들 수 있었으므로 이미 저장된 파일을 읽기 위해 값을 줄이지 않는다.
+ */
 #define CATALOG_MAX_COLUMNS 1024u
+/*
+ * 새로 만드는 테이블의 컬럼 수 한계다. heap의 행은 필드를 1 + 2n개 쓰므로 n이 511을 넘는 테이블은 heap_store가
+ * 열지 못한다(HEAP_MAX_COLUMNS). create는 이 수를 넘으면 CATALOG_INVALID다. 예전 한도로 저장된 더 넓은 테이블은
+ * decode·describe·drop은 되지만 heap으로는 열리지 않는다.
+ */
+#define CATALOG_MAX_CREATE_COLUMNS 511u
 #define CATALOG_MAX_INDEXES 64u
 /* encode 결과와 decode 입력의 최대 바이트. 이를 넘는 카탈로그는 만들 수 없다. */
 #define CATALOG_MAX_ENCODED_BYTES (16u * 1024u * 1024u)

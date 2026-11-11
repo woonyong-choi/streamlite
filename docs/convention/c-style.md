@@ -10,7 +10,7 @@ C 코어와 공개 헤더에 적용하는 규칙이다. 빌드·시험 명령은
 |---|---|---|
 | 함수와 변수 | snake_case | `page_file_open`, `page_count` |
 | 타입 | snake_case와 `_t` 접미사 | `page_file_t`, `value_view_t` |
-| 상수와 enum 값 | UPPER_SNAKE_CASE | `PAGE_FILE_OK`, `TOTE_BUSY` |
+| 상수와 enum 값 | UPPER_SNAKE_CASE | `PAGE_FILE_OK`, `STREAMLITE_BUSY` |
 | 파일 | snake_case | `page_file.c`, `ack_queue.h` |
 
 이름에 크기와 시간의 단위를 드러낸다. 바이트 수와 원소 수, 페이지 번호와 행 참조를 같은 값으로 다루지 않는다. 비교는 `size == 0`, `ptr == NULL`처럼 대상 값을 먼저 쓴다.
@@ -19,7 +19,7 @@ C 코어와 공개 헤더에 적용하는 규칙이다. 빌드·시험 명령은
 
 외부에서 쓰는 선언은 `include/`에 두고, 구현 파일끼리 공유하는 선언은 해당 `src/` 모듈에 둔다. 파일 안에서만 쓰는 함수는 `static`으로 선언한다.
 
-`include/totedb.h`는 다른 언어 바인딩이 호출하는 평탄한 C API다. DB 코어는 큐 모듈을 참조하지 않는다. 큐는 세션의 SQL·트랜잭션 API를 통해 데이터를 바꾼다. 구성 요소별 책임은 [아키텍처](../architecture.md)에 있다.
+`include/streamlite.h`는 다른 언어 바인딩이 호출하는 평탄한 C API다. DB 코어는 큐 모듈을 참조하지 않는다. 큐는 세션의 SQL·트랜잭션 API를 통해 데이터를 바꾼다. 구성 요소별 책임은 [아키텍처](../architecture.md)에 있다.
 
 ## 메모리와 자원
 

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINES = ("tote", "sqlite-delete-full", "sqlite-wal-full", "duckdb", "lmdb", "rocksdb")
+ENGINES = ("streamlite", "sqlite-delete-full", "sqlite-wal-full", "duckdb", "lmdb", "rocksdb")
 WORKLOADS = ("write", "atomic-outbox", "atomic-outbox-batch")
 PINS = {"duckdb": "1.5.6", "lmdb": "3.0.0", "rocksdict": "0.3.29"}
 OPERATIONS = 512
@@ -40,19 +40,19 @@ class SQLDatabase:
         self.engine = engine
         self.transaction: Any = None
         self.config: dict[str, Any] = {}
-        if engine == "tote":
-            library = Path(os.environ["TOTEDB_LIB"])
+        if engine == "streamlite":
+            library = Path(os.environ["STREAMLITE_LIB"])
             if not library.is_file() or _digest(library) != os.environ.get(
                 "LOCAL_DB_LIBRARY_SHA256", _digest(library)
             ):
                 raise ImportError(
                     "explicit native library is missing or changed; fallback is forbidden"
                 )
-            import totedb
+            import streamlite
 
-            self.db = totedb.Database(path)
+            self.db = streamlite.Database(path)
             self.config = {
-                "version": totedb.__version__,
+                "version": streamlite.__version__,
                 "durability": "product default synchronous commit",
             }
         elif engine == "duckdb":
@@ -102,7 +102,7 @@ class SQLDatabase:
     def execute(self, sql: str, params: tuple[Any, ...] = ()) -> list[Any]:
         target = self.transaction if self.transaction is not None else self.db
         result = target.execute(sql, params)
-        return list(result.rows) if self.engine == "tote" else result.fetchall()
+        return list(result.rows) if self.engine == "streamlite" else result.fetchall()
 
     def create(self, tables: tuple[str, ...]) -> None:
         for table in tables:
@@ -111,7 +111,7 @@ class SQLDatabase:
             )
 
     def commit_records(self, records: list[tuple[str, int, bytes, bytes]]) -> None:
-        if self.engine == "tote":
+        if self.engine == "streamlite":
             self.transaction = self.db.begin()
         else:
             self.execute("BEGIN")
@@ -120,7 +120,7 @@ class SQLDatabase:
                 f"INSERT INTO {table} (id, payload) VALUES (?, ?)",
                 (identifier, payload),
             )
-        if self.engine == "tote":
+        if self.engine == "streamlite":
             self.transaction.commit()
             self.transaction = None
         else:
@@ -407,7 +407,7 @@ def _run_trial(
                 key: env.get(key)
                 for key in (
                     "PYTHONPATH",
-                    "TOTEDB_LIB",
+                    "STREAMLITE_LIB",
                     "PYTHONNOUSERSITE",
                     "LOCAL_DB_DEPS",
                     "LOCAL_DB_LIBRARY_SHA256",
@@ -479,19 +479,19 @@ def _paired_ratios(rows: list[dict[str, Any]], engine: str) -> dict[str, Any]:
     }
     ratios = []
     for repeat in range(1, 6):
-        tote = matching.get(("tote", repeat))
+        streamlite = matching.get(("streamlite", repeat))
         other = matching.get((engine, repeat))
-        if tote is None or other is None:
+        if streamlite is None or other is None:
             return {
                 "status": "INCOMPARABLE",
                 "reason": "five matched PASS pairs required",
             }
-        ratios.append(other["elapsed_ns"] / tote["elapsed_ns"])
+        ratios.append(other["elapsed_ns"] / streamlite["elapsed_ns"])
     rng = random.Random(244)
     bootstrap = [statistics.median(rng.choices(ratios, k=5)) for _ in range(10000)]
     return {
         "status": "PASS",
-        "tote_ops_per_s_over_engine": ratios,
+        "streamlite_ops_per_s_over_engine": ratios,
         **_statistics(ratios),
         "median_bootstrap_95pct": [
             _percentile(bootstrap, 0.025),
@@ -572,7 +572,7 @@ def _analyze_rows(
                     "payload_bytes": payload,
                     **(
                         _paired_ratios(selected, engine)
-                        if {"tote", engine} <= eligible
+                        if {"streamlite", engine} <= eligible
                         else {
                             "status": "INCOMPARABLE",
                             "reason": "preflight, warmup and five PASS runs required",
@@ -694,7 +694,7 @@ def _identity(library: Path) -> dict[str, Any]:
         )
     sources = [
         path
-        for folder in ("src", "include", "python/totedb")
+        for folder in ("src", "include", "python/streamlite")
         for path in (ROOT / folder).rglob("*")
         if path.is_file() and path.suffix in {".c", ".h", ".py"}
     ]
@@ -812,7 +812,7 @@ def _collect(args: argparse.Namespace) -> int:
     env = dict(
         os.environ,
         PYTHONPATH=os.pathsep.join((str(ROOT / "python"), str(deps))),
-        TOTEDB_LIB=str(evidence / library.name),
+        STREAMLITE_LIB=str(evidence / library.name),
         PYTHONNOUSERSITE="1",
         LOCAL_DB_DEPS=str(deps),
         LOCAL_DB_LIBRARY_SHA256=identity["library_sha256"],

@@ -1,12 +1,23 @@
 /*
  * ack_queue.c — 선택형 ACK 큐(#140). 세션(session.h)의 SQL과 트랜잭션 API만 쓴다.
  *
- * 테이블 tote_queue_<name>: id(identity), state(0 READY 1 LEASED 2 ACKED 3 FAILED), ready_at, lease_until(밀리초),
- * fence(claim마다 +1), attempts(claim 횟수), idem(idempotency key, 없으면 ''), payload(BLOB), note(마지막 이유).
- * 상태별 조회는 state 보조 색인(같은 상태 안에서 id 순서)과 ORDER BY id LIMIT으로 맞는 행 k개만 읽는다.
+ * 테이블 streamlite_queue_<name>: id(identity), state(0 READY 1 LEASED 2 ACKED 3 FAILED), ready_at, lease_until(밀리초),
+ * fence(claim마다 +1), attempts(claim 횟수), idem(idempotency key), payload(BLOB), note(마지막 이유), created_at, due.
  *
- * key 보존 테이블 tote_queue_<name>_keys: seq(identity), idem(유일 색인), job(지운 작업 id), digest(payload 요약),
- * expires_at. purge가 key 있는 작업을 지울 때 넣고, 넣는 순서(seq)가 곧 만료 순서라 앞에서부터 만료된 것만 지운다.
+ * 형식 둘(#260). 이 판이 만드는 큐는 due 열(ack_queue_internal.h의 구간)과 그 색인, idem·lease_until 색인을 둔다. key
+ * 없는 작업의 idem은 NULL이라 색인에 들어가지 않는다. claim은 due 색인의 [0, now] 구간을 due 순서로 읽어 LIMIT에서
+ * 멈추므로 비용이 LEASED·ACKED·지연 READY 수와 무관하다. purge는 due 구간을, recover·release는 lease_until 색인 구간을
+ * 읽는다(LEASED만 lease_until이 0보다 크다). 이전 판이 만든 큐(due 열 없음, idem은 '')는 그대로 열리고 state·idem 색인으로
+ * READY를 id 순서로 읽는다. 어느 형식이든 lease_until 색인이 없으면 열 때 만든다(이관, 실패하면 이전 경로). due는 상태에서
+ * 정해지는 색인 값일 뿐이라 claim은 상태 조건도 함께 확인한다(이전 판 라이브러리가 due를 고치지 않은 행 방어).
+ *
+ * key 보존 테이블 streamlite_queue_<name>_keys: seq(identity), idem(유일 색인), job(지운 작업 id), digest(payload 요약),
+ * expires_at. purge가 key 있는 작업을 지울 때 넣는다. 보존 기간은 핸들의 옵션이라 넣는 순서(seq)가 만료 순서라는
+ * 보장이 없으므로 만료 시각(expires_at)으로 골라 지운다.
+ *
+ * 내부 이름: 큐 하나가 테이블 둘(<table>, <table>_keys)과 색인(<table>_due, <table>_idem, <table>_lease, <table>_keys_idem,
+ * 이전 형식은 <table>_state)을 쓴다. 그래서 _keys·_state·_idem·_due·_lease로 끝나는 큐 이름은 다른 큐의 내부 이름과
+ * 겹칠 수 있어 새로 만들지 않는다.
  */
 #define _POSIX_C_SOURCE 200809L
 
@@ -19,11 +30,20 @@
 
 #define META_COLS "id, state, ready_at, lease_until, fence, attempts"
 #define META_CELLS 6u
+/* due 형식에서 claim·recover·purge가 읽는 열. 마지막 칸이 due다 */
+#define DUE_COLS META_COLS ", due"
 #define NOTE_MAX_ATTEMPTS "max attempts exceeded"
 #define DIGEST_BYTES 20u
 
-/* 상태별 조회(claim·recover·purge)와 idempotency key 조회가 쓰는 보조 색인의 열 */
-static const char *const INDEXED[] = {"state", "idem"};
+/* 보조 색인의 열. 이 판의 형식은 due·idem, 이전 형식은 state·idem이다. 두 형식 모두 lease_until 색인(_lease)을 더한다 */
+static const char *const DUE_INDEXED[] = {"due", "idem"};
+static const char *const OLD_INDEXED[] = {"state", "idem"};
+#define LEASE_INDEX_SUFFIX "_lease"
+/* 새 큐 이름이 이렇게 끝나면 다른 큐의 key 테이블·색인 이름과 겹칠 수 있다 */
+static const char *const RESERVED_SUFFIXES[] = {ACKQ_KEYS_SUFFIX, "_state", "_idem", "_due", LEASE_INDEX_SUFFIX};
+/* 새 큐가 만들 이름(<table> 뒤에 붙는다) 중, 예약 접미어로 끝나는 예전 큐의 테이블 이름과 같을 수 있는 것 */
+static const char *const OWN_SUFFIXES[] = {ACKQ_KEYS_SUFFIX, "_state", "_idem", "_due", LEASE_INDEX_SUFFIX,
+                                           ACKQ_KEYS_SUFFIX "_idem"};
 
 typedef struct {
     uint64_t id;
@@ -32,19 +52,27 @@ typedef struct {
     int64_t lease_until;
     int64_t fence;
     int64_t attempts;
+    int64_t due;       /* due 형식에서만 읽는다. 이전 형식은 0 */
 } meta_t;
 
-/* id 오름차순으로 가장 작은 cap개만 보관한다. */
+/* id 오름차순(by_due면 (due, id) 오름차순)으로 가장 작은 cap개만 보관한다. */
 typedef struct {
     meta_t *items;
     size_t count;
     size_t cap;
+    bool by_due;
 } topk_t;
+
+static bool meta_after(const meta_t *a, const meta_t *b, bool by_due)
+{
+    if (by_due && a->due != b->due) return a->due > b->due;
+    return a->id > b->id;
+}
 
 static void topk_add(topk_t *top, const meta_t *meta)
 {
     size_t pos = top->count;
-    while (pos > 0 && top->items[pos - 1].id > meta->id) pos--;
+    while (pos > 0 && meta_after(&top->items[pos - 1], meta, top->by_due)) pos--;
     if (pos >= top->cap) return;
     size_t end = top->count < top->cap ? top->count : top->cap - 1;
     memmove(&top->items[pos + 1], &top->items[pos], (end - pos) * sizeof(meta_t));
@@ -64,7 +92,25 @@ static bool read_meta(const result_row_t *row, meta_t *meta)
     meta->lease_until = row->cells[3].integer;
     meta->fence = row->cells[4].integer;
     meta->attempts = row->cells[5].integer;
+    meta->due = 0;
+    if (row->cell_count > META_CELLS) {
+        if (row->cells[META_CELLS].type != VALUE_INTEGER) return false;
+        meta->due = row->cells[META_CELLS].integer;
+    }
     return true;
+}
+
+/* 끝난 상태의 due. id는 ACKQ_DUE_BAND보다 작다(enqueue가 확인한다) */
+static int64_t terminal_due(ackq_state_t state, uint64_t id)
+{
+    return (state == ACKQ_STATE_ACKED ? ACKQ_DUE_ACKED : ACKQ_DUE_FAILED) + (int64_t)id;
+}
+
+/* claim한 작업의 due. 이 claim이 마지막 시도면 claim 구간 밖(ACKQ_DUE_LAST)에 두어 만료 뒤에도 claim이 방문하지 않는다 */
+static int64_t leased_due(const ackq_t *queue, int64_t attempts, uint64_t id, int64_t lease_until)
+{
+    if (queue->max_attempts > 0 && attempts >= (int64_t)queue->max_attempts) return ACKQ_DUE_LAST + (int64_t)id;
+    return lease_until;
 }
 
 static bool valid_name(const char *name)
@@ -115,7 +161,7 @@ static ackq_status_t scan_meta(ackq_t *queue, ackq_scope_t *scope, const char *w
 {
     char sql[ACKQ_SQL_MAX];
     result_t *result = NULL;
-    snprintf(sql, sizeof(sql), "SELECT " META_COLS " FROM %s%s", queue->table, where);
+    snprintf(sql, sizeof(sql), "SELECT %s FROM %s%s", queue->due_column ? DUE_COLS : META_COLS, queue->table, where);
     ackq_status_t status = ackq_run(queue, scope, false, sql, params, param_count, &result, NULL);
     if (status != ACKQ_OK) return status;
     result_row_t row;
@@ -139,7 +185,7 @@ static ackq_status_t fetch_meta(ackq_t *queue, ackq_scope_t *scope, uint64_t id,
     result_t *result = NULL;
     int64_t key;
     if (!ackq_to_i64(id, &key)) return ACKQ_NOT_FOUND;
-    snprintf(sql, sizeof(sql), "SELECT " META_COLS " FROM %s WHERE id = ?", queue->table);
+    snprintf(sql, sizeof(sql), "SELECT %s FROM %s WHERE id = ?", queue->due_column ? DUE_COLS : META_COLS, queue->table);
     value_view_t param = ackq_int(key);
     ackq_status_t status = ackq_run(queue, scope, false, sql, &param, 1, &result, NULL);
     if (status != ACKQ_OK) return status;
@@ -291,8 +337,8 @@ static ackq_status_t make_queue(session_t *session, const ackq_options_t *option
     if (queue == NULL) return ACKQ_NOMEM;
     queue->db = session_database(session);
     snprintf(queue->name, sizeof(queue->name), "%s", options->name);
-    snprintf(queue->table, sizeof(queue->table), "tote_queue_%s", options->name);
-    snprintf(queue->keys, sizeof(queue->keys), "%s_keys", queue->table);
+    snprintf(queue->table, sizeof(queue->table), ACKQ_TABLE_PREFIX "%s", options->name);
+    snprintf(queue->keys, sizeof(queue->keys), "%s" ACKQ_KEYS_SUFFIX, queue->table);
     queue->max_payload = options->max_payload_bytes != 0 ? options->max_payload_bytes : ACKQ_DEFAULT_MAX_PAYLOAD_BYTES;
     queue->retention_ms = retention == 0 ? ACKQ_DEFAULT_IDEM_RETENTION_MS
                           : retention == ACKQ_RETENTION_NONE ? 0 : retention;
@@ -300,6 +346,7 @@ static ackq_status_t make_queue(session_t *session, const ackq_options_t *option
     queue->begin_timeout_ms = options->begin_timeout_ms;
     queue->now_ms = options->now_ms;
     queue->clock_ctx = options->clock_ctx;
+    queue->conditional_enabled = STREAMLITE_ACKQ_CONDITIONAL != 0;
     *out = queue;
     return ACKQ_OK;
 }
@@ -334,8 +381,29 @@ static ackq_status_t probe_table(ackq_t *queue, session_t *session)
             result_release(&result);
         }
     }
-    return status != ACKQ_OK && error_class == RESULT_E_SEMANTIC ? ACKQ_NOT_INSTALLED : status;
+    if (status != ACKQ_OK) return error_class == RESULT_E_SEMANTIC ? ACKQ_NOT_INSTALLED : status;
+    /*
+     * due 열이 있으면 이 판의 형식이다. 열 이름은 결과 열 정보로 본다. 없는 열을 SELECT해 오류를 내면 호출자 트랜잭션이
+     * 실패 상태가 되기 때문이다.
+     */
+    snprintf(sql, sizeof(sql), "SELECT * FROM %s WHERE id = 0", queue->table);
+    status = ackq_run(queue, &scope, false, sql, NULL, 0, &result, &error_class);
+    if (status != ACKQ_OK) return status;
+    bool due = false;
+    for (size_t i = 0; i < result_column_count(result); i++) {
+        const result_column_t *column = result_column(result, i);
+        if (column != NULL && column->name_len == 3 && memcmp(column->name, "due", 3) == 0) due = true;
+    }
+    result_row_t row;
+    result_next_t next;
+    while ((next = result_next(result, &row)) == RESULT_NEXT_ROW) {}
+    status = ackq_finish_rows(next, result);
+    result_release(&result);
+    queue->due_column = status == ACKQ_OK && due;
+    return status;
 }
+
+static ackq_status_t prepare_indexes(ackq_t *queue, session_t *session);
 
 ackq_status_t ackq_open(session_t *session, const ackq_options_t *options, ackq_t **out)
 {
@@ -344,11 +412,61 @@ ackq_status_t ackq_open(session_t *session, const ackq_options_t *options, ackq_
     ackq_status_t status = make_queue(session, options, &queue);
     if (status != ACKQ_OK) return status;
     status = probe_table(queue, session);
+    if (status == ACKQ_OK) status = prepare_indexes(queue, session);
     if (status != ACKQ_OK) {
         free(queue);
         return status;
     }
     *out = queue;
+    return ACKQ_OK;
+}
+
+static bool ends_with(const char *text, const char *suffix)
+{
+    size_t length = strlen(text), tail = strlen(suffix);
+    return length >= tail && strcmp(text + length - tail, suffix) == 0;
+}
+
+/* 이름이 name인 테이블이 있는지 본다. 행은 읽지 않는다. */
+static ackq_status_t table_exists(ackq_t *queue, session_t *session, const char *name, bool *exists)
+{
+    char sql[ACKQ_SQL_MAX];
+    result_t *result = NULL;
+    result_error_class_t error_class = RESULT_E_NONE;
+    ackq_scope_t scope;
+    *exists = false;
+    ackq_status_t status = ackq_scope_open(queue, session, false, &scope);
+    if (status != ACKQ_OK) return status;
+    snprintf(sql, sizeof(sql), "SELECT 1 FROM %s WHERE 1 = 0", name);
+    status = ackq_run(queue, &scope, false, sql, NULL, 0, &result, &error_class);
+    if (status != ACKQ_OK) return error_class == RESULT_E_SEMANTIC ? ACKQ_OK : status;
+    result_row_t row;
+    result_next_t next;
+    while ((next = result_next(result, &row)) == RESULT_NEXT_ROW) {}
+    status = ackq_finish_rows(next, result);
+    result_release(&result);
+    *exists = status == ACKQ_OK;
+    return status;
+}
+
+/*
+ * 새로 만들 큐의 이름이 다른 큐의 내부 테이블·색인 이름과 겹치는지 본다. 겹치면 아무것도 만들지 않고 ACKQ_INVALID다.
+ * 예약 접미어로 끝나는 이름은 짝이 되는 큐가 지금 없어도 거절한다(나중에 그 큐를 만들 때 겹친다). 이 규칙 전에 만든
+ * 파일에는 그런 이름의 큐가 있을 수 있으므로, 이 큐가 만들 이름과 같은 테이블이 이미 있는지도 본다.
+ */
+static ackq_status_t check_new_name(ackq_t *queue, session_t *session)
+{
+    char other[sizeof(queue->keys) + 8];
+    for (size_t i = 0; i < sizeof(RESERVED_SUFFIXES) / sizeof(RESERVED_SUFFIXES[0]); i++) {
+        if (ends_with(queue->name, RESERVED_SUFFIXES[i])) return ACKQ_INVALID;
+    }
+    for (size_t i = 0; i < sizeof(OWN_SUFFIXES) / sizeof(OWN_SUFFIXES[0]); i++) {
+        bool exists = false;
+        snprintf(other, sizeof(other), "%s%s", queue->table, OWN_SUFFIXES[i]);
+        ackq_status_t status = table_exists(queue, session, other, &exists);
+        if (status != ACKQ_OK) return status;
+        if (exists) return ACKQ_INVALID;
+    }
     return ACKQ_OK;
 }
 
@@ -359,16 +477,23 @@ static ackq_status_t create_table(ackq_t *queue, session_t *session)
     ackq_scope_t scope;
     ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
     if (status != ACKQ_OK) return status;
+    /* key 없는 작업의 idem은 NULL이라 idem 색인에 들어가지 않는다. due는 claim·recover·purge의 색인 열이다 */
     snprintf(sql, sizeof(sql),
              "CREATE TABLE %s (id INTEGER PRIMARY KEY AUTOINCREMENT, state INTEGER NOT NULL, "
              "ready_at INTEGER NOT NULL, lease_until INTEGER NOT NULL, fence INTEGER NOT NULL, "
-             "attempts INTEGER NOT NULL, idem TEXT NOT NULL, payload BLOB NOT NULL, note TEXT NOT NULL, "
-             "created_at INTEGER NOT NULL)",
+             "attempts INTEGER NOT NULL, idem TEXT, payload BLOB NOT NULL, note TEXT NOT NULL, "
+             "created_at INTEGER NOT NULL, due INTEGER NOT NULL)",
              queue->table);
     status = ackq_run(queue, &scope, true, sql, NULL, 0, &result, NULL);
     if (status == ACKQ_OK) result_release(&result);
-    for (size_t i = 0; status == ACKQ_OK && i < sizeof(INDEXED) / sizeof(INDEXED[0]); i++) {
-        snprintf(sql, sizeof(sql), "CREATE INDEX %s_%s ON %s (%s)", queue->table, INDEXED[i], queue->table, INDEXED[i]);
+    for (size_t i = 0; status == ACKQ_OK && i < sizeof(DUE_INDEXED) / sizeof(DUE_INDEXED[0]); i++) {
+        snprintf(sql, sizeof(sql), "CREATE INDEX %s_%s ON %s (%s)", queue->table, DUE_INDEXED[i], queue->table,
+                 DUE_INDEXED[i]);
+        status = ackq_run(queue, &scope, true, sql, NULL, 0, &result, NULL);
+        if (status == ACKQ_OK) result_release(&result);
+    }
+    if (status == ACKQ_OK) {
+        snprintf(sql, sizeof(sql), "CREATE INDEX %s" LEASE_INDEX_SUFFIX " ON %s (lease_until)", queue->table, queue->table);
         status = ackq_run(queue, &scope, true, sql, NULL, 0, &result, NULL);
         if (status == ACKQ_OK) result_release(&result);
     }
@@ -385,7 +510,28 @@ static ackq_status_t create_table(ackq_t *queue, session_t *session)
         status = ackq_run(queue, &scope, true, sql, NULL, 0, &result, NULL);
         if (status == ACKQ_OK) result_release(&result);
     }
-    return ackq_scope_close(&scope, status);
+    status = ackq_scope_close(&scope, status);
+    if (status == ACKQ_OK) queue->due_column = queue->lease_index = true;
+    return status;
+}
+
+/* 색인 하나를 자기 트랜잭션으로 만든다. 이미 있으면(의미 오류) *exists이고 ACKQ_OK다 */
+static ackq_status_t create_index(ackq_t *queue, session_t *session, const char *suffix, const char *column,
+                                  bool *exists)
+{
+    char sql[ACKQ_SQL_MAX];
+    *exists = false;
+    ackq_scope_t scope;
+    ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
+    if (status != ACKQ_OK) return status;
+    result_t *result = NULL;
+    result_error_class_t error_class = RESULT_E_NONE;
+    snprintf(sql, sizeof(sql), "CREATE INDEX %s%s ON %s (%s)", queue->table, suffix, queue->table, column);
+    status = ackq_run(queue, &scope, true, sql, NULL, 0, &result, &error_class);
+    if (status == ACKQ_OK) result_release(&result);
+    *exists = status != ACKQ_OK && error_class == RESULT_E_SEMANTIC;
+    status = ackq_scope_close(&scope, *exists ? ACKQ_INTERNAL : status);
+    return *exists ? ACKQ_OK : status;
 }
 
 /*
@@ -394,22 +540,71 @@ static ackq_status_t create_table(ackq_t *queue, session_t *session)
  */
 static ackq_status_t ensure_indexes(ackq_t *queue, session_t *session)
 {
-    char sql[ACKQ_SQL_MAX];
+    const char *const *columns = queue->due_column ? DUE_INDEXED : OLD_INDEXED;
     ackq_status_t status = ACKQ_OK;
-    for (size_t i = 0; status == ACKQ_OK && i < sizeof(INDEXED) / sizeof(INDEXED[0]); i++) {
-        ackq_scope_t scope;
-        status = ackq_scope_open(queue, session, true, &scope);
-        if (status != ACKQ_OK) return status;
-        result_t *result = NULL;
-        result_error_class_t error_class = RESULT_E_NONE;
-        snprintf(sql, sizeof(sql), "CREATE INDEX %s_%s ON %s (%s)", queue->table, INDEXED[i], queue->table, INDEXED[i]);
-        status = ackq_run(queue, &scope, true, sql, NULL, 0, &result, &error_class);
-        if (status == ACKQ_OK) result_release(&result);
-        bool exists = status != ACKQ_OK && error_class == RESULT_E_SEMANTIC;
-        status = ackq_scope_close(&scope, exists ? ACKQ_INTERNAL : status);
-        if (exists) status = ACKQ_OK;
+    for (size_t i = 0; status == ACKQ_OK && i < 2; i++) {
+        char suffix[16];
+        bool exists;
+        snprintf(suffix, sizeof(suffix), "_%s", columns[i]);
+        status = create_index(queue, session, suffix, columns[i], &exists);
     }
     return status;
+}
+
+/*
+ * lease_until 색인이 있는지 쓰기 거래 없이 본다. 색인 목록을 읽는 SQL이 없으므로 그 색인으로만 좁힐 수 있는 조회(맞는 행이
+ * 없는 lease_until 구간)를 한 번 실행하고, 전체 스캔 없이 색인 페이지만 읽었으면 있다고 본다. 색인이 없으면 이 조회가
+ * 테이블을 한 번 훑는다(곧바로 색인을 만드는 비용과 같은 차수다). 판정은 같은 database 핸들의 읽기 계수라 다른 세션이 같은
+ * 순간 색인을 읽으면 없는 색인을 있다고 볼 수 있다. lease_index는 같은 뜻의 SQL 가운데 하나를 고르는 데만 쓰므로 그때도
+ * 결과는 같고 recover·release가 전체 스캔이 될 뿐이다.
+ */
+static ackq_status_t lease_index_present(ackq_t *queue, session_t *session, bool *present)
+{
+    char sql[ACKQ_SQL_MAX];
+    result_t *result = NULL;
+    ackq_scope_t scope;
+    *present = false;
+    ackq_status_t status = ackq_scope_open(queue, session, false, &scope);
+    if (status != ACKQ_OK) return status;
+    database_t *db = session_db_handle(queue->db);
+    database_scan_stats_t before, after;
+    database_scan_stats(db, &before);
+    snprintf(sql, sizeof(sql), "SELECT id FROM %s WHERE lease_until >= -1 AND lease_until <= -1", queue->table);
+    status = ackq_run(queue, &scope, false, sql, NULL, 0, &result, NULL);
+    if (status == ACKQ_OK) {
+        result_row_t row;
+        result_next_t next;
+        while ((next = result_next(result, &row)) == RESULT_NEXT_ROW) {}
+        status = ackq_finish_rows(next, result);
+        result_release(&result);
+    }
+    database_scan_stats(db, &after);
+    *present = status == ACKQ_OK && after.rows_scanned == before.rows_scanned &&
+               after.index_pages_read > before.index_pages_read;
+    return ackq_scope_close(&scope, status);
+}
+
+/*
+ * lease_until 색인을 준비한다. 이전 형식 큐(이관)와 이 색인 없이 만든 due 형식 큐가 대상이다. 먼저 읽기로 색인이 있는지 보고
+ * 있으면 쓰기 거래를 열지 않는다. 없을 때만 색인 하나를 만드는 자기 트랜잭션을 연다. 실패하면(BUSY 등) 아무것도 바뀌지
+ * 않으며, 그 사이 다른 핸들이 만들었을 수 있으므로 한 번 더 읽어 본다. 호출자 트랜잭션 안에서는 그 거래를 실패로 만들지
+ * 않도록 만들지 않는다. 색인이 없으면 이전 경로(state 색인 또는 due 구간)를 쓰므로 이관 실패는 열기 실패가 아니다.
+ */
+static ackq_status_t prepare_indexes(ackq_t *queue, session_t *session)
+{
+    if (queue->lease_index) return ACKQ_OK;   /* 방금 설치하며 만들었다 */
+    bool present = false;
+    ackq_status_t status = lease_index_present(queue, session, &present);
+    if (status == ACKQ_OK && !present && !session_txn_active(session)) {
+        bool exists = false;
+        status = create_index(queue, session, LEASE_INDEX_SUFFIX, "lease_until", &exists);
+        present = status == ACKQ_OK;
+        if (!present && status != ACKQ_POISONED && status != ACKQ_CANCELLED && status != ACKQ_INVALID) {
+            status = lease_index_present(queue, session, &present);
+        }
+    }
+    queue->lease_index = present;
+    return status == ACKQ_POISONED || status == ACKQ_CANCELLED || status == ACKQ_INVALID ? status : ACKQ_OK;
 }
 
 ackq_status_t ackq_install(session_t *session, const ackq_options_t *options, ackq_t **out)
@@ -420,12 +615,17 @@ ackq_status_t ackq_install(session_t *session, const ackq_options_t *options, ac
     if (status != ACKQ_OK) return status;
     status = probe_table(queue, session);
     if (status == ACKQ_NOT_INSTALLED) {
-        status = create_table(queue, session);
-        /* 다른 설치가 먼저 만들었을 수 있다. 같은 이름의 테이블이 있으면 그것을 쓴다. */
+        status = check_new_name(queue, session);
+        if (status == ACKQ_OK) status = create_table(queue, session);
+        /*
+         * 다른 설치가 먼저 만들었을 수 있다. 같은 이름의 테이블이 있으면 그것을 쓴다. 그 사이에 만들어졌다면 이름 검사가
+         * 본 것도 이 큐 자신의 key 테이블이므로 INVALID여도 다시 확인한다(겹치는 이름이면 이 큐의 테이블은 여전히 없다).
+         */
         if (status != ACKQ_OK && probe_table(queue, session) == ACKQ_OK) status = ensure_indexes(queue, session);
     } else if (status == ACKQ_OK) {
         status = ensure_indexes(queue, session);
     }
+    if (status == ACKQ_OK) status = prepare_indexes(queue, session);
     if (status != ACKQ_OK) {
         free(queue);
         return status;
@@ -534,7 +734,9 @@ static ackq_status_t enqueue_in(ackq_t *queue, ackq_scope_t *scope, const uint8_
                                 const char *key, uint64_t *id, bool *duplicate)
 {
     char sql[ACKQ_SQL_MAX];
-    int64_t now = (int64_t)ackq_now(queue);
+    uint64_t clock = ackq_now(queue);
+    if (clock > ACKQ_NOW_MAX) return ACKQ_LIMIT;   /* 유효한 시각을 한 번도 읽지 못했다 */
+    int64_t now = (int64_t)clock;
     bool found = false;
     uint64_t existing = 0;
     ackq_status_t status = ACKQ_OK;
@@ -548,14 +750,26 @@ static ackq_status_t enqueue_in(ackq_t *queue, ackq_scope_t *scope, const uint8_
             return ACKQ_OK;
         }
     }
-    snprintf(sql, sizeof(sql),
-             "INSERT INTO %s (state, ready_at, lease_until, fence, attempts, idem, payload, note, created_at) "
-             "VALUES (0, ?, 0, 0, 0, ?, ?, '', ?) RETURNING id",
-             queue->table);
-    value_view_t params[4] = {ackq_int(now), ackq_text(key != NULL ? key : ""), ackq_blob(payload, size),
-                              ackq_int(now)};
     int64_t inserted = 0;
-    status = run_returning_int(queue, scope, sql, params, 4, &inserted);
+    if (queue->due_column) {
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO %s (state, ready_at, lease_until, fence, attempts, idem, payload, note, created_at, due) "
+                 "VALUES (0, ?, 0, 0, 0, ?, ?, '', ?, ?) RETURNING id",
+                 queue->table);
+        value_view_t params[5] = {ackq_int(now), key != NULL ? ackq_text(key) : ackq_null(), ackq_blob(payload, size),
+                                  ackq_int(now), ackq_int(now)};
+        status = run_returning_int(queue, scope, sql, params, 5, &inserted);
+        /* due 구간은 id가 ACKQ_DUE_BAND보다 작아야 겹치지 않는다. 호출자 거래면 호출자가 rollback한다 */
+        if (status == ACKQ_OK && inserted >= ACKQ_DUE_BAND) status = ACKQ_LIMIT;
+    } else {
+        snprintf(sql, sizeof(sql),
+                 "INSERT INTO %s (state, ready_at, lease_until, fence, attempts, idem, payload, note, created_at) "
+                 "VALUES (0, ?, 0, 0, 0, ?, ?, '', ?) RETURNING id",
+                 queue->table);
+        value_view_t params[4] = {ackq_int(now), ackq_text(key != NULL ? key : ""), ackq_blob(payload, size),
+                                  ackq_int(now)};
+        status = run_returning_int(queue, scope, sql, params, 4, &inserted);
+    }
     if (status != ACKQ_OK) return status;
     *id = (uint64_t)inserted;
     if (duplicate != NULL) *duplicate = false;
@@ -606,7 +820,14 @@ static bool lease_expired(const meta_t *meta, const claim_filter_t *filter)
     return meta->lease_until <= filter->now && attempts_left;
 }
 
-static ackq_status_t claim_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, int64_t lease_until,
+/*
+ * claim할 수 있는 상태의 조건. due 형식의 후보 구간에는 claim 가능한 행만 있어야 하지만 due는 상태에서 정해지는 색인 값이라
+ * 이전 판 라이브러리처럼 due를 고치지 않는 쓰기가 섞이면 어긋날 수 있다. 그래서 후보 조회와 claim 갱신 모두 상태를 다시 본다.
+ * 매개변수는 now 둘이다.
+ */
+#define CLAIMABLE "((state = 0 AND ready_at <= ?) OR (state = 1 AND lease_until <= ?))"
+
+static ackq_status_t claim_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, int64_t now, int64_t lease_until,
                                ackq_claim_t *item)
 {
     char sql[ACKQ_SQL_MAX];
@@ -614,38 +835,109 @@ static ackq_status_t claim_one(ackq_t *queue, ackq_scope_t *scope, const meta_t 
     int64_t fence = meta->fence + 1;
     int64_t attempts = meta->attempts + 1;
     snprintf(sql, sizeof(sql),
-             "UPDATE %s SET state = 1, lease_until = ?, fence = ?, attempts = ? WHERE id = ? RETURNING payload",
-             queue->table);
-    value_view_t params[4] = {ackq_int(lease_until), ackq_int(fence), ackq_int(attempts), ackq_int((int64_t)meta->id)};
+             "UPDATE %s SET state = 1, lease_until = ?, fence = ?, attempts = ?%s WHERE id = ? AND " CLAIMABLE
+             " RETURNING payload",
+             queue->table, queue->due_column ? ", due = ?" : "");
+    value_view_t params[7] = {ackq_int(lease_until), ackq_int(fence), ackq_int(attempts),
+                              ackq_int(leased_due(queue, attempts, meta->id, lease_until)), ackq_int((int64_t)meta->id),
+                              ackq_int(now), ackq_int(now)};
+    size_t count = 7;
+    if (!queue->due_column) {
+        memmove(&params[3], &params[4], 3 * sizeof(params[0]));
+        count = 6;
+    }
     uint8_t *payload = NULL;
     size_t size = 0;
-    ackq_status_t status = run_returning_bytes(queue, scope, sql, params, 4, &payload, &size);
+    ackq_status_t status = run_returning_bytes(queue, scope, sql, params, count, &payload, &size);
     if (status != ACKQ_OK) return status;
     *item = (ackq_claim_t){meta->id, (uint64_t)fence, (uint32_t)attempts, (uint64_t)lease_until, payload, size};
     return ACKQ_OK;
 }
 
+/*
+ * claim할 작업 후보를 top에 넣는다. due 형식은 due 색인의 [0, now] 구간을 due 순서로 읽고 k개에서 멈춘다(READY와 시도가
+ * 남은 만료 LEASED만 그 구간에 있어야 하며, due가 어긋난 행은 CLAIMABLE 조건이 걸러 낸다). 이전 형식은 때가 된 READY(state 색인, id 순서)와 시도가 남은 만료 LEASED(lease_until
+ * 색인이 있으면 그 구간, 없으면 state 색인)에서 각각 k개를 읽어 id 순서로 합친다.
+ */
+static ackq_status_t scan_claims(ackq_t *queue, ackq_scope_t *scope, int64_t now, topk_t *top)
+{
+    size_t max_items = top->cap;
+    if (queue->due_column) {
+        top->by_due = true;
+        value_view_t due[6] = {ackq_int(now), ackq_int(now), ackq_int(now), ackq_int(queue->max_attempts),
+                               ackq_int(queue->max_attempts), ackq_int((int64_t)max_items)};
+        return scan_meta(queue, scope,
+                         " WHERE due >= 0 AND due <= ? AND " CLAIMABLE " AND (state = 0 OR ? = 0 OR attempts < ?) "
+                         "ORDER BY due LIMIT ?",
+                         due, 6, top);
+    }
+    value_view_t ready[3] = {ackq_int(ACKQ_STATE_READY), ackq_int(now), ackq_int((int64_t)max_items)};
+    ackq_status_t status = scan_meta(queue, scope, " WHERE state = ? AND ready_at <= ? ORDER BY id LIMIT ?", ready, 3, top);
+    if (status != ACKQ_OK) return status;
+    if (queue->lease_index) {
+        /* LEASED만 lease_until이 0보다 크다. 만료된 것을 만료 순서로 k개 읽는다 */
+        value_view_t leased[4] = {ackq_int(now), ackq_int(queue->max_attempts), ackq_int(queue->max_attempts),
+                                  ackq_int((int64_t)max_items)};
+        return scan_meta(queue, scope,
+                         " WHERE lease_until >= 1 AND lease_until <= ? AND (? = 0 OR attempts < ?) ORDER BY lease_until "
+                         "LIMIT ?",
+                         leased, 4, top);
+    }
+    value_view_t leased[5] = {ackq_int(ACKQ_STATE_LEASED), ackq_int(now), ackq_int(queue->max_attempts),
+                              ackq_int(queue->max_attempts), ackq_int((int64_t)max_items)};
+    return scan_meta(queue, scope,
+                     " WHERE state = ? AND lease_until <= ? AND (? = 0 OR attempts < ?) ORDER BY id LIMIT ?",
+                     leased, 5, top);
+}
+
 static ackq_status_t claim_in(ackq_t *queue, ackq_scope_t *scope, size_t max_items, int64_t now, int64_t lease_until,
                               ackq_claim_t *items, size_t *count)
 {
-    topk_t top = {calloc(max_items, sizeof(meta_t)), 0, max_items};
+    topk_t top = {calloc(max_items, sizeof(meta_t)), 0, max_items, false};
     if (top.items == NULL) return ACKQ_NOMEM;
-    /* 때가 된 READY와 시도 횟수가 남은 만료 LEASED에서 각각 가장 작은 id k개를 읽어 합친다 */
-    value_view_t ready[3] = {ackq_int(ACKQ_STATE_READY), ackq_int(now), ackq_int((int64_t)max_items)};
-    value_view_t leased[5] = {ackq_int(ACKQ_STATE_LEASED), ackq_int(now), ackq_int(queue->max_attempts),
-                              ackq_int(queue->max_attempts), ackq_int((int64_t)max_items)};
-    ackq_status_t status = scan_meta(queue, scope, " WHERE state = ? AND ready_at <= ? ORDER BY id LIMIT ?", ready, 3, &top);
-    if (status == ACKQ_OK) {
-        status = scan_meta(queue, scope,
-                           " WHERE state = ? AND lease_until <= ? AND (? = 0 OR attempts < ?) ORDER BY id LIMIT ?",
-                           leased, 5, &top);
-    }
+    ackq_status_t status = scan_claims(queue, scope, now, &top);
     for (size_t i = 0; status == ACKQ_OK && i < top.count; i++) {
-        status = claim_one(queue, scope, &top.items[i], lease_until, &items[i]);
+        status = claim_one(queue, scope, &top.items[i], now, lease_until, &items[i]);
         if (status == ACKQ_OK) *count = i + 1;
     }
     free(top.items);
     return status;
+}
+
+/* 거래 없이(읽기 스냅샷) claim할 후보가 하나라도 있는지 본다 */
+static ackq_status_t claim_probe(ackq_t *queue, session_t *session, int64_t now, bool *any)
+{
+    *any = false;
+    ackq_scope_t scope;
+    ackq_status_t status = ackq_scope_open(queue, session, false, &scope);
+    if (status != ACKQ_OK) return status;
+    meta_t candidate;
+    topk_t top = {&candidate, 0, 1, false};
+    status = scan_claims(queue, &scope, now, &top);
+    *any = top.count > 0;
+    return ackq_scope_close(&scope, status);
+}
+
+static ackq_status_t claim_miss(ackq_t *queue, ackq_scope_t *scope, int64_t now)
+{
+    meta_t candidate;
+    topk_t top = {&candidate, 0, 1, false};
+    ackq_status_t status = scan_claims(queue, scope, now, &top);
+    if (status != ACKQ_OK || top.count == 0) return status;
+    return candidate.fence == INT64_MAX || candidate.attempts == INT64_MAX ? ACKQ_LIMIT : ACKQ_INTERNAL;
+}
+
+static ackq_status_t conditional_claim_in(ackq_t *queue, ackq_scope_t *scope, size_t max_items,
+                                          const ackq_claim_request_t *request, ackq_claim_t *items, size_t *count)
+{
+    for (size_t i = 0; i < max_items; i++) {
+        bool matched = false;
+        ackq_status_t status = ackq_conditional_claim(queue, scope, request, &items[i], &matched);
+        if (status != ACKQ_OK) return status;
+        if (!matched) return claim_miss(queue, scope, request->now);
+        *count = i + 1;
+    }
+    return ACKQ_OK;
 }
 
 ackq_status_t ackq_claim(ackq_t *queue, session_t *session, size_t max_items, uint64_t lease_ms,
@@ -659,16 +951,32 @@ ackq_status_t ackq_claim(ackq_t *queue, session_t *session, size_t max_items, ui
     ackq_status_t status = add_ms(now, lease_ms, &lease_until);
     if (status != ACKQ_OK || !ackq_to_i64(now, &now_value)) return status != ACKQ_OK ? status : ACKQ_LIMIT;
     ackq_scope_t scope;
+    /*
+     * 바로 앞 claim이 빈 결과였고 호출자 거래가 없으면 writer 없이 읽기로 후보가 있는지 먼저 본다. 없으면 쓰기 거래를 열지
+     * 않고 빈 결과다(쉬지 않고 묻는 소비자가 writer를 붙잡지 않는다). 있으면 아래 쓰기 거래가 다시 고른다.
+     */
+    if (atomic_load(&queue->last_claim_empty) && session != NULL && !session_txn_active(session)) {
+        bool any = false;
+        status = claim_probe(queue, session, now_value, &any);
+        if (status != ACKQ_OK) return status;
+        if (!any) return ACKQ_OK;
+    }
     status = ackq_scope_open(queue, session, true, &scope);
     if (status != ACKQ_OK) return status;
-    status = claim_in(queue, &scope, max_items, now_value, lease_until, items, count);
+    if (queue->conditional_enabled) {
+        ackq_claim_request_t request = {0, now_value, lease_until};
+        status = conditional_claim_in(queue, &scope, max_items, &request, items, count);
+    } else {
+        status = claim_in(queue, &scope, max_items, now_value, lease_until, items, count);
+    }
     if (status == ACKQ_OK) status = ackq_scope_close(&scope, status);
     else ackq_scope_close(&scope, status);
-    /* commit이 실패하거나 불확실하면 claim은 없던 일이다. 가져온 항목을 호출자에게 주지 않는다. */
+    /* commit 결과가 불확실해도 호출자에게 claim을 넘기지 않는다. */
     if (status != ACKQ_OK) {
         ackq_claims_release(items, *count);
         *count = 0;
     }
+    if (status == ACKQ_OK) atomic_store(&queue->last_claim_empty, *count == 0);
     return status;
 }
 
@@ -683,13 +991,20 @@ ackq_status_t ackq_claim_id(ackq_t *queue, session_t *session, uint64_t id, uint
     ackq_scope_t scope;
     status = ackq_scope_open(queue, session, true, &scope);
     if (status != ACKQ_OK) return status;
+    bool matched = false;
+    if (queue->conditional_enabled) {
+        ackq_claim_request_t request = {id, now_value, lease_until};
+        status = ackq_conditional_claim(queue, &scope, &request, item, &matched);
+    }
     meta_t meta;
-    status = fetch_meta(queue, &scope, id, &meta);
-    if (status == ACKQ_OK) {
+    if (status == ACKQ_OK && !matched) status = fetch_meta(queue, &scope, id, &meta);
+    if (status == ACKQ_OK && !matched) {
         claim_filter_t filter = {now_value, queue->max_attempts};
         bool due = meta.state == ACKQ_STATE_READY ? ready_due(&meta, &filter)
                                                   : meta.state == ACKQ_STATE_LEASED && lease_expired(&meta, &filter);
-        status = due ? claim_one(queue, &scope, &meta, lease_until, item) : ACKQ_STALE;
+        if (!due) status = ACKQ_STALE;
+        else if (!queue->conditional_enabled) status = claim_one(queue, &scope, &meta, now_value, lease_until, item);
+        else status = meta.fence == INT64_MAX || meta.attempts == INT64_MAX ? ACKQ_LIMIT : ACKQ_INTERNAL;
     }
     status = ackq_scope_close(&scope, status);
     if (status != ACKQ_OK) ackq_claims_release(item, 1);
@@ -716,9 +1031,11 @@ static ackq_status_t set_terminal(ackq_t *queue, ackq_scope_t *scope, uint64_t i
                                   const char *note)
 {
     char sql[ACKQ_SQL_MAX];
-    snprintf(sql, sizeof(sql), "UPDATE %s SET state = ?, lease_until = 0, note = ? WHERE id = ?", queue->table);
-    value_view_t params[3] = {ackq_int(state), ackq_text(note), ackq_int((int64_t)id)};
-    return run_one_row(queue, scope, sql, params, 3);
+    snprintf(sql, sizeof(sql), "UPDATE %s SET state = ?, lease_until = 0, note = ?%s WHERE id = ?", queue->table,
+             queue->due_column ? ", due = ?" : "");
+    value_view_t params[4] = {ackq_int(state), ackq_text(note), ackq_int(terminal_due(state, id)), ackq_int((int64_t)id)};
+    if (!queue->due_column) params[2] = params[3];
+    return run_one_row(queue, scope, sql, params, queue->due_column ? 4 : 3);
 }
 
 /* ack·fail 공통: 같은 claim이 LEASED면 target으로 바꾸고, 이미 target이면 중복 요청이라 OK다. */
@@ -729,13 +1046,19 @@ static ackq_status_t finish_claim(ackq_t *queue, session_t *session, uint64_t id
     ackq_scope_t scope;
     ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
     if (status != ACKQ_OK) return status;
+    if (queue->conditional_enabled) {
+        ackq_finish_request_t request = {id, fence, target, note};
+        bool matched = false;
+        status = ackq_conditional_finish(queue, &scope, &request, &matched);
+        if (status != ACKQ_OK || matched) return ackq_scope_close(&scope, status);
+    }
     meta_t meta;
     status = fetch_meta(queue, &scope, id, &meta);
     if (status == ACKQ_OK) {
         if (meta.fence != (int64_t)fence) status = ACKQ_STALE;
         else if (meta.state == (int64_t)target) status = ACKQ_OK;
         else if (meta.state != ACKQ_STATE_LEASED) status = ACKQ_STALE;
-        else status = set_terminal(queue, &scope, id, target, note);
+        else status = queue->conditional_enabled ? ACKQ_INTERNAL : set_terminal(queue, &scope, id, target, note);
     }
     return ackq_scope_close(&scope, status);
 }
@@ -762,9 +1085,12 @@ ackq_status_t ackq_extend(ackq_t *queue, session_t *session, uint64_t id, uint64
         if (meta.state != ACKQ_STATE_LEASED || meta.fence != (int64_t)fence) {
             status = ACKQ_STALE;
         } else {
-            snprintf(sql, sizeof(sql), "UPDATE %s SET lease_until = ? WHERE id = ?", queue->table);
-            value_view_t params[2] = {ackq_int(until), ackq_int((int64_t)id)};
-            status = run_one_row(queue, &scope, sql, params, 2);
+            /* 시도가 남은 claim의 due는 lease_until과 같다. 마지막 시도(due < 0)의 due는 그대로 둔다 */
+            bool due = queue->due_column && meta.due >= 0;
+            snprintf(sql, sizeof(sql), "UPDATE %s SET lease_until = ?%s WHERE id = ?", queue->table, due ? ", due = ?" : "");
+            value_view_t params[3] = {ackq_int(until), ackq_int(until), ackq_int((int64_t)id)};
+            if (!due) params[1] = params[2];
+            status = run_one_row(queue, &scope, sql, params, due ? 3 : 2);
         }
     }
     status = ackq_scope_close(&scope, status);
@@ -797,11 +1123,12 @@ static ackq_status_t nack_in(ackq_t *queue, ackq_scope_t *scope, const meta_t *m
     int64_t ready_at;
     ackq_status_t status = add_ms(ackq_now(queue), retry_delay_ms, &ready_at);
     if (status != ACKQ_OK) return status;
-    snprintf(sql, sizeof(sql), "UPDATE %s SET state = 0, ready_at = ?, lease_until = 0, note = ? WHERE id = ?",
-             queue->table);
-    value_view_t params[3] = {ackq_int(ready_at), ackq_text(note), ackq_int((int64_t)meta->id)};
+    snprintf(sql, sizeof(sql), "UPDATE %s SET state = 0, ready_at = ?, lease_until = 0, note = ?%s WHERE id = ?",
+             queue->table, queue->due_column ? ", due = ?" : "");
+    value_view_t params[4] = {ackq_int(ready_at), ackq_text(note), ackq_int(ready_at), ackq_int((int64_t)meta->id)};
+    if (!queue->due_column) params[2] = params[3];
     if (terminal != NULL) *terminal = false;
-    return run_one_row(queue, scope, sql, params, 3);
+    return run_one_row(queue, scope, sql, params, queue->due_column ? 4 : 3);
 }
 
 ackq_status_t ackq_nack(ackq_t *queue, session_t *session, uint64_t id, uint64_t fence, uint64_t retry_delay_ms,
@@ -851,15 +1178,62 @@ ackq_status_t ackq_update(ackq_t *queue, session_t *session, uint64_t id, uint64
 
 /* ── 회복·정리·조회 ── */
 
-static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta)
+/*
+ * LEASED 한 건의 claim을 끝낸다. fence를 1 올려 옛 claim의 ack·nack·fail·extend·update가 모두 STALE이 되게 한다
+ * (READY로 돌아간 것만으로는 같은 claim의 중복 nack과 구분되지 않는다). 만료(expired)이고 시도 횟수가 max_attempts에
+ * 닿았으면 FAILED로, 아니면 READY로 돌린다. 호출자의 판단으로 푸는 release는 작업의 실패가 아니므로 한도에 닿은 작업도
+ * 한 번 더 전달하지만, 이미 한도를 넘긴 작업(그 한 번을 받은 작업)은 FAILED로 끝낸다. claim은 READY의 시도 횟수를 보지
+ * 않으므로 이렇게 하지 않으면 crash 뒤 release를 반복하는 루프에서 같은 작업이 끝없이 전달된다.
+ */
+static ackq_status_t return_one(ackq_t *queue, ackq_scope_t *scope, const meta_t *meta, bool expired)
 {
     char sql[ACKQ_SQL_MAX];
-    if (queue->max_attempts > 0 && meta->attempts >= (int64_t)queue->max_attempts) {
-        return set_terminal(queue, scope, meta->id, ACKQ_STATE_FAILED, NOTE_MAX_ATTEMPTS);
+    if (meta->fence == INT64_MAX) return ACKQ_LIMIT;
+    int64_t fence = meta->fence + 1;
+    int64_t limit = (int64_t)queue->max_attempts;
+    if (limit > 0 && (expired ? meta->attempts >= limit : meta->attempts > limit)) {
+        snprintf(sql, sizeof(sql), "UPDATE %s SET state = ?, lease_until = 0, fence = ?, note = ?%s WHERE id = ?",
+                 queue->table, queue->due_column ? ", due = ?" : "");
+        value_view_t failed[5] = {ackq_int(ACKQ_STATE_FAILED), ackq_int(fence), ackq_text(NOTE_MAX_ATTEMPTS),
+                                  ackq_int(terminal_due(ACKQ_STATE_FAILED, meta->id)), ackq_int((int64_t)meta->id)};
+        if (!queue->due_column) failed[3] = failed[4];
+        return run_one_row(queue, scope, sql, failed, queue->due_column ? 5 : 4);
     }
-    snprintf(sql, sizeof(sql), "UPDATE %s SET state = 0, lease_until = 0 WHERE id = ?", queue->table);
-    value_view_t param = ackq_int((int64_t)meta->id);
-    return run_one_row(queue, scope, sql, &param, 1);
+    /* READY로 돌린 작업의 due는 원래 ready_at이다(이미 지난 시각이라 곧바로 claim할 수 있다) */
+    snprintf(sql, sizeof(sql), "UPDATE %s SET state = 0, lease_until = 0, fence = ?%s WHERE id = ?", queue->table,
+             queue->due_column ? ", due = ready_at" : "");
+    value_view_t params[2] = {ackq_int(fence), ackq_int((int64_t)meta->id)};
+    return run_one_row(queue, scope, sql, params, 2);
+}
+
+/*
+ * lease_until이 until 이하인 LEASED를 id 순서로 top->cap개까지 고른다. lease_until 색인이 있으면(새로 설치한 큐와 열 때
+ * 색인을 더한 큐) 그 [1, until] 구간을 만료 순서로 읽고 k개에서 멈춘다. LEASED만 lease_until이 0보다 크므로 READY·끝난 작업과
+ * 만료 전 lease 수와 무관하다. 색인이 없으면 due 형식은 due 구간 둘(시도가 남은 것은 [0, until], 마지막 시도는 ACKQ_DUE_LAST
+ * 구간 전체. 앞 구간의 때가 된 READY도 방문한다)을, 이전 형식은 state 색인을 읽는다.
+ */
+static ackq_status_t scan_leases(ackq_t *queue, ackq_scope_t *scope, int64_t until, topk_t *top)
+{
+    int64_t limit = (int64_t)top->cap;
+    if (queue->lease_index) {
+        value_view_t params[2] = {ackq_int(until), ackq_int(limit)};
+        return scan_meta(queue, scope,
+                         " WHERE lease_until >= 1 AND lease_until <= ? AND state = 1 ORDER BY lease_until LIMIT ?", params,
+                         2, top);
+    }
+    if (queue->due_column) {
+        value_view_t live[2] = {ackq_int(until), ackq_int(limit)};
+        ackq_status_t status = scan_meta(queue, scope, " WHERE due >= 0 AND due <= ? AND state = 1 ORDER BY due LIMIT ?",
+                                         live, 2, top);
+        if (status != ACKQ_OK) return status;
+        value_view_t last[4] = {ackq_int(ACKQ_DUE_LAST), ackq_int(ACKQ_DUE_LAST + ACKQ_DUE_BAND - 1), ackq_int(until),
+                                ackq_int(limit)};
+        return scan_meta(queue, scope,
+                         " WHERE due >= ? AND due <= ? AND state = 1 AND lease_until <= ? ORDER BY due LIMIT ?", last, 4,
+                         top);
+    }
+    value_view_t params[3] = {ackq_int(ACKQ_STATE_LEASED), ackq_int(until), ackq_int(limit)};
+    return scan_meta(queue, scope, " WHERE state = ? AND lease_until <= ? ORDER BY id LIMIT ?", params, 3, top);
 }
 
 static ackq_status_t return_leases(ackq_t *queue, session_t *session, size_t limit, bool only_expired,
@@ -867,8 +1241,10 @@ static ackq_status_t return_leases(ackq_t *queue, session_t *session, size_t lim
 {
     if (processed != NULL) *processed = 0;
     if (queue == NULL || limit == 0 || limit > ACKQ_MAX_CLAIM_BATCH) return ACKQ_INVALID;
-    int64_t now = (int64_t)ackq_now(queue);
-    topk_t top = {calloc(limit, sizeof(meta_t)), 0, limit};
+    uint64_t clock = ackq_now(queue);
+    if (clock > ACKQ_NOW_MAX) return ACKQ_LIMIT;   /* 유효한 시각을 한 번도 읽지 못했다 */
+    int64_t now = (int64_t)clock;
+    topk_t top = {calloc(limit, sizeof(meta_t)), 0, limit, false};
     if (top.items == NULL) return ACKQ_NOMEM;
     ackq_scope_t scope;
     ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
@@ -876,13 +1252,11 @@ static ackq_status_t return_leases(ackq_t *queue, session_t *session, size_t lim
         free(top.items);
         return status;
     }
-    /* 시도 횟수 조건 없이 만료만 본다(release는 만료와 무관). 시도 횟수를 다 쓴 작업은 return_one이 FAILED로 끝낸다 */
-    value_view_t params[3] = {ackq_int(ACKQ_STATE_LEASED), ackq_int(only_expired ? now : INT64_MAX),
-                              ackq_int((int64_t)limit)};
-    status = scan_meta(queue, &scope, " WHERE state = ? AND lease_until <= ? ORDER BY id LIMIT ?", params, 3, &top);
+    /* 시도 횟수 조건 없이 만료만 본다(release는 만료와 무관). 시도 횟수를 다 쓴 만료 작업은 return_one이 FAILED로 끝낸다 */
+    status = scan_leases(queue, &scope, only_expired ? now : INT64_MAX, &top);
     size_t done = 0;
     for (size_t i = 0; status == ACKQ_OK && i < top.count; i++) {
-        status = return_one(queue, &scope, &top.items[i]);
+        status = return_one(queue, &scope, &top.items[i], only_expired);
         if (status == ACKQ_OK) done++;
     }
     free(top.items);
@@ -914,8 +1288,12 @@ static ackq_status_t retain_key(ackq_t *queue, ackq_scope_t *scope, uint64_t id)
     result_row_t row;
     result_next_t next;
     while ((next = result_next(result, &row)) == RESULT_NEXT_ROW) {
-        if (row.cell_count < 2 || row.cells[0].type != VALUE_TEXT || row.cells[1].type != VALUE_BLOB ||
-            row.cells[0].size_bytes > ACKQ_IDEM_KEY_MAX) {
+        if (row.cell_count < 2 || row.cells[1].type != VALUE_BLOB) {
+            status = ACKQ_INTERNAL;
+            continue;
+        }
+        if (row.cells[0].type == VALUE_NULL) continue;   /* due 형식의 key 없는 작업 */
+        if (row.cells[0].type != VALUE_TEXT || row.cells[0].size_bytes > ACKQ_IDEM_KEY_MAX) {
             status = ACKQ_INTERNAL;
             continue;
         }
@@ -943,30 +1321,32 @@ static ackq_status_t retain_key(ackq_t *queue, ackq_scope_t *scope, uint64_t id)
     return status;
 }
 
-/* 넣은 순서(seq)대로 앞에서부터 만료된 key를 최대 limit개 지우고, 만료 전 key를 만나면 멈춘다. */
+/*
+ * 만료 시각이 지난 key를 seq가 작은 것부터 최대 limit개 지운다. expires_at에는 색인이 없어 만료된 key가 limit개보다
+ * 적으면 key 테이블 전체를 읽는다(만료 전 key를 건너뛰어야 뒤의 만료된 key를 찾는다).
+ */
 static ackq_status_t expire_keys(ackq_t *queue, ackq_scope_t *scope, size_t limit)
 {
     char sql[ACKQ_SQL_MAX];
     result_t *result = NULL;
-    snprintf(sql, sizeof(sql), "SELECT seq, expires_at FROM %s ORDER BY seq LIMIT ?", queue->keys);
-    value_view_t param = ackq_int((int64_t)limit);
-    ackq_status_t status = ackq_run(queue, scope, false, sql, &param, 1, &result, NULL);
+    uint64_t clock = ackq_now(queue);
+    if (clock > ACKQ_NOW_MAX) return ACKQ_LIMIT;   /* 유효한 시각을 한 번도 읽지 못했다 */
+    snprintf(sql, sizeof(sql), "SELECT seq FROM %s WHERE expires_at <= ? ORDER BY seq LIMIT ?", queue->keys);
+    value_view_t params[2] = {ackq_int((int64_t)clock), ackq_int((int64_t)limit)};
+    ackq_status_t status = ackq_run(queue, scope, false, sql, params, 2, &result, NULL);
     if (status != ACKQ_OK) return status;
-    int64_t now = (int64_t)ackq_now(queue);
     int64_t *expired = calloc(limit, sizeof(*expired));
     size_t count = 0;
-    bool stopped = false;
     if (expired == NULL) status = ACKQ_NOMEM;
     result_row_t row;
     result_next_t next;
     while ((next = result_next(result, &row)) == RESULT_NEXT_ROW) {
-        if (status != ACKQ_OK || stopped) continue;
-        if (row.cell_count < 2 || row.cells[0].type != VALUE_INTEGER || row.cells[1].type != VALUE_INTEGER) {
+        if (status != ACKQ_OK) continue;
+        if (row.cell_count < 1 || row.cells[0].type != VALUE_INTEGER || count >= limit) {
             status = ACKQ_INTERNAL;
             continue;
         }
-        if (row.cells[1].integer > now) stopped = true;
-        else expired[count++] = row.cells[0].integer;
+        expired[count++] = row.cells[0].integer;
     }
     ackq_status_t finished = ackq_finish_rows(next, result);
     result_release(&result);
@@ -985,7 +1365,7 @@ ackq_status_t ackq_purge(ackq_t *queue, session_t *session, bool include_failed,
     char sql[ACKQ_SQL_MAX];
     if (purged != NULL) *purged = 0;
     if (queue == NULL || limit == 0 || limit > ACKQ_MAX_CLAIM_BATCH) return ACKQ_INVALID;
-    topk_t top = {calloc(limit, sizeof(meta_t)), 0, limit};
+    topk_t top = {calloc(limit, sizeof(meta_t)), 0, limit, false};
     if (top.items == NULL) return ACKQ_NOMEM;
     ackq_scope_t scope;
     ackq_status_t status = ackq_scope_open(queue, session, true, &scope);
@@ -993,10 +1373,24 @@ ackq_status_t ackq_purge(ackq_t *queue, session_t *session, bool include_failed,
         free(top.items);
         return status;
     }
-    value_view_t acked[2] = {ackq_int(ACKQ_STATE_ACKED), ackq_int((int64_t)limit)};
-    value_view_t failed[2] = {ackq_int(ACKQ_STATE_FAILED), ackq_int((int64_t)limit)};
-    status = scan_meta(queue, &scope, " WHERE state = ? ORDER BY id LIMIT ?", acked, 2, &top);
-    if (status == ACKQ_OK && include_failed) status = scan_meta(queue, &scope, " WHERE state = ? ORDER BY id LIMIT ?", failed, 2, &top);
+    if (queue->due_column) {
+        /* 끝난 작업의 due는 상태 구간 시작 + id라 구간을 due 순서로 읽으면 id 순서다 */
+        value_view_t acked[3] = {ackq_int(ACKQ_DUE_ACKED), ackq_int(ACKQ_DUE_ACKED + ACKQ_DUE_BAND - 1),
+                                 ackq_int((int64_t)limit)};
+        value_view_t failed[3] = {ackq_int(ACKQ_DUE_FAILED), ackq_int(ACKQ_DUE_FAILED + ACKQ_DUE_BAND - 1),
+                                  ackq_int((int64_t)limit)};
+        status = scan_meta(queue, &scope, " WHERE due >= ? AND due <= ? ORDER BY due LIMIT ?", acked, 3, &top);
+        if (status == ACKQ_OK && include_failed) {
+            status = scan_meta(queue, &scope, " WHERE due >= ? AND due <= ? ORDER BY due LIMIT ?", failed, 3, &top);
+        }
+    } else {
+        value_view_t acked[2] = {ackq_int(ACKQ_STATE_ACKED), ackq_int((int64_t)limit)};
+        value_view_t failed[2] = {ackq_int(ACKQ_STATE_FAILED), ackq_int((int64_t)limit)};
+        status = scan_meta(queue, &scope, " WHERE state = ? ORDER BY id LIMIT ?", acked, 2, &top);
+        if (status == ACKQ_OK && include_failed) {
+            status = scan_meta(queue, &scope, " WHERE state = ? ORDER BY id LIMIT ?", failed, 2, &top);
+        }
+    }
     size_t done = 0;
     snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE id = ?", queue->table);
     for (size_t i = 0; status == ACKQ_OK && i < top.count; i++) {
@@ -1076,7 +1470,7 @@ ackq_status_t ackq_list(ackq_t *queue, session_t *session, uint64_t after_id, si
         !fits_i64(after_id)) {
         return ACKQ_INVALID;
     }
-    topk_t top = {calloc(limit, sizeof(meta_t)), 0, limit};
+    topk_t top = {calloc(limit, sizeof(meta_t)), 0, limit, false};
     if (top.items == NULL) return ACKQ_NOMEM;
     ackq_scope_t scope;
     ackq_status_t status = ackq_scope_open(queue, session, false, &scope);

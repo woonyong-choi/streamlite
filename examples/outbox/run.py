@@ -6,7 +6,7 @@
 4. 모든 주문이 정확히 한 번 출고됐는지 확인한다.
 
 사용: make example-outbox
-      또는 TOTEDB_LIB=build/lib/libtotedb.so PYTHONPATH=python python3 examples/outbox/run.py --consumer build/outbox_consumer
+      또는 STREAMLITE_LIB=build/lib/libstreamlite.so PYTHONPATH=python python3 examples/outbox/run.py --consumer build/outbox_consumer
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from totedb import Database, Queue
+from streamlite import Database, Queue
 
 
 def place_orders(path: Path, orders: int) -> None:
@@ -45,9 +45,9 @@ def main() -> int:
     parser.add_argument("--lease-ms", type=int, default=800)
     parser.add_argument("--dir", type=Path, default=None, help="DB를 둘 폴더. 없으면 임시 폴더")
     args = parser.parse_args()
-    workdir = args.dir or Path(tempfile.mkdtemp(prefix="totedb-outbox-"))
+    workdir = args.dir or Path(tempfile.mkdtemp(prefix="streamlite-outbox-"))
     workdir.mkdir(parents=True, exist_ok=True)
-    path = workdir / "shop.totedb"
+    path = workdir / "shop.streamlite"
     if path.exists():
         path.unlink()
     place_orders(path, args.orders)

@@ -30,7 +30,7 @@
 #include "storage/le.h"
 
 #define DIR_NAME "build/test_primary_index_dir"
-#define DB_PATH DIR_NAME "/db.totedb"
+#define DB_PATH DIR_NAME "/db.streamlite"
 
 static int g_run = 0;
 static int g_fail = 0;
@@ -526,7 +526,7 @@ static void test_index_with_tree_directory(void)
     assert(catalog_describe(catalog, id, &view) == CATALOG_OK);
     uint8_t body[PAGE_BODY_BYTES];
     assert(page_file_read(file, view.heap_root, PAGE_KIND_DIRECTORY, id, body) == PAGE_FILE_OK);
-    CHECK(memcmp(body, "LHD2", 4) == 0, "실제 디렉터리 루트가 두 잎 형식으로 전환됨");
+    CHECK(memcmp(body, "SLD2", 4) == 0, "실제 디렉터리 루트가 두 잎 형식으로 전환됨");
     catalog_close(catalog);
     assert(page_file_close(file) == PAGE_FILE_OK);
     assert(database_open(DB_PATH, true, &db) == DATABASE_OK);

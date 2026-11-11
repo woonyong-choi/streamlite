@@ -36,7 +36,7 @@ def verify_library(path: Path, *, enabled: bool = False) -> set[str]:
     ).stdout
     if sys.platform != "darwin":
         exports += "\n" + details
-    return set(re.findall(r"\b_?(tote_\w*)\b", exports))
+    return set(re.findall(r"\b_?(streamlite_\w*)\b", exports))
 
 
 def main() -> None:
@@ -47,7 +47,7 @@ def main() -> None:
     args = parser.parse_args()
     exports = verify_library(args.library, enabled=args.enabled)
     if args.baseline:
-        expected = set(re.findall(r"\b_?(tote_\w*)\b", args.baseline.read_text()))
+        expected = set(re.findall(r"\b_?(streamlite_\w*)\b", args.baseline.read_text()))
         if exports != expected:
             raise ValueError(f"product exports changed: {exports ^ expected}")
 
