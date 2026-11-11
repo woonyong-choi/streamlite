@@ -669,6 +669,9 @@ static void build_steps(void)
     add_step(STEP_ERROR, "CREATE UNIQUE INDEX z_v ON z (v) DROP TABLE z");
     add_step(STEP_ERROR, "CREATE INDEX z_v ON z (v) (id)");
     add_step(STEP_SELECT, "SELECT id, v FROM z");
+    /* #272: 다른 서브쿼리를 GROUP BY 식의 값으로 읽지 않는다 */
+    add_step(STEP_SELECT, "SELECT (SELECT 1), COUNT(*) FROM z GROUP BY (SELECT 2)");
+    add_step(STEP_SELECT, "SELECT EXISTS (SELECT 1 FROM z WHERE id > 100), COUNT(*) FROM z GROUP BY EXISTS (SELECT 1 FROM z)");
 
     /* #203: 큰 id를 직접 넣은 뒤 자동 id는 기존 최대 키 + 1이다. 최대 정수 뒤에는 둘 다 오류다 */
     add_step(STEP_OK, "CREATE TABLE ids (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)");

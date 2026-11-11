@@ -658,6 +658,33 @@ static void test_primary_key_update_plan_matches_apply(void)
     assert(database_close(db) == DATABASE_OK);
 }
 
+/* ── GROUP BY의 서브쿼리 대응 ── */
+
+static void test_group_by_does_not_match_other_subquery(void)
+{
+    printf("\n[test_group_by_does_not_match_other_subquery]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE t (a INTEGER PRIMARY KEY, b TEXT)");
+    exec_ok(db, "INSERT INTO t VALUES (1, 'x'), (2, 'y'), (3, 'x')");
+    /* 내용이 다른 서브쿼리를 GROUP BY 식의 값으로 바꿔 읽지 않는다 */
+    expect_text(db, "SELECT (SELECT 1), COUNT(*) FROM t GROUP BY (SELECT 2)", "[1] 1|3");
+    expect_text(db, "SELECT (SELECT 2), COUNT(*) FROM t GROUP BY (SELECT 2)", "[1] 2|3");
+    expect_text(db, "SELECT EXISTS (SELECT 1 FROM t WHERE a > 100), COUNT(*) FROM t GROUP BY EXISTS (SELECT 1 FROM t)", "[1] 0|3");
+    expect_text(db, "SELECT COUNT(*) FROM t GROUP BY (SELECT 2) HAVING (SELECT 1) = 1", "[1] 3");
+    expect_text(db, "SELECT COUNT(*) FROM t GROUP BY (SELECT 2) HAVING (SELECT 1) = 2", "[0]");
+    expect_text(db, "SELECT COUNT(*) FROM t GROUP BY (SELECT 2) ORDER BY (SELECT 1)", "[1] 3");
+    /* 묶지 않은 열을 쓰는 식은 서브쿼리가 달라도 같아도 그룹 값이 아니다 */
+    expect_error(db, "SELECT a IN (SELECT 5), COUNT(*) FROM t GROUP BY a IN (SELECT a FROM t)", RESULT_E_SEMANTIC,
+                 DATABASE_CODE_NOT_GROUPED, "a");
+    expect_error(db, "SELECT b, (SELECT COUNT(*) FROM t u WHERE u.b = t.b) FROM t GROUP BY (SELECT COUNT(*) FROM t u WHERE u.a = t.a)",
+                 RESULT_E_SEMANTIC, DATABASE_CODE_NOT_GROUPED, "b");
+    /* 서브쿼리가 없는 식의 대응은 그대로다 */
+    expect_text(db, "SELECT b, COUNT(*) FROM t GROUP BY b ORDER BY b", "[2] 'x'|2/ 'y'|1");
+    expect_text(db, "SELECT a % 2, COUNT(*) FROM t GROUP BY a % 2 ORDER BY 1", "[2] 0|1/ 1|2");
+    expect_text(db, "SELECT b IN ('x'), COUNT(*) FROM t GROUP BY b IN ('x') ORDER BY 1", "[2] 0|1/ 1|2");
+    assert(database_close(db) == DATABASE_OK);
+}
+
 /* ── 유일 색인 위반과 기본 키 중복의 문구 ── */
 
 static void test_unique_index_error_names_the_index(void)
@@ -720,6 +747,7 @@ int main(int argc, char **argv)
         {"substr_bounds", test_substr_bounds},
         {"expression_intermediates_are_charged", test_expression_intermediates_are_charged},
         {"primary_key_update_plan_matches_apply", test_primary_key_update_plan_matches_apply},
+        {"group_by_does_not_match_other_subquery", test_group_by_does_not_match_other_subquery},
         {"unique_index_error_names_the_index", test_unique_index_error_names_the_index},
     };
     for (size_t i = 0; i < sizeof(TESTS) / sizeof(TESTS[0]); i++) {
