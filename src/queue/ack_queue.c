@@ -480,10 +480,11 @@ ackq_status_t ackq_install(session_t *session, const ackq_options_t *options, ac
     if (status == ACKQ_NOT_INSTALLED) {
         status = check_new_name(queue, session);
         if (status == ACKQ_OK) status = create_table(queue, session);
-        /* 다른 설치가 먼저 만들었을 수 있다. 같은 이름의 테이블이 있으면 그것을 쓴다. */
-        if (status != ACKQ_OK && status != ACKQ_INVALID && probe_table(queue, session) == ACKQ_OK) {
-            status = ensure_indexes(queue, session);
-        }
+        /*
+         * 다른 설치가 먼저 만들었을 수 있다. 같은 이름의 테이블이 있으면 그것을 쓴다. 그 사이에 만들어졌다면 이름 검사가
+         * 본 것도 이 큐 자신의 key 테이블이므로 INVALID여도 다시 확인한다(겹치는 이름이면 이 큐의 테이블은 여전히 없다).
+         */
+        if (status != ACKQ_OK && probe_table(queue, session) == ACKQ_OK) status = ensure_indexes(queue, session);
     } else if (status == ACKQ_OK) {
         status = ensure_indexes(queue, session);
     }
