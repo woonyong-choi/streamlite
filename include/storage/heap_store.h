@@ -48,7 +48,8 @@
  *     2  OVERFLOW  TEXT·BLOB 컬럼만. payload는 BLOB 8바이트(head u32, size u32 little-endian)
  * 인코딩이 HEAP_INLINE_LIMIT_BYTES를 넘으면 16바이트를 넘는 TEXT·BLOB 중 큰 것부터 overflow로
  * 보낸다. 더 보낼 것이 없어도 HEAP_MAX_ROW_BYTES 이하이면 그대로 저장하고 넘으면 HEAP_LIMIT이다.
- * 컬럼은 HEAP_MAX_COLUMNS개까지.
+ * 컬럼은 HEAP_MAX_COLUMNS개까지(record codec의 필드 한계 1024에서 나온다). catalog가 새로 만드는 테이블의
+ * 컬럼 한도(CATALOG_MAX_CREATE_COLUMNS)는 이 값 이하여야 한다.
  * 알 수 없는 version·kind, 컬럼 타입과 맞지 않는 payload, 길이가 다른 overflow는 CORRUPT다.
  * 컬럼 타입은 catalog의 컬럼 타입이며 NOT NULL·VARCHAR 같은 제약은 이 모듈이 다루지 않는다.
  *
@@ -218,6 +219,10 @@ heap_status_t heap_visit_text_key_range(heap_t *heap, text_key_range_t range,
                                         bool (*visit)(void *context, heap_locator_t locator), void *context,
                                         bool *stopped);
 bool heap_secondary_key_fits(const value_view_t *value);
+/*
+ * 보조 색인에서 value와 같은 항목의 locator를 visit에 넘긴다. visit이 false를 돌려주면 거기서 멈추고 HEAP_OK다.
+ * 멈춤은 오류가 아니며 멈춘 까닭은 호출자가 context로 안다. HEAP_NOMEM은 색인 읽기의 메모리 부족일 때만이다.
+ */
 heap_status_t heap_secondary_visit_equal(heap_t *heap, heap_secondary_spec_t spec,
                                          const value_view_t *value,
                                          bool (*visit)(void *context, heap_locator_t locator), void *context);
