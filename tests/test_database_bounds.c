@@ -378,6 +378,43 @@ static void test_deep_statements_fit_small_stack(void)
     pthread_attr_destroy(&attr);
 }
 
+/* ── 기본 키에 NULL을 넣는 UPDATE ── */
+
+static void test_update_cannot_null_primary_key(void)
+{
+    printf("\n[test_update_cannot_null_primary_key]\n");
+    database_t *db = fresh_db();
+    exec_ok(db, "CREATE TABLE z (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)");
+    exec_ok(db, "INSERT INTO z (v) VALUES ('a')");
+    exec_ok(db, "INSERT INTO z (v) VALUES ('b')");
+    expect_error(db, "UPDATE z SET id = NULL WHERE id = 2", RESULT_E_CONSTRAINT, 8, "id");
+    expect_text(db, "SELECT * FROM z ORDER BY id", "[2] 1|'a'/ 2|'b'");
+    expect_error(db, "UPDATE z SET id = NULL", RESULT_E_CONSTRAINT, 8, "id");
+    expect_error(db, "UPDATE z SET v = 'c', id = NULL WHERE v = 'a'", RESULT_E_CONSTRAINT, 8, "id");
+    expect_error(db, "UPDATE z SET id = CASE WHEN v = 'a' THEN NULL ELSE id END", RESULT_E_CONSTRAINT, 8, "id");
+    expect_error(db, "UPDATE z SET id = NULL RETURNING id", RESULT_E_CONSTRAINT, 8, "id");
+    expect_text(db, "SELECT * FROM z ORDER BY id", "[2] 1|'a'/ 2|'b'");
+    expect_text(db, "SELECT id FROM z WHERE id IS NULL", "[0]");
+    /* INSERT의 NULL은 그대로 자동 번호를 받는다 */
+    exec_ok(db, "INSERT INTO z (id, v) VALUES (NULL, 'c')");
+    exec_ok(db, "INSERT INTO z VALUES (NULL, 'd'), (NULL, 'e')");
+    expect_text(db, "SELECT * FROM z ORDER BY id", "[5] 1|'a'/ 2|'b'/ 3|'c'/ 4|'d'/ 5|'e'");
+    /* 기본 키가 아닌 열과 값이 그대로인 기본 키 대입은 막지 않는다 */
+    expect_text(db, "UPDATE z SET v = NULL WHERE id = 5", "CMD UPDATE 1");
+    expect_text(db, "UPDATE z SET id = id WHERE id = 5", "CMD UPDATE 1");
+    expect_text(db, "UPDATE z SET id = NULL WHERE id = 99", "CMD UPDATE 0");
+    expect_text(db, "SELECT * FROM z WHERE id = 5", "[1] 5|NULL");
+
+    exec_ok(db, "CREATE TABLE names (k TEXT PRIMARY KEY, v INTEGER)");
+    exec_ok(db, "INSERT INTO names VALUES ('a', 1), ('b', 2)");
+    expect_error(db, "UPDATE names SET k = NULL WHERE k = 'a'", RESULT_E_CONSTRAINT, 8, "k");
+    expect_text(db, "SELECT * FROM names ORDER BY k", "[2] 'a'|1/ 'b'|2");
+    assert(database_close(db) == DATABASE_OK);
+    assert(database_open(DB_PATH, true, &db) == DATABASE_OK);
+    expect_text(db, "SELECT * FROM z ORDER BY id", "[5] 1|'a'/ 2|'b'/ 3|'c'/ 4|'d'/ 5|NULL");
+    assert(database_close(db) == DATABASE_OK);
+}
+
 /* 인자가 있으면 이름에 그 글자가 든 검사만 돌린다(하나가 죽어도 나머지를 따로 볼 수 있게) */
 int main(int argc, char **argv)
 {
@@ -386,6 +423,7 @@ int main(int argc, char **argv)
         void (*run)(void);
     } TESTS[] = {
         {"deep_statements_fit_small_stack", test_deep_statements_fit_small_stack},
+        {"update_cannot_null_primary_key", test_update_cannot_null_primary_key},
     };
     for (size_t i = 0; i < sizeof(TESTS) / sizeof(TESTS[0]); i++) {
         if (argc < 2 || strstr(TESTS[i].name, argv[1]) != NULL) TESTS[i].run();

@@ -623,6 +623,16 @@ static void build_steps(void)
     add_boundary_steps();
     add_secondary_steps();
 
+    /* #272: 기본 키에 NULL을 넣는 UPDATE는 둘 다 거절한다. INSERT의 NULL은 둘 다 번호를 준다 */
+    add_step(STEP_OK, "CREATE TABLE z (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)");
+    add_step(STEP_OK, "INSERT INTO z (v) VALUES ('a'), ('b')");
+    add_step(STEP_ERROR, "UPDATE z SET id = NULL WHERE id = 2");
+    add_step(STEP_ERROR, "UPDATE z SET id = NULL");
+    add_step(STEP_OK, "INSERT INTO z VALUES (NULL, 'c')");
+    add_step(STEP_SELECT, "SELECT id, v FROM z");
+    add_step(STEP_SELECT, "SELECT id FROM z WHERE id IS NULL");
+    add_step(STEP_SELECT, "SELECT id, v FROM z");
+
     /* #203: 큰 id를 직접 넣은 뒤 자동 id는 기존 최대 키 + 1이다. 최대 정수 뒤에는 둘 다 오류다 */
     add_step(STEP_OK, "CREATE TABLE ids (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)");
     add_step(STEP_OK, "INSERT INTO ids (id, v) VALUES (1000000000, 'big')");

@@ -456,7 +456,9 @@ database_exec_status_t exec_update(database_t *db, const sqlstmt_update_t *updat
             value_clear(&computed);
             q_release(db, literal_bytes);
             if (!cast) goto done;
-            if (view.columns[targets[i]].not_null && fresh[m * assign_count + i].view.type == VALUE_NULL) {
+            /* 기본 키는 NOT NULL을 적지 않아도(AUTOINCREMENT) NULL로 바꿀 수 없다. NULL이 번호를 받는 것은 INSERT뿐이다 */
+            if ((view.columns[targets[i]].not_null || targets[i] == pk) &&
+                fresh[m * assign_count + i].view.type == VALUE_NULL) {
                 status = not_null_violation(db, &view.columns[targets[i]]);
                 goto done;
             }
