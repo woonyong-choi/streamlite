@@ -526,12 +526,7 @@ static void add_substr_steps(void)
         add_step(STEP_SELECT, "SELECT id, SUBSTR(w, %d), SUBSTR(w, %d, 2), SUBSTR(w, %d, -2), SUBSTR(w, id - 3, %d) FROM words",
                  start, start, start, start);
     }
-    add_step(STEP_SELECT, "SELECT SUBSTR('hello', 9223372036854775807), SUBSTR('hello', 9223372036854775807, 9223372036854775807), "
-                          "SUBSTR('hello', -9223372036854775807, 9223372036854775807), SUBSTR('hello', 2, 9223372036854775807)");
-    add_step(STEP_SELECT, "SELECT SUBSTR('hello', -9223372036854775807 - 1, 3), SUBSTR('hello', 3, -9223372036854775807 - 1), "
-                          "SUBSTR('hello', 3, -9223372036854775807), SUBSTR('hello', -9223372036854775807 - 1, -9223372036854775807 - 1)");
-    add_step(STEP_SELECT, "SELECT SUBSTR('hello', 9223372036854775807, -9223372036854775807), SUBSTR('hello', 0, 9223372036854775807), "
-                          "SUBSTR('hello', -3, 9223372036854775807), SUBSTR('hello', -1000000, 1000003)");
+    /* INT64 끝값의 SUBSTR는 연결된 SQLite 판마다 결과가 다르다(3.45는 넘침으로 다른 값). 고정 기대값은 test_database_bounds가 맡는다 */
     add_step(STEP_SELECT, "SELECT SUBSTRING('hello', -4, 2), SUBSTR('hello', NULL, 2), SUBSTR('hello', -2, NULL), SUBSTR(NULL, -2, 1)");
 }
 

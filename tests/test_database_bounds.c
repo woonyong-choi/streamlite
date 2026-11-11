@@ -731,6 +731,14 @@ static void test_substr_bounds(void)
     expect_text(db, "SELECT SUBSTR('hello', 9223372036854775807, 9223372036854775807), "
                     "SUBSTR('hello', -9223372036854775807, 9223372036854775807), SUBSTR('hello', 2, 9223372036854775807)",
                 "[1] ''|'hello'|'ello'");
+    /* 아래 값은 SQLite 3.51과 같다. 3.45는 INT64 끝값에서 넘쳐 다른 값을 내므로 SQLite 대조에서 뺐다 */
+    expect_text(db, "SELECT SUBSTR('hello', 9223372036854775807), SUBSTR('hello', -9223372036854775807 - 1, 3), "
+                    "SUBSTR('hello', 3, -9223372036854775807 - 1), SUBSTR('hello', 3, -9223372036854775807)",
+                "[1] ''|''|'he'|'he'");
+    expect_text(db, "SELECT SUBSTR('hello', -9223372036854775807 - 1, -9223372036854775807 - 1), "
+                    "SUBSTR('hello', 9223372036854775807, -9223372036854775807), SUBSTR('hello', 0, 9223372036854775807), "
+                    "SUBSTR('hello', -3, 9223372036854775807), SUBSTR('hello', -1000000, 1000003)",
+                "[1] ''|'hello'|'hello'|'llo'|'hello'");
     assert(database_close(db) == DATABASE_OK);
 }
 
