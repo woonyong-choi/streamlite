@@ -45,7 +45,7 @@ StreamLite 0.3.0에는 C 호출 상태와 SQL 오류 결과라는 두 오류 층
 
 #### `1` `STREAMLITE_INVALID`
 
-인자·시간·이름이 잘못됐거나 다른 DB의 트랜잭션이다. 인자와 핸들 소속을 고친다.
+인자·시간·이름이 잘못됐거나 다른 DB의 트랜잭션이다. 새로 설치하는 큐 이름이 `_keys`·`_state`·`_idem`으로 끝나거나 이미 있는 큐의 내부 테이블·색인 이름과 겹칠 때도 이 상태이며 아무것도 만들지 않는다. 인자와 핸들 소속을 고친다.
 
 #### `2` `STREAMLITE_NOMEM`
 
@@ -65,11 +65,11 @@ writer가 있거나 close에 자식 자원이 남았다. 경합이면 재시도�
 
 #### `6` `STREAMLITE_NOT_FOUND`
 
-지정한 작업 ID가 없다. ID와 업무 상태를 확인한다.
+지정한 작업 ID가 없다. `purge`가 지운 작업은 fence를 확인할 행이 없으므로 같은 claim의 중복 ACK도 이 상태다. ID와 업무 상태를 확인한다.
 
 #### `7` `STREAMLITE_STALE`
 
-fence 또는 상태가 현재 작업과 맞지 않는다. 옛 claim으로 변경하지 않는다.
+fence 또는 상태가 현재 작업과 맞지 않는다. `recover`·`release_leases`가 돌려놓은 작업은 아직 재획득되지 않았어도 옛 claim의 ack·nack·fail·extend·update가 모두 이 상태다. 옛 claim으로 변경하지 않는다.
 
 #### `8` `STREAMLITE_CONFLICT`
 
@@ -358,6 +358,6 @@ commit 반영 여부를 알 수 없다. 닫고 재개방하여 업무 상태를 
 
 C `streamlite_commit`과 `streamlite_rollback`은 일반 성공·실패 모두 트랜잭션 핸들을 해제하고 NULL로 만든다. Python도 호출 시 트랜잭션을 소비한다. Fork 거절은 C 핸들을 소비하지 않는 예외다. 자식은 부모 핸들로 close도 하지 않고 새로 연다. 반환형이 void인 cancel·queue close는 fork 시 no-op이며 모든 함수가 상태 번호를 반환하는 것은 아니다.
 
-C DB close의 BUSY는 살아 있는 큐·트랜잭션을 먼저 끝내야 한다는 뜻이다. Python DB close는 큐부터 닫으므로 열린 트랜잭션 때문에 `BusyError`가 나면 DB는 살아 있어도 큐는 이미 닫혀 있다. 최종 C close가 오류여도 DB 포인터는 이미 해제·NULL일 수 있으므로 옛 포인터를 재사용하지 않는다. 최종 close와 새 호출의 수명 동기화는 호출자가 맡는다.
+C DB close의 BUSY는 살아 있는 큐·트랜잭션을 먼저 끝내야 한다는 뜻이다. Python DB close는 큐부터 닫으므로 열린 트랜잭션 때문에 `BusyError`가 나면 DB는 살아 있어도 큐는 이미 닫혀 있다. 최종 C close가 오류여도 DB 포인터는 이미 해제·NULL일 수 있으므로 옛 포인터를 재사용하지 않는다. 최종 close와 새 호출의 수명 동기화는 호출자가 맡는다. 핸들을 끝내는 호출(DB close, queue close, commit, rollback)은 그 핸들을 쓰는 다른 호출과 겹치면 안 된다. 이미 끝낸 핸들을 다시 넘기면 표시 검사로 `STREAMLITE_INVALID`(DB close는 `STREAMLITE_DB_INVALID`)가 될 수 있지만, 해제된 메모리를 읽는 최선의 방어일 뿐 보장이 아니다.
 
 BUSY 재시도 범위는 [설정](configuration.md#데이터베이스-열기)에 있다. 취소는 협력적 문장 취소이며, 게시 시작 이후에는 실제 결과로 끝난다. 실행 종료와 겹친 취소는 다음 문장 하나에 적용될 수 있다. 반환 버퍼 판독이나 Python decode까지 취소하는 기능은 아니다.

@@ -74,7 +74,7 @@ if claim is not None:
 
 ### 같은 DB 트랜잭션의 경계
 
-`Queue(db, name)`은 같은 DB 안에 큐 테이블 `streamlite_queue_<name>`, 멱등성 키 보존 테이블 `streamlite_queue_<name>_keys`와 색인을 설치하거나 연다. 별도 저장 엔진이 아니며 DB 코어는 큐를 참조하지 않는다. 업무 테이블 `orders`는 앱이 정하는 예제이지 제품 고정 스키마가 아니다.
+`Queue(db, name)`은 같은 DB 안에 큐 테이블 `streamlite_queue_<name>`, 멱등성 키 보존 테이블 `streamlite_queue_<name>_keys`와 색인을 설치하거나 연다. 색인 이름도 큐 테이블 이름에 접미어를 붙여 만들므로, `_keys`·`_state`·`_idem`으로 끝나는 이름이나 이미 있는 큐의 내부 이름과 겹치는 이름은 새로 설치하지 않고 거절한다. 이미 있는 큐는 이름과 무관하게 열린다. 별도 저장 엔진이 아니며 DB 코어는 큐를 참조하지 않는다. 업무 테이블 `orders`는 앱이 정하는 예제이지 제품 고정 스키마가 아니다.
 
 `ackq_scope_open`은 호출자 세션에 트랜잭션이 있으면 그 트랜잭션을 사용한다. 트랜잭션 없이 변경 연산을 호출하면 자체 DURABLE 트랜잭션을 열고 끝에서 commit한다. 따라서 `txn=txn`으로 실행한 큐 호출의 성공은 아직 영속 성공이 아니며 최종 트랜잭션 commit이 필요하다. 다른 DB의 트랜잭션은 실행 전에 거절한다. 저장·게시와 잠금은 [아키텍처](../architecture.md#최종-게시와-결과-전달), 실제 분기는 [ack_queue_sql.c](../../src/queue/ack_queue_sql.c)에 있다.
 
@@ -91,12 +91,14 @@ if claim is not None:
 |---|---|---|
 | `READY` | 실행 시각을 기다리는 작업 | 시각이 됐을 때 `get`으로 `LEASED` |
 | `LEASED` | fence와 lease를 가진 작업, 만료만으로 상태 변경 없음 | 현재 fence의 `ack`으로 `ACKED`, `fail`로 `FAILED`, `nack`으로 `READY` 또는 시도 한도 도달 시 `FAILED` |
-| `ACKED` | 완료를 기록한 작업 | `purge`로 물리 삭제, 같은 fence의 중복 ACK는 성공 |
+| `ACKED` | 완료를 기록한 작업 | `purge`로 물리 삭제, 같은 fence의 중복 ACK는 purge 전까지 성공하고 purge 뒤에는 NOT_FOUND |
 | `FAILED` | 명시적 실패 또는 시도 한도에 도달한 작업 | `include_failed`를 사용한 `purge`로 물리 삭제 |
 
-`get`은 실행 시각이 된 READY 또는 시도가 남은 만료 LEASED 중 작은 id를 고르고 fence와 attempts를 증가시킨다. 만료 자체는 fence를 무효화하지 않으므로 아직 재획득되지 않았다면 현재 fence로 ACK나 기한 변경을 할 수 있다. 다른 워커가 재획득한 뒤에야 옛 fence를 거절한다. `recover`는 만료 LEASED를 READY 또는 시도가 끝난 FAILED로 바꾸는 별도 연산이며 자동 백그라운드 작업이 아니다.
+`get`은 실행 시각이 된 READY 또는 시도가 남은 만료 LEASED 중 작은 id를 고르고 fence와 attempts를 증가시킨다. 만료 자체는 fence를 무효화하지 않으므로 아직 재획득되지 않았다면 현재 fence로 ACK나 기한 변경을 할 수 있다. 다른 워커가 재획득한 뒤에야 옛 fence를 거절한다. `recover`는 만료 LEASED를 READY 또는 시도가 끝난 FAILED로 바꾸는 별도 연산이며 자동 백그라운드 작업이 아니다. `recover`와 `release_leases`는 처리 권한을 끝내는 연산이라 작업을 돌려놓으면서 fence를 1 올린다. 그래서 아직 재획득되지 않았어도 옛 fence의 ack·nack·fail·extend·update를 모두 거절하고, 다음 `get`은 다시 1 오른 fence를 받는다.
 
-`extend`는 fence를 유지하고 만료 시각을 현재 시각에 새 lease를 더한 값으로 바꾼다. 기존 만료보다 항상 늦어진다고 보장하지 않는다. 큐 핸들의 close는 lease 반납이 아니다. `release_leases`는 살아 있는 워커가 없다는 판단을 호출자가 한 경우에만 사용한다.
+`extend`는 fence를 유지하고 만료 시각을 현재 시각에 새 lease를 더한 값으로 바꾼다. 기존 만료보다 항상 늦어진다고 보장하지 않는다. 큐 핸들의 close는 lease 반납이 아니다. `release_leases`는 살아 있는 워커가 없다는 판단을 호출자가 한 경우에만 사용한다. 살아 있는 워커가 있으면 그 claim이 끝나 ACK가 거절되고 작업이 중복 전달된다. 해제는 작업의 실패가 아니므로 시도 한도에 닿은 작업도 FAILED가 아닌 READY로 돌리며, 그 작업은 한 번 더 전달된 뒤의 nack·만료에서 FAILED가 된다.
+
+lease 판정은 벽시계를 쓴다. 핸들은 자기가 읽은 가장 늦은 시각보다 과거인 시계 값을 그 시각으로 읽으므로 뒤로 간 시계로 lease를 만료시키거나 줄이지 않는다. 이 값은 핸들의 메모리에만 있어 다른 프로세스와 재시작 뒤에는 적용되지 않고, 앞으로 뛴 시계는 실제 경과와 구분하지 않는다. 범위와 한계는 [ack_queue.h](../../include/queue/ack_queue.h)에 있다.
 
 ### 중복 등록과 정리
 

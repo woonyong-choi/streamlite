@@ -8,11 +8,17 @@
 
 - 공개 이름을 StreamLite로 변경: 배포·설치 이름과 Python import `streamlite`, C API `streamlite_*`, 공유 라이브러리 `libstreamlite`. 이전 이름의 별칭은 제공하지 않는다.
 - DB 파일 형식을 형식 4 하나로 정리: 16바이트 전체 magic과 SL codec을 쓰며, 이전 ToteDB 형식 파일을 읽는 reader는 제공하지 않는다.
+- `recover`·`release_leases`가 돌려놓은 작업의 fence를 1 올림: 재획득 전이어도 옛 claim의 ack·nack·fail·extend·update는 모두 `STALE`이다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- `release_leases`가 시도 한도에 닿은 작업을 `FAILED`가 아닌 `READY`로 되돌림: 해제는 작업의 실패로 세지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 새 큐 이름이 `_keys`·`_state`·`_idem`으로 끝나거나 다른 큐의 내부 이름과 겹치면 `INVALID`로 거절: 이미 있는 큐는 그대로 열린다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 큐 핸들이 뒤로 간 시계를 자기가 읽은 가장 늦은 시각으로 읽음: lease를 일찍 만료시키거나 줄여서 연장하지 않는다. ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 
 ### 수정
 
 - 긴 큐 이름의 경계 처리 수정
 - free-list 경계 처리 수정
+- 음수이거나 범위를 넘는 시계 값에서 큐 연산이 모두 `LIMIT`이 되던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
+- 보존 기간이 긴 멱등성 키 뒤의 만료된 키가 purge에서 정리되지 않던 문제 수정 ([#273](https://github.com/woonyong-choi/streamlite/issues/273))
 
 ### 제거
 

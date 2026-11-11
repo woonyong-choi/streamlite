@@ -1,6 +1,8 @@
 #ifndef ACK_QUEUE_INTERNAL_H
 #define ACK_QUEUE_INTERNAL_H
 
+#include <stdatomic.h>
+
 #include "queue/ack_queue.h"
 #include "sql/session.h"
 #include "sql/result.h"
@@ -12,6 +14,9 @@
 /* 큐 테이블 이름은 ACKQ_TABLE_PREFIX + 이름, key 테이블 이름은 그 뒤에 ACKQ_KEYS_SUFFIX를 붙인다 */
 #define ACKQ_TABLE_PREFIX "streamlite_queue_"
 #define ACKQ_KEYS_SUFFIX "_keys"
+
+/* 시계 값의 상한. 이보다 작은 시각에 lease·지연·보존 기간을 더해도 INT64_MAX를 넘지 않는다 */
+#define ACKQ_NOW_MAX ((uint64_t)INT64_MAX - ACKQ_MAX_RETENTION_MS)
 
 #ifndef STREAMLITE_ACKQ_CONDITIONAL
 #define STREAMLITE_ACKQ_CONDITIONAL 0
@@ -29,6 +34,7 @@ struct ackq {
     uint64_t (*now_ms)(void *ctx);
     void *clock_ctx;
     bool conditional_enabled;
+    _Atomic uint64_t clock_floor;    /* 이 핸들이 읽은 가장 늦은 시각. ackq_now만 바꾼다 */
 };
 
 /* 한 연산이 문장을 실행하는 세션. 세션에 열려 있던 트랜잭션(호출자의 것)이면 own이 false이고 commit하지 않는다. */
@@ -56,7 +62,11 @@ ackq_status_t ackq_conditional_claim(ackq_t *queue, ackq_scope_t *scope, const a
 ackq_status_t ackq_conditional_finish(ackq_t *queue, ackq_scope_t *scope, const ackq_finish_request_t *request,
                                        bool *matched);
 
-uint64_t ackq_now(const ackq_t *queue);
+/*
+ * 지금 시각(밀리초). 시계가 준 값이 ACKQ_NOW_MAX를 넘으면(음수가 uint64로 감긴 값 포함) 읽지 못한 것으로 보고, 이 핸들이
+ * 읽은 가장 늦은 시각보다 과거이면 그 시각을 돌려준다. 그래서 돌려주는 값은 핸들 안에서 줄지 않고 INT64 범위 안이다.
+ */
+uint64_t ackq_now(ackq_t *queue);
 
 /*
  * 세션에 트랜잭션이 열려 있으면 그 안에서, 없으면 write일 때 세션에 자기 트랜잭션을 연다. write가 false이고 열린
