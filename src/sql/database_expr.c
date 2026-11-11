@@ -85,11 +85,21 @@ database_exec_status_t eval_failure(database_t *db, const sqleval_error_t *error
     }
 }
 
+static bool eval_reserve(void *ctx, size_t bytes) { return q_reserve(ctx, bytes); }
+static void eval_release(void *ctx, size_t bytes) { q_release(ctx, bytes); }
+
+/* 식 평가기의 프로그램·중간값을 이 문장의 예산(MEM_SCOPE_QUERY)에 계상하는 훅 */
+sqleval_memory_t eval_memory(database_t *db)
+{
+    return (sqleval_memory_t){eval_reserve, eval_release, db};
+}
+
 bool compile_expr(database_t *db, const sqlexpr_t *expr, const resolver_t *resolver, sqleval_prog_t **prog,
                          database_exec_status_t *status)
 {
     sqleval_error_t error = {SQLEVAL_OK, 0, NULL};
-    sqleval_env_t env = {resolver != NULL ? resolve_column : NULL, NULL, (void *)resolver, subquery_hook, db, outer_hook};
+    sqleval_env_t env = {resolver != NULL ? resolve_column : NULL, NULL, (void *)resolver, subquery_hook, db, outer_hook,
+                         eval_memory(db)};
     const resolver_t *saved = db->compile_resolver;
     db->compile_resolver = resolver;
     sqleval_status_t compiled = sqleval_compile(expr, &env, prog, &error);
@@ -339,7 +349,7 @@ bool compile_in(database_t *db, const sqlexpr_t *expr, const compile_ctx_t *cc, 
                        database_exec_status_t *status)
 {
     sqleval_error_t error = {SQLEVAL_OK, 0, NULL};
-    sqleval_env_t env = {cc->resolve, cc->match, cc->ctx, subquery_hook, db, outer_hook};
+    sqleval_env_t env = {cc->resolve, cc->match, cc->ctx, subquery_hook, db, outer_hook, eval_memory(db)};
     /* 그룹 질의의 식은 그룹 행 위에서 계산하므로 안쪽 서브쿼리가 바깥 열을 볼 수 없다 */
     const resolver_t *saved = db->compile_resolver;
     db->compile_resolver = cc->match == NULL ? cc->table : NULL;

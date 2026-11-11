@@ -502,6 +502,39 @@ static void add_secondary_steps(void)
     }
 }
 
+/*
+ * #272: SUBSTR의 시작·길이 경계. 시작 -8..8과 길이 없음·-8..8을 모두 짝지어 ASCII·여러 바이트 글자·빈 문자열에 댄다
+ * (음수 시작, 0 시작, 음수 길이, 범위를 벗어난 값). 정수 끝 값은 넘침 없이 같은 답이어야 한다. 길이 없는 SUBSTR에서
+ * 시작이 문자열 길이 한도보다 더 앞이면 SQLite 빌드의 한도 값에 따라 답이 갈리므로 넣지 않는다.
+ */
+static void add_substr_steps(void)
+{
+    static const char *const TEXTS[] = {"'hello'", "'가나다라마'", "''", "'a'", "'h\xc3\xa9 \xf0\x9f\x98\x80 z'"};
+    add_step(STEP_OK, "CREATE TABLE words (id INTEGER PRIMARY KEY, w TEXT)");
+    add_step(STEP_OK, "INSERT INTO words VALUES (1, 'hello'), (2, '가나다라마'), (3, ''), (4, NULL)");
+    for (size_t t = 0; t < sizeof(TEXTS) / sizeof(TEXTS[0]); t++) {
+        for (int start = -8; start <= 8; start++) {
+            char sql[1024];
+            int used = snprintf(sql, sizeof(sql), "SELECT SUBSTR(%s, %d)", TEXTS[t], start);
+            for (int length = -8; length <= 8; length++) {
+                used += snprintf(sql + used, sizeof(sql) - (size_t)used, ", SUBSTR(%s, %d, %d)", TEXTS[t], start, length);
+            }
+            add_step(STEP_SELECT, "%s", sql);
+        }
+    }
+    for (int start = -7; start <= 7; start += 2) {
+        add_step(STEP_SELECT, "SELECT id, SUBSTR(w, %d), SUBSTR(w, %d, 2), SUBSTR(w, %d, -2), SUBSTR(w, id - 3, %d) FROM words",
+                 start, start, start, start);
+    }
+    add_step(STEP_SELECT, "SELECT SUBSTR('hello', 9223372036854775807), SUBSTR('hello', 9223372036854775807, 9223372036854775807), "
+                          "SUBSTR('hello', -9223372036854775807, 9223372036854775807), SUBSTR('hello', 2, 9223372036854775807)");
+    add_step(STEP_SELECT, "SELECT SUBSTR('hello', -9223372036854775807 - 1, 3), SUBSTR('hello', 3, -9223372036854775807 - 1), "
+                          "SUBSTR('hello', 3, -9223372036854775807), SUBSTR('hello', -9223372036854775807 - 1, -9223372036854775807 - 1)");
+    add_step(STEP_SELECT, "SELECT SUBSTR('hello', 9223372036854775807, -9223372036854775807), SUBSTR('hello', 0, 9223372036854775807), "
+                          "SUBSTR('hello', -3, 9223372036854775807), SUBSTR('hello', -1000000, 1000003)");
+    add_step(STEP_SELECT, "SELECT SUBSTRING('hello', -4, 2), SUBSTR('hello', NULL, 2), SUBSTR('hello', -2, NULL), SUBSTR(NULL, -2, 1)");
+}
+
 static void build_steps(void)
 {
     g_steps = malloc(FIXED_STEP_COUNT * sizeof(*g_steps));
@@ -622,6 +655,23 @@ static void build_steps(void)
     add_step(STEP_ERROR, "SELECT * FROM indexed");
     add_boundary_steps();
     add_secondary_steps();
+    add_substr_steps();
+
+    /* #272: 기본 키에 NULL을 넣는 UPDATE는 둘 다 거절한다. INSERT의 NULL은 둘 다 번호를 준다 */
+    add_step(STEP_OK, "CREATE TABLE z (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)");
+    add_step(STEP_OK, "INSERT INTO z (v) VALUES ('a'), ('b')");
+    add_step(STEP_ERROR, "UPDATE z SET id = NULL WHERE id = 2");
+    add_step(STEP_ERROR, "UPDATE z SET id = NULL");
+    add_step(STEP_OK, "INSERT INTO z VALUES (NULL, 'c')");
+    add_step(STEP_SELECT, "SELECT id, v FROM z");
+    add_step(STEP_SELECT, "SELECT id FROM z WHERE id IS NULL");
+    /* #272: 닫는 괄호 뒤에 다른 문장이 붙은 CREATE INDEX는 둘 다 문법 오류다 */
+    add_step(STEP_ERROR, "CREATE UNIQUE INDEX z_v ON z (v) DROP TABLE z");
+    add_step(STEP_ERROR, "CREATE INDEX z_v ON z (v) (id)");
+    add_step(STEP_SELECT, "SELECT id, v FROM z");
+    /* #272: 다른 서브쿼리를 GROUP BY 식의 값으로 읽지 않는다 */
+    add_step(STEP_SELECT, "SELECT (SELECT 1), COUNT(*) FROM z GROUP BY (SELECT 2)");
+    add_step(STEP_SELECT, "SELECT EXISTS (SELECT 1 FROM z WHERE id > 100), COUNT(*) FROM z GROUP BY EXISTS (SELECT 1 FROM z)");
 
     /* #203: 큰 id를 직접 넣은 뒤 자동 id는 기존 최대 키 + 1이다. 최대 정수 뒤에는 둘 다 오류다 */
     add_step(STEP_OK, "CREATE TABLE ids (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)");

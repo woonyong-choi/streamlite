@@ -211,6 +211,12 @@ static void create_index_forms(void)
     assert(statement->kind == SQLSTMT_CREATE_INDEX && statement->index.unique);
     free_clean(statement);
     expect_unsupported("CREATE INDEX pair ON users (a, b)", SQLSTMT_REASON_UNSUPPORTED_CONSTRAINT, 29);
+    /* #272: 닫는 괄호 뒤에 남은 토큰은 다른 문장과 같이 거절한다 */
+    expect_syntax("CREATE INDEX ix ON t (n) WHERE garbage", SQLSTMT_REASON_TRAILING_TOKENS, 25);
+    expect_syntax("CREATE UNIQUE INDEX ux ON t (v) DROP TABLE t", SQLSTMT_REASON_TRAILING_TOKENS, 32);
+    expect_syntax("CREATE INDEX ix ON t (n) x", SQLSTMT_REASON_TRAILING_TOKENS, 25);
+    expect_syntax("CREATE INDEX ix ON t (n) (m)", SQLSTMT_REASON_TRAILING_TOKENS, 25);
+    expect_syntax("CREATE INDEX ix ON t (n", SQLSTMT_REASON_UNEXPECTED_END, 23);
 }
 
 static void create_primary_key_forms(void)
@@ -927,6 +933,180 @@ static void limits(void)
     }
 }
 
+/* 같은 조각을 count번 이어 붙인다. 호출자가 free한다 */
+static char *repeated(const char *head, const char *piece, size_t count, const char *middle, const char *tail_piece,
+                      const char *tail)
+{
+    size_t size = strlen(head) + strlen(middle) + strlen(tail) + count * (strlen(piece) + strlen(tail_piece)) + 1;
+    char *sql = malloc(size);
+    assert(sql != NULL);
+    char *at = sql + sprintf(sql, "%s", head);
+    for (size_t i = 0; i < count; i++) at += sprintf(at, "%s", piece);
+    at += sprintf(at, "%s", middle);
+    for (size_t i = 0; i < count; i++) at += sprintf(at, "%s", tail_piece);
+    sprintf(at, "%s", tail);
+    return sql;
+}
+
+/* 한도 안이면 파싱되고 첫 선택 식의 높이가 height다. height가 0이면 높이는 보지 않는다 */
+static void expect_height(char *sql, uint32_t height)
+{
+    sqlstmt_t *statement = NULL;
+    sqlstmt_error_t error;
+    sqlstmt_status_t status = run(sql, strlen(sql), NULL, 0, &statement, &error);
+    if (status != SQLSTMT_OK) {
+        fprintf(stderr, "input %.60s...(%zu바이트): status %d reason %d offset %zu, 성공을 기대\n", sql, strlen(sql), status,
+                error.reason, error.offset);
+        mismatches++;
+    } else {
+        const sqlexpr_t *expr = statement->select.items[0].expr;
+        if (height != 0 && (expr == NULL || expr->height != height)) {
+            fprintf(stderr, "input %.60s...: 높이 %u, 기대 %u\n", sql, expr != NULL ? expr->height : 0, height);
+            mismatches++;
+        }
+        free_clean(statement);
+    }
+    free(sql);
+}
+
+static void expect_too_deep(char *sql)
+{
+    static char marker;
+    sqlstmt_t *out = (sqlstmt_t *)&marker;
+    sqlstmt_error_t error = {SQLSTMT_REASON_NONE, 0, VALUE_OK};
+    size_t before = live_allocations;
+    sqlstmt_status_t status = run(sql, strlen(sql), NULL, 0, &out, &error);
+    if (status != SQLSTMT_LIMIT || error.reason != SQLSTMT_REASON_TOO_MANY_ITEMS || out != (sqlstmt_t *)&marker ||
+        live_allocations != before) {
+        fprintf(stderr, "input %.60s...(%zu바이트): status %d reason %d 남은 할당 %zu, LIMIT을 기대\n", sql, strlen(sql),
+                status, error.reason, live_allocations - before);
+        mismatches++;
+        if (status == SQLSTMT_OK) sqlstmt_free(out);
+    }
+    free(sql);
+}
+
+/*
+ * #272: 식 트리 높이·식 중첩·질의 중첩·결합 단계의 한도. 재귀하는 소비자(복제·컴파일·평가·해제)의 스택을 parser가 지킨다.
+ * 왼쪽으로 치우친 연산자 사슬도 노드마다 높이 한 단계다.
+ */
+static void recursion_limits(void)
+{
+    size_t h = SQLSTMT_MAX_EXPR_HEIGHT, d = SQLSTMT_MAX_EXPR_NESTING, q = SQLSTMT_MAX_QUERY_NESTING;
+    static const char *const OPS[] = {"+1", "*1", "||1", " AND 1", " OR 1", "-1", "/1", "%1"};
+    for (size_t i = 0; i < sizeof(OPS) / sizeof(OPS[0]); i++) {
+        expect_height(repeated("SELECT 1", OPS[i], h - 1, "", "", ""), (uint32_t)h);
+        expect_too_deep(repeated("SELECT 1", OPS[i], h, "", "", ""));
+    }
+    /* 우선순위가 다른 사슬이 겹쳐도 높이는 합이다: OR 사슬의 맨 왼쪽 잎이 AND 사슬, 그 맨 왼쪽 잎이 + 사슬 */
+    {
+        char *adds = repeated("SELECT 1", "+1", h / 2, "", "", "");
+        char *ands = repeated(adds, " AND 1", h / 4, "", "", "");
+        expect_height(repeated(ands, " OR 1", h / 4 - 1, "", "", ""), (uint32_t)h);
+        expect_too_deep(repeated(ands, " OR 1", h / 4, "", "", ""));
+        free(adds);
+        free(ands);
+    }
+    /* 감사 재현: 괄호 60단계 × 단계마다 +1 400개(48KB). 괄호는 높이를 늘리지 않지만 사슬이 단계마다 쌓인다 */
+    {
+        char *level = repeated(")", "+1", 400, "", "", "");
+        expect_too_deep(repeated("SELECT ", "(", 60, "1", level, ""));
+        free(level);
+    }
+
+    /* 식 중첩: 맨 위 식이 한 단계, 괄호·인자·CASE·IN 목록이 한 단계씩이다. 단항 연산은 괄호와 함께 두 단계다 */
+    expect_height(repeated("SELECT ", "(", d - 1, "1", ")", ""), 1);
+    expect_too_deep(repeated("SELECT ", "(", d, "1", ")", ""));
+    expect_height(repeated("SELECT ", "ABS(", d - 1, "1", ")", ""), (uint32_t)d);
+    expect_too_deep(repeated("SELECT ", "ABS(", d, "1", ")", ""));
+    expect_height(repeated("SELECT ", "CASE WHEN 1 THEN ", d - 1, "1", " END", ""), (uint32_t)d);
+    expect_too_deep(repeated("SELECT ", "CASE WHEN 1 THEN ", d, "1", " END", ""));
+    expect_height(repeated("SELECT ", "1 IN (2, ", d - 1, "1", ")", ""), (uint32_t)d);
+    expect_too_deep(repeated("SELECT ", "1 IN (2, ", d, "1", ")", ""));
+    expect_height(repeated("SELECT ", "NOT ", d - 1, "1", "", ""), (uint32_t)d);
+    expect_too_deep(repeated("SELECT ", "NOT ", d, "1", "", ""));
+    expect_height(repeated("SELECT ", "- ", d - 1, "a", "", ""), (uint32_t)d);
+    expect_too_deep(repeated("SELECT ", "- ", d, "a", "", ""));
+    expect_height(repeated("SELECT ", "-(", d / 2 - 1, "a", ")", ""), (uint32_t)(d / 2));
+    expect_too_deep(repeated("SELECT ", "-(", d / 2, "a", ")", ""));
+    expect_too_deep(repeated("SELECT ", "CAST(", d, "1", " AS INTEGER)", ""));
+    expect_too_deep(repeated("INSERT INTO t VALUES (", "(", d, "1", ")", ")"));
+    expect_too_deep(repeated("UPDATE t SET a = ", "(", d, "1", ")", ""));
+    expect_too_deep(repeated("DELETE FROM t WHERE ", "(", d, "1", ")", ""));
+    expect_too_deep(repeated("CREATE TABLE t (a INTEGER DEFAULT ", "(", d + 1, "1", ")", ")"));
+
+    /* 질의 중첩: 식 자리·EXISTS·IN·FROM·WITH 모두 같은 한도다 */
+    expect_height(repeated("SELECT ", "(SELECT ", q, "1", ")", ""), (uint32_t)q + 1);
+    expect_too_deep(repeated("SELECT ", "(SELECT ", q + 1, "1", ")", ""));
+    expect_height(repeated("SELECT ", "EXISTS (SELECT ", q, "1", ")", ""), (uint32_t)q + 1);
+    expect_too_deep(repeated("SELECT ", "EXISTS (SELECT ", q + 1, "1", ")", ""));
+    expect_height(repeated("SELECT ", "1 IN (SELECT ", q, "1", ")", ""), (uint32_t)q + 1);
+    expect_too_deep(repeated("SELECT ", "1 IN (SELECT ", q + 1, "1", ")", ""));
+    expect_height(repeated("SELECT * FROM ", "(SELECT * FROM ", q, "t", ") s", ""), 0);
+    expect_too_deep(repeated("SELECT * FROM ", "(SELECT * FROM ", q + 1, "t", ") s", ""));
+    expect_height(repeated("", "WITH c AS (", q, "SELECT 1", ") SELECT * FROM c", ""), 0);
+    expect_too_deep(repeated("", "WITH c AS (", q + 1, "SELECT 1", ") SELECT * FROM c", ""));
+
+    /* 서브쿼리를 가진 노드의 높이는 그 질의 안에서 가장 높은 식을 더한다(FROM·WITH 안의 식도 포함) */
+    {
+        char *inner = repeated("SELECT (SELECT 1", "+1", h / 2, ")", "", "");
+        expect_height(repeated(inner, "+1", h / 2 - 2, "", "", ""), (uint32_t)h);
+        expect_too_deep(repeated(inner, "+1", h / 2 - 1, "", "", ""));
+        free(inner);
+        inner = repeated("SELECT EXISTS (SELECT 1 FROM (SELECT 1", "+1", h / 2, " AS a) s)", "", "");
+        expect_height(repeated(inner, " OR 0", h / 2 - 2, "", "", ""), (uint32_t)h);
+        expect_too_deep(repeated(inner, " OR 0", h / 2 - 1, "", "", ""));
+        free(inner);
+        inner = repeated("SELECT 2 IN (SELECT 1 FROM t WHERE 1", "+1", h - 2, ")", "", "");
+        expect_height(repeated(inner, "", 0, "", "", ""), (uint32_t)h);
+        free(inner);
+        expect_too_deep(repeated("SELECT 2 IN (SELECT 1 FROM t WHERE 1", "+1", h - 1, ")", "", ""));
+        /* FROM의 질의는 바깥 식과 함께 계산되지 않으므로 바깥 식의 높이에 더하지 않는다 */
+        inner = repeated("SELECT 1", "+1", h - 1, " FROM (SELECT 1", "", "");
+        expect_height(repeated(inner, "+1", h - 1, " AS a) s", "", ""), (uint32_t)h);
+        free(inner);
+    }
+
+    /*
+     * 결합 단계: 한 질의의 원본 수에 식 안 서브쿼리의 원본 수를 더한 값이 SQLSTMT_MAX_SOURCES 이하다. FROM·WITH의
+     * 질의는 결합보다 먼저 끝나므로 더하지 않는다.
+     */
+    {
+        size_t m = SQLSTMT_MAX_SOURCES;
+        char *full = repeated("SELECT 1 FROM t", ", t", m - 1, "", "", "");
+        char *most = repeated("SELECT 1 FROM t", ", t", m - 2, "", "", "");
+        char *half = repeated("SELECT 1 FROM t", ", t", m / 2 - 1, "", "", "");
+        char *more = repeated("SELECT 1 FROM t", ", t", m / 2, "", "", "");
+        expect_height(repeated(full, "", 0, " WHERE (SELECT 1) = 1", "", ""), 0);
+        expect_too_deep(repeated(full, "", 0, " WHERE (SELECT 1 FROM t) = 1", "", ""));
+        expect_too_deep(repeated(full, "", 0, " WHERE EXISTS (SELECT 1 FROM t)", "", ""));
+        expect_too_deep(repeated(full, "", 0, " WHERE 1 IN (SELECT 1 FROM t)", "", ""));
+        expect_height(repeated(most, "", 0, " WHERE EXISTS (SELECT 1 FROM t)", "", ""), 0);
+        expect_height(repeated(most, "", 0, ", (SELECT 1 FROM t, t, t) s", "", ""), 0);
+        char *nested = repeated(half, "", 0, " WHERE EXISTS (", "", more);
+        expect_too_deep(repeated(nested, "", 0, ")", "", ""));
+        free(nested);
+        nested = repeated(half, "", 0, " WHERE EXISTS (", "", half);
+        expect_height(repeated(nested, "", 0, ")", "", ""), 0);
+        free(nested);
+        /* 선택 목록의 서브쿼리는 FROM보다 먼저 나오지만 같은 한도다. 집합 연산은 가장 큰 쪽을 센다 */
+        nested = repeated("SELECT (SELECT 1 FROM t) FROM t", ", t", m - 1, "", "", "");
+        expect_too_deep(nested);
+        nested = repeated("SELECT 1 FROM t WHERE EXISTS (SELECT 1 FROM t UNION ALL ", "", 0, full, "", ")");
+        expect_too_deep(nested);
+        nested = repeated("UPDATE t SET a = 1 WHERE EXISTS (", "", 0, full, "", ")");
+        expect_too_deep(nested);
+        nested = repeated("DELETE FROM t WHERE EXISTS (", "", 0, most, "", ")");
+        sqlstmt_t *statement = parse_ok(nested);
+        free_clean(statement);
+        free(nested);
+        free(full);
+        free(most);
+        free(half);
+        free(more);
+    }
+}
+
 static void bad_arguments(void)
 {
     sqlstmt_t *out = NULL;
@@ -1047,6 +1227,7 @@ int main(void)
     select_and_where_errors();
     update_delete_drop_errors();
     limits();
+    recursion_limits();
     bad_arguments();
     statement_picks_one_from_script();
     allocation_failures();

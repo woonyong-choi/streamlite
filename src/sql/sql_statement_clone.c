@@ -103,6 +103,7 @@ static bool clone_expr(statement_clone_t *c, const sqlexpr_t *from, sqlexpr_t **
     to->distinct = from->distinct;
     to->cast_type = from->cast_type;
     to->offset = from->offset;
+    to->height = from->height;
     to->parameter_id = from->parameter_id;
     if (!clone_value(c, from, &to->value)) return false;
     if (!clone_name(c, &from->qualifier, &to->qualifier)) return false;

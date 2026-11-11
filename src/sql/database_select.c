@@ -95,7 +95,9 @@ static database_exec_status_t add_result_row(database_t *db, result_builder_t *b
 {
     result_status_t added = result_builder_add_row(builder, views, count);
     if (added == RESULT_NOMEM) return DATABASE_EXEC_NOMEM;
-    if (added != RESULT_OK) return fail_result(db, RESULT_E_LIMIT, 16, "결과가 한도를 넘습니다");
+    if (added == RESULT_LIMIT) return fail_result(db, RESULT_E_LIMIT, 16, "결과가 한도를 넘습니다");
+    /* 행이 결과 열 정의와 맞지 않는다(NULL일 수 없다고 한 열의 NULL 등). 한도가 아니라 실행기나 저장된 행의 문제다 */
+    if (added != RESULT_OK) return fail_result(db, RESULT_E_INTERNAL, 16, "결과 행이 결과 열 정의와 맞지 않습니다");
     return DATABASE_EXEC_OK;
 }
 

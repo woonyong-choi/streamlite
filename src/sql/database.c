@@ -553,6 +553,13 @@ database_exec_status_t heap_failure(database_t *db, heap_status_t status, const 
     }
 }
 
+/* 보조 색인 변경의 실패. 같은 값이 이미 있으면 유일 색인 위반이며 기본 키 중복과 코드는 같고 문구가 다르다 */
+database_exec_status_t index_failure(database_t *db, heap_status_t status, const char *where)
+{
+    if (status != HEAP_KEY_EXISTS) return heap_failure(db, status, where);
+    return fail_result(db, RESULT_E_CONSTRAINT, 11, "유일 색인의 값이 중복됩니다 (%s)", where);
+}
+
 database_exec_status_t cancelled_result(database_t *db)
 {
     return fail_result(db, RESULT_E_CANCELLED, DATABASE_CODE_CANCELLED, "문장이 취소되어 아무것도 반영하지 않았습니다");
