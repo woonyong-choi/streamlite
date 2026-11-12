@@ -2,7 +2,7 @@
 
 버전별 주요 변경을 적는다. 형식: [Keep a Changelog](https://keepachangelog.com/ko/1.1.0/). 버전: [유의적 버전](https://semver.org/lang/ko/). 1.0 전에는 파일 형식과 API가 호환 없이 바뀔 수 있다.
 
-## 0.3.0 - 미배포
+## 0.3.0 - 2026-11-12
 
 ### 추가
 
